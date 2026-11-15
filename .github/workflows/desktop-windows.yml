@@ -27,5 +27,7 @@ jobs:
         run: npm install
       - name: Build desktop frontend
         run: npm run build
+      - name: Generate Windows application icon
+        run: python scripts/generate_icon.py
       - name: Check native Rust host
         run: cargo check --manifest-path src-tauri/Cargo.toml
