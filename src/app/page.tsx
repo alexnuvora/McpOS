@@ -1,5 +1,5 @@
 "use client";
-import { Activity, Bot, Boxes, Braces, CheckCircle2, ChevronDown, CircleDot, Cloud, Command, GitBranch, Github, LayoutDashboard, Plus, Search, Settings2, ShieldCheck, TerminalSquare, Workflow } from "lucide-react";
+import { Activity, Bot, Boxes, Braces, CheckCircle2, ChevronDown, CircleDot, Cloud, Command, GitBranch, Github, LayoutDashboard, Monitor, MousePointer2, Plus, Search, Settings2, ShieldCheck, TerminalSquare, Workflow } from "lucide-react";
 import GitHubRepositoryPicker from "@/components/github-repository-picker";
 
 const capabilities = [
