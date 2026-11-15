@@ -25,7 +25,7 @@ function makeServer() {
     {
       title: "McpOS status",
       description: "Get the non-sensitive status of the McpOS development workspace.",
-      inputSchema: z.object({}),
+      inputSchema: {},
     },
     async () => ({
       content: [{ type: "text", text: JSON.stringify({
@@ -43,7 +43,7 @@ function makeServer() {
     {
       title: "McpOS capabilities",
       description: "List enabled and planned workspace capabilities. This tool does not perform changes.",
-      inputSchema: z.object({ includePlanned: z.boolean().optional() }),
+      inputSchema: { includePlanned: z.boolean().optional() },
     },
     async ({ includePlanned }) => ({
       content: [{ type: "text", text: JSON.stringify({
