@@ -7,6 +7,18 @@
 - A server-side bearer token protects the initial endpoint.
 - The initial tool surface is read-only and exposes status/capability discovery only.
 
+## GitHub integration (first read-only slice)
+
+- The user connects through the GitHub App OAuth authorization flow.
+- OAuth state is generated server-side and checked in the callback.
+- The GitHub access token is encrypted with AES-256-GCM and stored only in an HTTP-only, SameSite=Lax cookie. The encryption key is derived from `GITHUB_SESSION_SECRET`.
+- Repository discovery uses the user's GitHub App access token to enumerate installations and their accessible repositories.
+- The browser receives repository metadata only; it never receives the access token.
+- The picker selection is currently in client state only. It is not a durable project record.
+- The App should be installed with Metadata: read-only and Contents / Pull requests: read-only. No write operations are implemented.
+
+See [GITHUB_APP_SETUP.md](GITHUB_APP_SETUP.md) for setup instructions.
+
 ## Target architecture
 
 1. **Web application** — projects, task board, editor/terminal panes, logs, approvals and settings.
