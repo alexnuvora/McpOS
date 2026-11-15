@@ -1,8 +1,8 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
-import { z } from "zod";
+import { McpServer } from "@modelcontextprotocol/server";
+import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/server";
+import * as z from "zod/v4";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -25,7 +25,7 @@ function makeServer() {
     {
       title: "McpOS status",
       description: "Get the non-sensitive status of the McpOS development workspace.",
-      inputSchema: {},
+      inputSchema: z.object({}),
     },
     async () => ({
       content: [{ type: "text", text: JSON.stringify({
@@ -43,7 +43,7 @@ function makeServer() {
     {
       title: "McpOS capabilities",
       description: "List enabled and planned workspace capabilities. This tool does not perform changes.",
-      inputSchema: { includePlanned: z.boolean().optional() },
+      inputSchema: z.object({ includePlanned: z.boolean().optional() }),
     },
     async ({ includePlanned }) => ({
       content: [{ type: "text", text: JSON.stringify({
