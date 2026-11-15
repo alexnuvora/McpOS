@@ -6,23 +6,23 @@ function App() {
   return (
     <main className="shell">
       <header className="topbar">
-        <div className="brand"><span className="brand-mark">M</span><div><strong>McpOS</strong><small>Desktop companion</small></div></div>
-        <span className="status"><i /> Local app ready</span>
+        <div className="brand"><span className="brand-mark">M</span><div><strong>McpOS</strong><small>Windows desktop companion</small></div></div>
+        <span className="status"><i className="offline" /> Disconnected</span>
       </header>
       <section className="hero">
-        <div className="eyebrow">WINDOWS COMPANION · EARLY ACCESS BUILD</div>
+        <div className="eyebrow">WINDOWS COMPANION · LOCAL SESSION</div>
         <h1>Your AI, with permission to act.</h1>
         <p>McpOS will connect approved AI clients to your desktop, apps and browser. You stay in control of every capability.</p>
-        <div className="notice"><span className="lock">⌑</span><div><strong>Nothing is being shared</strong><small>This starter build does not capture your screen, control input, read files or connect to a remote gateway.</small></div></div>
+        <div className="notice"><span className="lock">⌑</span><div><strong>Desktop access is paused</strong><small>No screen, accessibility, mouse or keyboard data is being shared. Close hides McpOS to the Windows system tray; use the tray menu to reopen or quit.</small></div></div>
       </section>
       <section className="panel">
-        <div className="panel-heading"><div><strong>Desktop capabilities</strong><small>Each capability will be enabled separately by you.</small></div><span className="tag">NOT CONNECTED</span></div>
-        <div className="capability"><span className="symbol">▧</span><div><strong>Screen observation</strong><small>Consent-based screen capture and accessibility information.</small></div><span className="disabled">Coming next</span></div>
-        <div className="capability"><span className="symbol">⌖</span><div><strong>Mouse & keyboard</strong><small>Bounded computer-use actions with visible session status.</small></div><span className="disabled">Coming later</span></div>
-        <div className="capability"><span className="symbol">▣</span><div><strong>Browser & applications</strong><small>Approved browser profile and explicitly allowed apps.</small></div><span className="disabled">Planned</span></div>
-        <div className="capability"><span className="symbol">▤</span><div><strong>Local files</strong><small>Only folders you explicitly choose to share.</small></div><span className="disabled">Planned</span></div>
+        <div className="panel-heading"><div><strong>Desktop capabilities</strong><small>Nothing is enabled until you explicitly grant permission.</small></div><span className="tag">DISCONNECTED</span></div>
+        <div className="capability"><span className="symbol">▧</span><div><strong>Screen observation</strong><small>Consent-based screen capture. A visible session indicator will remain on while active.</small></div><span className="disabled">Not enabled</span></div>
+        <div className="capability"><span className="symbol">⌖</span><div><strong>Windows accessibility</strong><small>Read accessible control names, roles and states from the foreground application.</small></div><span className="disabled">Not enabled</span></div>
+        <div className="capability"><span className="symbol">⌘</span><div><strong>Mouse & keyboard</strong><small>Bounded actions only, with a local emergency pause control.</small></div><span className="disabled">Not enabled</span></div>
+        <div className="capability"><span className="symbol">⇄</span><div><strong>Secure device connection</strong><small>Pairing and remote AI relay will be enabled only after account identity and device credentials are established.</small></div><span className="disabled">Not paired</span></div>
       </section>
-      <footer>Local-first by design <span>·</span> No background access <span>·</span> You can pause or revoke access</footer>
+      <footer>Local-first by design <span>·</span> Visible tray presence <span>·</span> Close to tray, not background control</footer>
     </main>
   );
 }
