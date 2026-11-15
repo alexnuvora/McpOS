@@ -17,7 +17,7 @@ npm install
 npm run tauri:dev
 ```
 
-Build the frontend:
+Generate the Windows icon before checking/building the native host (the CI workflow does this automatically):\n\n\`\`\`powershell\npython scripts/generate_icon.py\n\`\`\`\n\nBuild the frontend:
 
 ```powershell
 npm run build
