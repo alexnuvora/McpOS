@@ -26,12 +26,11 @@ export async function GET(request: NextRequest) {
   const expectedState = request.cookies.get(GITHUB_STATE_COOKIE)?.value;
   const oauthError = request.nextUrl.searchParams.get("error");
 
-  const response = NextResponse.redirect(url);
-  response.cookies.set(GITHUB_STATE_COOKIE, "", { path: "/", maxAge: 0 });
-
   if (oauthError || !code || !state || !expectedState || state !== expectedState) {
     url.searchParams.set("github", oauthError ? "denied" : "invalid-state");
-    return NextResponse.redirect(url);
+    const failed = NextResponse.redirect(url);
+    failed.cookies.set(GITHUB_STATE_COOKIE, "", { path: "/", maxAge: 0 });
+    return failed;
   }
 
   const clientId = process.env.GITHUB_APP_CLIENT_ID;
