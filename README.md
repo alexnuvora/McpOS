@@ -7,6 +7,8 @@ McpOS is a Codex-style development workspace for repositories, AI coding tasks, 
 The initial application foundation is committed to `main`:
 
 - Responsive dark workspace dashboard.
+- GitHub App OAuth connection with encrypted, HTTP-only server-side session cookie.
+- Read-only repository discovery across GitHub App installations and an interactive repository picker (selection is session-only).
 - Next.js App Router and TypeScript foundation.
 - Authenticated, stateless Streamable HTTP MCP endpoint at `/api/mcp`.
 - Read-only MCP tools: `mcpos_status` and `mcpos_capabilities`.
@@ -29,7 +31,7 @@ Open http://localhost:3000.
 
 ## Environment
 
-Set `MCP_BEARER_TOKEN` to a randomly generated secret of at least 32 characters. Never commit real secrets. Other integration variables are reserved for later milestones and are not active yet.
+Set `MCP_BEARER_TOKEN` to a randomly generated secret of at least 32 characters. Never commit real secrets. For GitHub repository discovery, configure the GitHub App OAuth variables described in [docs/GITHUB_APP_SETUP.md](docs/GITHUB_APP_SETUP.md). Keep all credentials server-side.
 
 ## Connect an MCP client
 
@@ -43,7 +45,7 @@ The initial endpoint exposes only non-mutating discovery tools. The token is a b
 
 ## Planned milestones
 
-1. GitHub App integration with repository-scoped permissions.
+1. GitHub App integration with repository-scoped permissions. (OAuth connection and read-only repository discovery are implemented; persistent project records remain planned.)
 2. Durable agent tasks, streamed events, cancellation, approvals, and task history.
 3. Disposable execution sandboxes with CPU, memory, time, filesystem, and network controls.
 4. Browser preview, screenshots, console/network diagnostics, and regression checks.
