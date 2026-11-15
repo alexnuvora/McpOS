@@ -1,0 +1,12 @@
+[package]
+name = "mcpos-desktop"
+version = "0.1.0"
+description = "McpOS Windows desktop companion"
+authors = ["McpOS"]
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2" }
+
+[dependencies]
+tauri = { version = "2" }
