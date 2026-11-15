@@ -12,6 +12,7 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "McpOS Desktop",
         "width": 960,
         "height": 720,
@@ -25,7 +26,7 @@
     }
   },
   "bundle": {
-    "active": false,
+    "active": true,
     "targets": ["nsis", "msi"]
   }
 }
