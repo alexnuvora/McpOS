@@ -55,7 +55,23 @@ export default function GitHubRepositoryPicker() {
   }, [loadRepositories]);
 
   useEffect(() => {
-    void refreshStatus();
+    let active = true;
+    fetch("/api/github/status", { cache: "no-store" })
+      .then(async (response) => response.json() as Promise<GitHubStatus>)
+      .then(async (data) => {
+        if (!active) return;
+        setStatus(data);
+        if (data.connected) {
+          const response = await fetch("/api/github/repositories", { cache: "no-store" });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || "Unable to load repositories.");
+          if (active) setRepositories(result.repositories || []);
+        }
+      })
+      .catch((err: unknown) => {
+        if (active) setError(err instanceof Error ? err.message : "Unable to check GitHub connection status.");
+      });
+
     const params = new URLSearchParams(window.location.search);
     const githubMessage = params.get("github");
     if (githubMessage) {
@@ -67,10 +83,13 @@ export default function GitHubRepositoryPicker() {
         "profile-failed": "GitHub authorisation succeeded, but the profile could not be read.",
         "connection-failed": "The GitHub connection could not be completed.",
       };
-      setError(messages[githubMessage] || "GitHub connection returned an unexpected status.");
+      Promise.resolve().then(() => {
+        if (active) setError(messages[githubMessage] || "GitHub connection returned an unexpected status.");
+      });
       window.history.replaceState({}, "", window.location.pathname);
     }
-  }, [refreshStatus]);
+    return () => { active = false; };
+  }, []);
 
   const filtered = useMemo(() => {
     const term = query.trim().toLowerCase();
