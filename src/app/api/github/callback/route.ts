@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   GITHUB_STATE_COOKIE,
-  clearGitHubSession,
   setGitHubSession,
   type GitHubSession,
 } from "@/lib/github-session";
