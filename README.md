@@ -1,21 +1,53 @@
 # McpOS
 
-McpOS is a Codex-style development workspace for repositories, AI coding tasks, reviews, isolated execution, and deployments. It is designed to expose approved workspace capabilities through a remote MCP endpoint so compatible clients, including Claude and supported ChatGPT plans, can connect.
+McpOS is a Windows-first AI desktop agent platform. It gives authorised AI clients controlled access to a user's real desktop, applications, browser and approved local files through MCP.
 
-## Current status
+The product has three parts:
 
-The initial application foundation is committed to `main`:
+- **McpOS Desktop** — a local Windows companion that observes and operates the desktop through permission-scoped native capabilities.
+- **McpOS Gateway** — an authenticated MCP gateway and secure outbound relay between AI clients and paired desktop companions.
+- **McpOS Control Centre** — the web dashboard for pairing devices, managing permissions, reviewing activity and configuring integrations.
 
-- Responsive dark workspace dashboard.
-- GitHub App OAuth connection with encrypted, HTTP-only server-side session cookie.
-- Read-only repository discovery across GitHub App installations and an interactive repository picker (selection is session-only).
-- Next.js App Router and TypeScript foundation.
-- Authenticated, stateless Streamable HTTP MCP endpoint at `/api/mcp`.
-- Read-only MCP tools: `mcpos_status` and `mcpos_capabilities`.
-- CI workflow for type checking, linting, and production build.
-- Architecture and security boundary documentation.
+## Product direction
 
-This is not yet a production coding agent: arbitrary code execution, repository write access, OAuth, durable task storage, sandboxing, and deployment controls are not enabled.
+The primary use case is computer use: an AI can inspect the user's screen, understand the current application state, click, type, navigate, and complete workflows across desktop and browser applications. The user remains in control through visible sessions, granular permissions and approval gates.
+
+The desktop companion will initiate outbound encrypted connections. A user's PC will not need a public inbound port. Local execution remains on the user's computer; the gateway routes authorised requests and must not become a remote shell.
+
+## Current implementation status
+
+The existing repository currently contains:
+
+- Responsive Next.js control-centre foundation.
+- GitHub App OAuth connection with an encrypted, HTTP-only server-side session cookie.
+- Read-only GitHub repository discovery and picker.
+- Authenticated, stateless Streamable HTTP MCP endpoint at `/api/mcp`, with read-only discovery tools.
+- CI workflow for type checking, linting and production build.
+
+**The desktop companion, device pairing, screen capture, input control, outbound relay and desktop MCP tools are not implemented yet.** The current GitHub integration is retained as an optional developer-workspace integration, not the centre of the product.
+
+## Proposed technical direction
+
+- Windows-first desktop companion using **Tauri 2 + Rust** for the native shell and privileged OS boundary.
+- Native Windows UI Automation for accessible application controls; Windows Graphics Capture for screen capture; carefully scoped input simulation for mouse and keyboard.
+- Browser automation through a separately permissioned local browser adapter.
+- A device-initiated, mutually authenticated outbound connection to the gateway for remote MCP clients.
+- A local MCP adapter for compatible desktop MCP clients where supported.
+- Per-device identity, short-lived credentials, per-tool grants, explicit approvals and append-only audit events.
+
+The native agent must expose narrow, typed actions rather than a generic unrestricted shell. Screen capture, input, files, browser and application access are separately permissioned capabilities.
+
+## Security principles
+
+- Default to deny. Pairing a device does not grant every capability.
+- Show a persistent, visible indicator while screen observation or computer control is active.
+- Require explicit approval for sending messages, submitting forms, purchases, deleting or overwriting files, installing software, privilege changes and other consequential actions.
+- Restrict file access to user-approved folders; block credential stores, browser profiles and OS security locations by default.
+- Never expose raw desktop credentials, MCP tokens or integration secrets to the browser.
+- Do not accept arbitrary shell commands from remote AI clients. If a terminal capability is added later, it must be a separate opt-in sandbox with command policy, limits and approval.
+- Authenticate devices individually; support immediate revocation and session termination.
+- Encrypt traffic in transit and protect local credentials with the operating system's secure credential storage.
+- Log tool, device, actor, approval and outcome while redacting secrets and sensitive screen content.
 
 ## Local development
 
@@ -29,35 +61,25 @@ npm run dev
 
 Open http://localhost:3000.
 
-## Environment
+## Existing MCP endpoint
 
-Set `MCP_BEARER_TOKEN` to a randomly generated secret of at least 32 characters. Never commit real secrets. For GitHub repository discovery, configure the GitHub App OAuth variables described in [docs/GITHUB_APP_SETUP.md](docs/GITHUB_APP_SETUP.md). Keep all credentials server-side.
-
-## Connect an MCP client
-
-After deploying the application to an HTTPS host and configuring `MCP_BEARER_TOKEN`, configure a compatible MCP client to use:
+After deploying the web application and configuring `MCP_BEARER_TOKEN`, the current endpoint is:
 
 - URL: `https://YOUR_HOST/api/mcp`
 - Transport: Streamable HTTP
 - Authentication: HTTP Bearer token
 
-The initial endpoint exposes only non-mutating discovery tools. The token is a bootstrap credential; before multi-user use, replace it with per-client credentials, revocation, rate limiting, and persistent audit logs.
+This is currently a single-token, read-only discovery endpoint. It is not yet the multi-user device relay and must not be treated as the finished desktop connection.
 
-## Planned milestones
+## Delivery milestones
 
-1. GitHub App integration with repository-scoped permissions. (OAuth connection and read-only repository discovery are implemented; persistent project records remain planned.)
-2. Durable agent tasks, streamed events, cancellation, approvals, and task history.
-3. Disposable execution sandboxes with CPU, memory, time, filesystem, and network controls.
-4. Browser preview, screenshots, console/network diagnostics, and regression checks.
-5. Vercel and Supabase adapters with approval gates for production changes.
-6. Multi-agent orchestration, checkpoints, review, and rollback workflows.
+1. **Product foundation:** Windows-first architecture, capability model, threat model and updated control-centre experience.
+2. **Desktop companion shell:** Tauri 2 app, secure local pairing, device identity, tray/status indicator and revocation.
+3. **Safe observation:** screen capture and Windows accessibility tree with explicit session consent.
+4. **Computer use:** bounded mouse/keyboard actions, visible action preview and per-action approval options.
+5. **MCP relay:** device-initiated secure connection, per-device routing and remote MCP tool exposure.
+6. **Browser and files:** isolated browser profile and allow-listed folder access.
+7. **Hardening:** signed installer, updates, security review, audit trail, rate limits and recovery controls.
+8. **macOS support:** after the Windows experience is stable.
 
-## Security principles
-
-- Never execute user-provided commands in the Next.js web process.
-- Never expose private keys, service-role keys, model keys, or MCP tokens to browser code.
-- Require explicit approval for production deployments, destructive SQL, permission changes, and irreversible Git operations.
-- Use short-lived, repository-scoped credentials inside isolated execution environments.
-- Record actor, project, action, approval, and outcome without logging secret values.
-
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the target design and security boundaries.
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/DESKTOP_AGENT.md](docs/DESKTOP_AGENT.md).
