@@ -1,0 +1,33 @@
+# McpOS architecture
+
+## Initial foundation
+
+- Next.js App Router provides the web workspace and HTTP endpoint.
+- The MCP endpoint uses the official TypeScript MCP SDK and Streamable HTTP transport.
+- A server-side bearer token protects the initial endpoint.
+- The initial tool surface is read-only and exposes status/capability discovery only.
+
+## Target architecture
+
+1. **Web application** — projects, task board, editor/terminal panes, logs, approvals and settings.
+2. **Identity and authorization** — user sessions, project membership, role-based permissions and scoped integration grants.
+3. **Agent orchestration** — durable task records, task event stream, cancellation, retry policy, checkpoints and agent delegation.
+4. **Execution provider** — disposable containers/VMs with CPU, memory, time, filesystem and network limits.
+5. **Git provider** — GitHub App installation tokens scoped to selected repositories.
+6. **MCP gateway** — per-client credentials, per-tool authorization, rate limits and audit events.
+7. **Integrations** — Vercel and Supabase adapters with approval gates for production changes.
+
+## Security boundaries
+
+- Never run user-provided shell commands inside the Next.js web process.
+- Never expose GitHub private keys, Supabase service-role keys, model keys or MCP tokens to client components.
+- Do not make production deployments or destructive database changes without a separate approval step.
+- Use short-lived, repository-scoped credentials inside execution environments.
+- Record tool invocations and outcomes without logging secret values.
+- Enforce request size limits, rate limits and per-user/project authorization before enabling write tools.
+
+## MCP endpoint
+
+The initial endpoint is `/api/mcp`. It requires an Authorization bearer token whose value is configured in `MCP_BEARER_TOKEN`. Use a randomly generated secret of at least 32 characters. The endpoint is stateless and currently exposes only non-mutating discovery tools.
+
+Before enabling external users, replace the single shared token with per-client credentials and persistent revocation, rate limiting, and audit logging.
