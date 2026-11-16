@@ -7,6 +7,7 @@ export const GITHUB_STATE_COOKIE = "mcpos_github_oauth_state";
 export type GitHubSession = {
   accessToken: string;
   login: string;
+  githubId: number;
   avatarUrl: string;
   expiresAt: number | null;
 };
@@ -45,6 +46,7 @@ export function openSession(value: string | undefined): GitHubSession | null {
     if (
       typeof parsed.accessToken !== "string" ||
       typeof parsed.login !== "string" ||
+      !Number.isSafeInteger(parsed.githubId) ||
       typeof parsed.avatarUrl !== "string" ||
       (parsed.expiresAt !== null && typeof parsed.expiresAt !== "number")
     ) return null;
