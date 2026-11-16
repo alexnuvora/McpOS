@@ -3,6 +3,9 @@ name: Desktop Windows
 on:
   push:
     branches: [main]
+    paths:
+      - "desktop/**"
+      - ".github/workflows/desktop-windows.yml"
     tags:
       - "v*"
   pull_request:
@@ -13,6 +16,10 @@ on:
 
 permissions:
   contents: write
+
+concurrency:
+  group: mcpos-desktop-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   windows-build:
