@@ -8,3 +8,9 @@ max_rows = 1000
 
 [db]
 major_version = 17
+
+[functions.pairing-complete]
+verify_jwt = false
+
+[functions.device-heartbeat]
+verify_jwt = false
