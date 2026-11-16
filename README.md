@@ -16,15 +16,19 @@ The desktop companion will initiate outbound encrypted connections. A user's PC 
 
 ## Current implementation status
 
-The existing repository currently contains:
+The repository currently contains:
 
-- Responsive Next.js control-centre foundation.
-- GitHub App OAuth connection with an encrypted, HTTP-only server-side session cookie.
-- Read-only GitHub repository discovery and picker.
-- Authenticated, stateless Streamable HTTP MCP endpoint at `/api/mcp`, with read-only discovery tools.
-- CI workflow for type checking, linting and production build.
+- Responsive Next.js control centre with GitHub OAuth identity verification.
+- GitHub identity mapped server-side to a private Supabase Auth user; GitHub tokens remain in an encrypted, HTTP-only cookie.
+- One-use, five-minute desktop pairing codes created by the dashboard.
+- Supabase Edge Functions for atomic pairing completion and device-token heartbeat authentication.
+- Hashed device credentials, owner-scoped revocation, and audit events; capabilities remain disabled by default.
+- Windows Tauri companion with device pairing and credential storage through Windows Credential Manager.
+- Persistent 30-second heartbeat and live connected/disconnected tray indicator.
+- Authenticated, stateless Streamable HTTP MCP endpoint at `/api/mcp`, still limited to read-only workspace discovery.
+- GitHub Actions for Supabase migrations/function deployment, endpoint smoke tests, Next.js validation and Windows installer builds.
 
-**The desktop companion, device pairing, screen capture, input control, outbound relay and desktop MCP tools are not implemented yet.** The current GitHub integration is retained as an optional developer-workspace integration, not the centre of the product.
+**Screen capture, Windows accessibility, mouse/keyboard control, outbound MCP relay and desktop MCP tools are not implemented yet.** The current GitHub integration is retained as an optional developer-workspace integration, not the centre of the product.
 
 ## Proposed technical direction
 
