@@ -58,7 +58,7 @@ export default function Home() {
     }
   }, [loadDevices]);
 
-  useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => { const initial = window.setTimeout(() => void refresh(), 0); return () => window.clearTimeout(initial); }, [refresh]);
 
   async function createPairingCode() {
     setBusy(true); setMessage(""); setPairing(null);
