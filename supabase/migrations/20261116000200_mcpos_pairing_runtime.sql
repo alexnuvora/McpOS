@@ -9,11 +9,7 @@ alter table public.mcpos_github_accounts enable row level security;
 revoke all on public.mcpos_github_accounts from anon, authenticated;
 grant all on public.mcpos_github_accounts to service_role;
 
-create schema if not exists private;
-revoke all on schema private from public, anon, authenticated;
-grant usage on schema private to service_role;
-
-create or replace function private.complete_mcpos_pairing(p_code_hash text, p_token_hash text)
+create or replace function public.complete_mcpos_pairing(p_code_hash text, p_token_hash text)
 returns jsonb language plpgsql security definer set search_path = ''
 as $$
 declare
@@ -41,5 +37,5 @@ begin
   return pg_catalog.jsonb_build_object('device_id',v_device_id,'device_name',v_code.device_name);
 end;
 $$;
-revoke all on function private.complete_mcpos_pairing(text,text) from public, anon, authenticated;
-grant execute on function private.complete_mcpos_pairing(text,text) to service_role;
+revoke all on function public.complete_mcpos_pairing(text,text) from public, anon, authenticated;
+grant execute on function public.complete_mcpos_pairing(text,text) to service_role;
