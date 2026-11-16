@@ -13,3 +13,5 @@
 .feedback{border-radius:8px;padding:10px 12px;font-size:12px;line-height:1.5;margin-top:10px}
 .feedback.error{background:#7f1d1d33;border:1px solid #7f1d1d;color:#fca5a5}
 .feedback.success{background:#064e3b33;border:1px solid #065f46;color:#6ee7b7}
+
+.status i.online{background:#34d399}
