@@ -19,9 +19,9 @@ function App() {
   }
 
   useEffect(() => {
-    void refreshStatus();
+    const initial = window.setTimeout(() => void refreshStatus(), 0);
     const timer = window.setInterval(() => void refreshStatus(), 15000);
-    return () => window.clearInterval(timer);
+    return () => { window.clearTimeout(initial); window.clearInterval(timer); };
   }, []);
 
   async function pair() {
