@@ -29,6 +29,10 @@ Deno.serve(async request => {
   if (!lookup.ok) return reply({ error: "Unable to verify device." }, 503);
   const credential = (await lookup.json())[0];
   if (!credential || credential.revoked_at) return reply({ error: "Device credential revoked or unknown." }, 401);
+  const deviceLookup = await fetch(url + "/rest/v1/mcpos_devices?select=id,status&id=eq." + credential.device_id + "&limit=1", { headers });
+  if (!deviceLookup.ok) return reply({ error: "Unable to verify device status." }, 503);
+  const deviceRows = await deviceLookup.json();
+  if (!deviceRows[0] || deviceRows[0].status === "revoked") return reply({ error: "Device has been revoked." }, 401);
   const now = new Date().toISOString();
   const [deviceUpdate, credentialUpdate] = await Promise.all([
     fetch(url + "/rest/v1/mcpos_devices?id=eq." + credential.device_id + "&status=neq.revoked", {
