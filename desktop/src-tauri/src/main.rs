@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use keyring::Entry;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::{sync::{Arc, atomic::{AtomicBool, Ordering}}, time::Duration};
 use tauri::{
     menu::{Menu, MenuItem},
@@ -60,14 +60,11 @@ fn get_device_status(connected: tauri::State<'_, Arc<AtomicBool>>) -> DeviceStat
 }
 
 #[tauri::command]
-async fn pair_device(code: String, device_name: String, connected: tauri::State<'_, Arc<AtomicBool>>) -> Result<String, String> {
+async fn pair_device(code: String, connected: tauri::State<'_, Arc<AtomicBool>>) -> Result<String, String> {
+    let connection_state = Arc::clone(&connected);
     let clean_code: String = code.chars().filter(|character| character.is_ascii_alphanumeric()).collect::<String>().to_uppercase();
     if clean_code.len() != 10 {
         return Err("Enter the 10-character code shown in your McpOS dashboard.".into());
-    }
-    let name = device_name.trim();
-    if name.is_empty() || name.len() > 120 {
-        return Err("Device name must be between 1 and 120 characters.".into());
     }
     let api_key = SUPABASE_ANON_KEY.ok_or("Desktop build is missing its Supabase public API key. Install the latest build.")?;
     if api_key.is_empty() {
@@ -96,7 +93,6 @@ async fn pair_device(code: String, device_name: String, connected: tauri::State<
     credential(DEVICE_ID_KEY)?.set_password(&paired.device_id)
         .map_err(|_| "Could not store the device identity.".to_string())?;
 
-    let connection_state = Arc::clone(&connected);
     connection_state.store(heartbeat().await, Ordering::Relaxed);
     Ok(paired.device_name)
 }
