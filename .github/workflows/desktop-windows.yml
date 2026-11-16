@@ -37,6 +37,20 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Resolve Supabase publishable API key
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
+        shell: bash
+        run: |
+          test -n "$SUPABASE_ACCESS_TOKEN" || (echo "::error::Missing SUPABASE_ACCESS_TOKEN secret" && exit 1)
+          test -n "$SUPABASE_PROJECT_REF" || (echo "::error::Missing SUPABASE_PROJECT_REF variable" && exit 1)
+          response="$(curl --fail --silent --show-error "https://api.supabase.com/v1/projects/$SUPABASE_PROJECT_REF/api-keys?reveal=true" -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN")"
+          key="$(printf '%s' "$response" | jq -r '[.[] | select(.type == "publishable" or .name == "anon") | (.api_key // .key)] | map(select(. != null and . != "")) | .[0] // empty')"
+          test -n "$key" || (echo "::error::Could not resolve the project's publishable API key" && exit 1)
+          echo "::add-mask::$key"
+          echo "SUPABASE_ANON_KEY=$key" >> "$GITHUB_ENV"
+
       - name: Install frontend dependencies
         run: npm install
 
