@@ -60,6 +60,12 @@ export default function Home() {
 
   useEffect(() => { const initial = window.setTimeout(() => void refresh(), 0); return () => window.clearTimeout(initial); }, [refresh]);
 
+  useEffect(() => {
+    if (!github.connected) return;
+    const timer = window.setInterval(() => { void loadDevices().catch(() => setMessage("Could not refresh device status.")); }, 20000);
+    return () => window.clearInterval(timer);
+  }, [github.connected, loadDevices]);
+
   async function createPairingCode() {
     setBusy(true); setMessage(""); setPairing(null);
     try {
