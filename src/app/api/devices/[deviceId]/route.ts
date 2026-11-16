@@ -25,12 +25,13 @@ export async function DELETE(
   const rows = await device.json();
   if (!rows.length) return NextResponse.json({ error: "Device not found or already revoked." }, { status: 404 });
 
-  await supabaseRest(`mcpos_device_credentials?device_id=eq.${deviceId}&revoked_at=is.null`, {
+  const credentials = await supabaseRest(`mcpos_device_credentials?device_id=eq.${deviceId}&revoked_at=is.null`, {
     method: "PATCH",
     headers: { Prefer: "return=minimal" },
     body: JSON.stringify({ revoked_at: revokedAt }),
   });
-  await supabaseRest("mcpos_device_audit", {
+  if (!credentials.ok) return NextResponse.json({ error: "Device status was revoked, but credential invalidation failed. Retry immediately." }, { status: 503 });
+  const audit = await supabaseRest("mcpos_device_audit", {
     method: "POST",
     headers: { Prefer: "return=minimal" },
     body: JSON.stringify({
@@ -38,5 +39,6 @@ export async function DELETE(
       event_type: "device.revoked", outcome: "success", metadata: {},
     }),
   });
+  if (!audit.ok) return NextResponse.json({ error: "Device was revoked, but the audit event could not be saved." }, { status: 503 });
   return NextResponse.json({ ok: true });
 }
