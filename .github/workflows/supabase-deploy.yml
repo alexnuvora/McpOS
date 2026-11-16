@@ -58,6 +58,6 @@ jobs:
             for function_dir in supabase/functions/*; do
               [ -d "$function_dir" ] || continue
               function_name="$(basename "$function_dir")"
-              supabase functions deploy "$function_name" --project-ref "$SUPABASE_PROJECT_REF"
+              supabase functions deploy "$function_name" --project-ref "$SUPABASE_PROJECT_REF" --yes
             done
           fi
