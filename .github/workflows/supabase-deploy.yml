@@ -49,6 +49,12 @@ jobs:
           SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
         run: supabase db push --linked --yes --password "$SUPABASE_DB_PASSWORD"
 
+      - name: Verify pairing RPC is present in Postgres
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        run: |
+          supabase db query --remote --read-only --output json "select n.nspname as schema_name, p.proname, p.proargnames, has_function_privilege('service_role', p.oid, 'EXECUTE') as service_role_can_execute from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'complete_mcpos_pairing'"
+
       - name: Deploy Edge Functions
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
