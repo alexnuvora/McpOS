@@ -2,7 +2,7 @@
 
 use keyring::Entry;
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
+use std::{sync::{Arc, atomic::{AtomicBool, Ordering}}, time::Duration};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -18,6 +18,7 @@ const DEVICE_ID_KEY: &str = "device_id";
 #[derive(Serialize)]
 struct DeviceStatus {
     paired: bool,
+    connected: bool,
     device_id: Option<String>,
 }
 
@@ -52,14 +53,14 @@ async fn heartbeat() -> bool {
 }
 
 #[tauri::command]
-fn get_device_status() -> DeviceStatus {
+fn get_device_status(connected: tauri::State<'_, Arc<AtomicBool>>) -> DeviceStatus {
     let paired = stored_token().is_some();
     let device_id = credential(DEVICE_ID_KEY).ok().and_then(|entry| entry.get_password().ok());
-    DeviceStatus { paired, device_id }
+    DeviceStatus { paired, connected: connected.load(Ordering::Relaxed), device_id }
 }
 
 #[tauri::command]
-async fn pair_device(code: String, device_name: String) -> Result<String, String> {
+async fn pair_device(code: String, device_name: String, connected: tauri::State<'_, Arc<AtomicBool>>) -> Result<String, String> {
     let clean_code: String = code.chars().filter(|character| character.is_ascii_alphanumeric()).collect::<String>().to_uppercase();
     if clean_code.len() != 10 {
         return Err("Enter the 10-character code shown in your McpOS dashboard.".into());
@@ -95,7 +96,8 @@ async fn pair_device(code: String, device_name: String) -> Result<String, String
     credential(DEVICE_ID_KEY)?.set_password(&paired.device_id)
         .map_err(|_| "Could not store the device identity.".to_string())?;
 
-    let _ = heartbeat().await;
+    let connection_state = Arc::clone(&connected);
+    connection_state.store(heartbeat().await, Ordering::Relaxed);
     Ok(paired.device_name)
 }
 
@@ -107,12 +109,13 @@ fn show_main_window(app: &tauri::AppHandle) {
     }
 }
 
-fn start_heartbeat(app: tauri::AppHandle) {
+fn start_heartbeat(app: tauri::AppHandle, connected: Arc<AtomicBool>) {
     tauri::async_runtime::spawn(async move {
         loop {
-            let connected = heartbeat().await;
+            let is_connected = if stored_token().is_some() { heartbeat().await } else { false };
+            connected.store(is_connected, Ordering::Relaxed);
             if let Some(tray) = app.tray_by_id("main") {
-                let tooltip = if connected { "McpOS — Connected" } else { "McpOS — Disconnected" };
+                let tooltip = if is_connected { "McpOS — Connected" } else { "McpOS — Disconnected" };
                 let _ = tray.set_tooltip(Some(tooltip));
             }
             tokio::time::sleep(Duration::from_secs(30)).await;
@@ -125,9 +128,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![pair_device, get_device_status])
         .setup(|app| {
             let open = MenuItem::with_id(app, "open", "Open McpOS", true, None::<&str>)?;
-            let pause = MenuItem::with_id(app, "pause", "Pause desktop access", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit McpOS", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&open, &pause, &quit])?;
+            let menu = Menu::with_items(app, &[&open, &quit])?;
             let icon = app.default_window_icon().cloned().ok_or("McpOS application icon is missing")?;
 
             TrayIconBuilder::new()
@@ -136,11 +138,6 @@ fn main() {
                 .menu(&menu)
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     "open" => show_main_window(app),
-                    "pause" => {
-                        if let Some(tray) = app.tray_by_id("main") {
-                            let _ = tray.set_tooltip(Some("McpOS — Paused"));
-                        }
-                    }
                     "quit" => app.exit(0),
                     _ => {}
                 })
@@ -155,7 +152,9 @@ fn main() {
                 })
                 .build(app)?;
 
-            start_heartbeat(app.handle().clone());
+            let connection_state = Arc::new(AtomicBool::new(false));
+            app.manage(connection_state.clone());
+            start_heartbeat(app.handle().clone(), connection_state);
             Ok(())
         })
         .on_window_event(|window, event| {
