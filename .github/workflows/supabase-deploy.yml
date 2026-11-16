@@ -22,10 +22,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Pin the CLI instead of asking GitHub's releases API for "latest".
+      # This avoids unauthenticated release-lookup rate limits on fresh runners.
       - name: Install Supabase CLI
         uses: supabase/setup-cli@v1
         with:
-          version: latest
+          version: 2.60.8
 
       - name: Validate required configuration
         env:
