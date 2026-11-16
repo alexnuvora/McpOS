@@ -22,12 +22,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Pin the CLI instead of asking GitHub's releases API for "latest".
-      # This avoids unauthenticated release-lookup rate limits on fresh runners.
+      # Install from npm so setup-cli does not need to resolve a GitHub release asset.
       - name: Install Supabase CLI
-        uses: supabase/setup-cli@v1
-        with:
-          version: 2.60.8
+        run: |
+          npm install --no-save --no-package-lock supabase@2.60.8
+          npx --no-install supabase --version
 
       - name: Validate required configuration
         env:
@@ -44,14 +43,14 @@ jobs:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
           SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
           SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
-        run: supabase link --project-ref "$SUPABASE_PROJECT_REF" --password "$SUPABASE_DB_PASSWORD"
+        run: npx --no-install supabase link --project-ref "$SUPABASE_PROJECT_REF" --password "$SUPABASE_DB_PASSWORD"
 
       - name: Apply database migrations
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
           SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
           SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
-        run: supabase db push --linked --password "$SUPABASE_DB_PASSWORD"
+        run: npx --no-install supabase db push --linked --password "$SUPABASE_DB_PASSWORD"
 
       - name: Deploy Edge Functions
         env:
@@ -62,6 +61,6 @@ jobs:
             for function_dir in supabase/functions/*; do
               [ -d "$function_dir" ] || continue
               function_name="$(basename "$function_dir")"
-              supabase functions deploy "$function_name" --project-ref "$SUPABASE_PROJECT_REF"
+              npx --no-install supabase functions deploy "$function_name" --project-ref "$SUPABASE_PROJECT_REF"
             done
           fi
