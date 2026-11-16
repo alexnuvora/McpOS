@@ -1,0 +1,56 @@
+name: McpOS Oracle inventory
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/oracle-inventory.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mcpos-oracle-inventory
+  cancel-in-progress: false
+
+jobs:
+  inventory:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install OCI CLI
+        run: |
+          python -m pip install --user oci-cli
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Validate Oracle credentials without exposing them
+        env:
+          OCI_CONFIG_SECRET: ${{ secrets.VORLEN_OCI_CONFIG }}
+          OCI_API_PRIVATE_KEY: ${{ secrets.VORLEN_OCI_API_PRIVATE_KEY }}
+        run: |
+          test -n "$OCI_CONFIG_SECRET" || (echo "::error::Missing VORLEN_OCI_CONFIG repository secret" && exit 1)
+          test -n "$OCI_API_PRIVATE_KEY" || (echo "::error::Missing VORLEN_OCI_API_PRIVATE_KEY repository secret" && exit 1)
+          echo "Oracle API config and signing key secrets are present."
+
+      - name: Inspect existing London VM and A1 eligibility
+        env:
+          OCI_CONFIG_SECRET: ${{ secrets.VORLEN_OCI_CONFIG }}
+          OCI_API_PRIVATE_KEY: ${{ secrets.VORLEN_OCI_API_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.oci"
+          printf '%s' "$OCI_API_PRIVATE_KEY" > "$HOME/.oci/oci_api_key.pem"
+          chmod 600 "$HOME/.oci/oci_api_key.pem"
+          printf '%s\n' "$OCI_CONFIG_SECRET" > "$HOME/.oci/config"
+          sed -i "s#^[[:space:]]*key_file[[:space:]]*=.*#key_file=$HOME/.oci/oci_api_key.pem#" "$HOME/.oci/config"
+          chmod 600 "$HOME/.oci/config"
+          INSTANCE_ID="ocid1.instance.oc1.uk-london-1.anwgiljtdycw3nacwvc2l7y6y5mgkfyn2oawv2locpcblhzvewsdrxn243ca"
+          TENANCY_ID="ocid1.tenancy.oc1..aaaaaaaaclnmrik5hypi734mzstra5mi752uy5ljxzihburzc3athnmpxw2a"
+          echo "=== Existing cloudbox-sandbox instance ==="
+          oci compute instance get --instance-id "$INSTANCE_ID" --query 'data.{name:"display-name",state:"lifecycle-state",shape:shape,availabilityDomain:"availability-domain",faultDomain:"fault-domain",timeCreated:"time-created"}' --output json
+          echo "=== A1 shapes available in London AD-1 ==="
+          AD="$(oci compute instance get --instance-id "$INSTANCE_ID" --query 'data."availability-domain"' --raw-output)"
+          oci compute shape list --compartment-id "$TENANCY_ID" --availability-domain "$AD" --query 'data[?contains(shape, `VM.Standard.A1.Flex`)].{shape:shape,ocpus:ocpus,memoryInGBs:"memory-in-gbs",networkBandwidthInGbps:"networking-bandwidth-in-gbps"}' --output json
+          echo "=== A1 core quota values ==="
+          oci limits value list --compartment-id "$TENANCY_ID" --service-name compute --query 'data[?contains(name, `standard-a1`)].{name:name,limit:value,used:used,available:available}' --output json || echo "Quota lookup unavailable; no resources changed."
+          echo "Inventory complete. This workflow is read-only; it does not stop, terminate, or create instances."
