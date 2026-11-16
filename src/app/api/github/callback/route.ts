@@ -14,6 +14,7 @@ type TokenResponse = {
 };
 
 type GitHubUser = {
+  id?: number;
   login?: string;
   avatar_url?: string;
 };
@@ -69,7 +70,7 @@ export async function GET(request: NextRequest) {
       cache: "no-store",
     });
     const user = await userResponse.json() as GitHubUser;
-    if (!userResponse.ok || !user.login || !user.avatar_url) {
+    if (!userResponse.ok || !Number.isSafeInteger(user.id) || !user.login || !user.avatar_url) {
       url.searchParams.set("github", "profile-failed");
       return NextResponse.redirect(url);
     }
@@ -77,6 +78,7 @@ export async function GET(request: NextRequest) {
     const session: GitHubSession = {
       accessToken: tokenData.access_token,
       login: user.login,
+      githubId: user.id!,
       avatarUrl: user.avatar_url,
       expiresAt: typeof tokenData.expires_in === "number"
         ? Date.now() + tokenData.expires_in * 1000
