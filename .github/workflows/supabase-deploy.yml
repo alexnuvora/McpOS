@@ -61,3 +61,17 @@ jobs:
               supabase functions deploy "$function_name" --project-ref "$SUPABASE_PROJECT_REF" --yes
             done
           fi
+
+      - name: Smoke test deployed device endpoints
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
+        run: |
+          response="$(curl --fail --silent --show-error "https://api.supabase.com/v1/projects/$SUPABASE_PROJECT_REF/api-keys?reveal=true" -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN")"
+          key="$(printf '%s' "$response" | jq -r '[.[] | select(.type == "publishable" or .name == "anon") | (.api_key // .key)] | map(select(. != null and . != "")) | .[0] // empty')"
+          test -n "$key" || (echo "::error::Could not resolve publishable key for smoke tests" && exit 1)
+          pairing_status="$(curl --silent --output /dev/null --write-out "%{http_code}" -X POST "https://$SUPABASE_PROJECT_REF.supabase.co/functions/v1/pairing-complete" -H "apikey: $key" -H "Content-Type: application/json" -d '{"code":"AAAAAAAAAA"}')"
+          heartbeat_status="$(curl --silent --output /dev/null --write-out "%{http_code}" -X POST "https://$SUPABASE_PROJECT_REF.supabase.co/functions/v1/device-heartbeat" -H "apikey: $key" -H "Authorization: Bearer invalid-token")"
+          test "$pairing_status" = "400" || (echo "::error::Pairing endpoint smoke test expected HTTP 400, got $pairing_status" && exit 1)
+          test "$heartbeat_status" = "401" || (echo "::error::Heartbeat endpoint smoke test expected HTTP 401, got $heartbeat_status" && exit 1)
+          echo "Device pairing and heartbeat endpoints are reachable and enforce expected authentication."
