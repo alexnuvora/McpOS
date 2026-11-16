@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { getGitHubSession } from "@/lib/github-session";
 
-const supabaseUrl = () => process.env.SUPABASE_URL?.replace(/\/$/, "");
+const supabaseUrl = () => (process.env.SUPABASE_URL ?? "https://kvwwabuqydwsbhlcqxwz.supabase.co").replace(/\/$/, "");
 const serviceKey = () => process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 type DeviceAccount = { userId: string; githubId: number; login: string };
