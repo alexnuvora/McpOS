@@ -15,3 +15,12 @@
 .feedback.success{background:#064e3b33;border:1px solid #065f46;color:#6ee7b7}
 
 .status i.online{background:#34d399}
+
+
+.permission-actions { display: flex; gap: 10px; flex-wrap: wrap; margin: 14px 0 4px; }
+.permission-actions button { flex: 1 1 180px; }
+button.secondary { color: #dbe7f7; background: #26364a; border: 1px solid #43566e; }
+button.secondary:hover:not(:disabled) { background: #31465e; }
+.screen-preview { margin-top: 18px; padding: 10px; border: 1px solid #2a3b50; border-radius: 12px; background: #0c1420; }
+.screen-preview img { display: block; width: 100%; max-height: 420px; object-fit: contain; border-radius: 7px; background: #05080d; }
+.screen-preview small { display: block; margin: 8px 2px 0; color: #9fb0c4; font-size: 11px; }
