@@ -60,8 +60,6 @@ async fn heartbeat() -> bool {
         .unwrap_or(false)
 }
 
-#[tauri::command]
-
 fn is_approved(key: &str) -> bool {
     credential(key).ok().and_then(|entry| entry.get_password().ok())
         .map(|value| value == "approved").unwrap_or(false)
@@ -177,6 +175,7 @@ fn capture_screen() -> Result<String, String> {
     Ok(format!("data:image/png;base64,{}", BASE64.encode(output.into_inner())))
 }
 
+#[tauri::command]
 fn get_device_status(connected: tauri::State<'_, Arc<AtomicBool>>) -> DeviceStatus {
     let paired = stored_token().is_some();
     let device_id = credential(DEVICE_ID_KEY).ok().and_then(|entry| entry.get_password().ok());
