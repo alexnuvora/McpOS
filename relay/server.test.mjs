@@ -109,5 +109,7 @@ test("relay authenticates a paired device and returns command results", async t 
   const result = await response.json();
   assert.equal(result.ok, true);
   assert.equal(result.result, "window tree");
+  const closed = once(socket, "close");
   socket.close();
+  await closed;
 });
