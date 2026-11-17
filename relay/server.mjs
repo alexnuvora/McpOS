@@ -75,7 +75,7 @@ function validateCommand(body) {
 }
 
 async function authenticateDevice(deviceId, token) {
-  if (!SUPABASE_URL || !SUPABASE_ANON_KEY || !token || token.length < 40) return false;
+  if (!SUPABASE_URL || !token || token.length < 40) return false;
   try {
     const response = await fetch(`${SUPABASE_URL}/functions/v1/device-heartbeat`, {
       method: "POST",
