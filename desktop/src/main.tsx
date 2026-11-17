@@ -151,6 +151,7 @@ function App() {
       <div className="panel-heading"><div><strong>Device connection</strong><small>Device ID: {status.device_id ?? "Registered"}</small></div><span className="tag">PAIRED</span></div>
       <div className="capability"><span className="symbol">✓</span><div><strong>Device identity</strong><small>Credential stored securely on this Windows computer.</small></div><span className="enabled">Paired</span></div>
       <div className="capability"><span className="symbol">↻</span><div><strong>Connection heartbeat</strong><small>The desktop companion sends a heartbeat every 30 seconds.</small></div><span className={status.connected ? "enabled" : "disabled"}>{status.connected ? "Connected" : "Offline"}</span></div>
+      <div className="capability"><span className="symbol">⇄</span><div><strong>Secure remote relay</strong><small>{relayConnected ? "Authenticated relay connection established." : "Waiting for the secure relay connection."}</small></div><span className={relayConnected ? "enabled" : "disabled"}>{relayConnected ? "Connected" : "Offline"}</span></div>
       <div className="capability"><span className="symbol">▧</span><div><strong>Screen observation</strong><small>{captureApproved ? "Approved on this computer. Captures are local and are not transmitted." : "Off by default. Enable only when you want this computer to capture its primary display."}</small></div><span className={captureApproved ? "enabled" : "disabled"}>{captureApproved ? "Approved" : "Off"}</span></div>
       <div className="permission-actions">
         <button className="secondary" disabled={captureBusy} onClick={() => void updateCaptureApproval(!captureApproved)}>{captureBusy ? "Please wait…" : captureApproved ? "Disable screen capture" : "Approve screen capture"}</button>
@@ -164,7 +165,7 @@ function App() {
       <div className="permission-actions"><button className="secondary" disabled={captureBusy} onClick={() => void updatePermission("pointer", !pointerApproved)}>{pointerApproved ? "Disable mouse control" : "Approve mouse control"}</button></div>
       <div className="capability"><span className="symbol">⌨</span><div><strong>Keyboard control</strong><small>{keyboardApproved ? "Locally approved. Remote relay is not connected." : "Off by default. No text or key input can run."}</small></div><span className={keyboardApproved ? "enabled" : "disabled"}>{keyboardApproved ? "Approved" : "Off"}</span></div>
       <div className="permission-actions"><button className="secondary" disabled={captureBusy} onClick={() => void updatePermission("keyboard", !keyboardApproved)}>{keyboardApproved ? "Disable keyboard control" : "Approve keyboard control"}</button></div>
-      <p className="hint">These approvals are stored on this PC. They do not yet enable remote AI control; the authenticated relay and per-action approval workflow are still being built.</p>
+      <p className="hint">These approvals are stored on this PC. Each remote request also requires a separate approval here before the action runs.</p>
       {error && <div className="feedback error">{error}</div>}
       {message && <div className="feedback success">{message}</div>}
     </section>}
