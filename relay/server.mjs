@@ -6,7 +6,7 @@ const PORT = Number(process.env.PORT || 8080);
 const SUPABASE_URL = (process.env.SUPABASE_URL || "").replace(/\/$/, "");
 const RELAY_SECRET = process.env.MCPOS_RELAY_SECRET || "";
 const MAX_BODY_BYTES = 64 * 1024;
-const MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
+const MAX_RESPONSE_BYTES = 20 * 1024 * 1024;
 const COMMAND_TIMEOUT_MS = 45_000;
 
 const devices = new Map();
