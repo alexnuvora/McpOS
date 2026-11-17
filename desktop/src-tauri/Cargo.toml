@@ -18,3 +18,4 @@ serde_json = "1"
 base64 = "0.22"
 image = { version = "0.24", default-features = false, features = ["png"] }
 screenshots = "0.8.10"
+computer-use-rs = "0.3.2"
