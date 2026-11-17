@@ -33,3 +33,12 @@ button.secondary:hover:not(:disabled) { background: #31465e; }
 .inspector-row button { flex: 0 0 auto; }
 .tree-preview { max-height: 360px; overflow: auto; margin: 12px 0 0; padding: 12px; border-radius: 8px; background: #070c13; color: #d2deed; font: 11px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 @media (max-width: 520px) { .inspector-row { align-items: stretch; flex-direction: column; } .inspector-row button { width: 100%; } }
+
+
+.approval-backdrop { position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; padding: 18px; background: rgba(3, 7, 13, .82); backdrop-filter: blur(8px); }
+.approval-dialog { width: min(100%, 480px); padding: 24px; border: 1px solid #51637b; border-radius: 18px; background: #111c2a; box-shadow: 0 24px 90px rgba(0,0,0,.55); }
+.approval-dialog h2 { margin: 8px 0 14px; color: #f5f8fc; font-size: 23px; }
+.approval-dialog p { color: #c3d0df; line-height: 1.5; overflow-wrap: anywhere; }
+.approval-detail { max-height: 150px; overflow: auto; padding: 12px; border-radius: 9px; background: #09111c; color: #dce7f4; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; }
+.approval-dialog .permission-actions { margin-top: 20px; }
+.approval-dialog .permission-actions button { min-height: 44px; }
