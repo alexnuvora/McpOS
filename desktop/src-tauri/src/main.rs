@@ -61,6 +61,122 @@ async fn heartbeat() -> bool {
 }
 
 #[tauri::command]
+
+fn is_approved(key: &str) -> bool {
+    credential(key).ok().and_then(|entry| entry.get_password().ok())
+        .map(|value| value == "approved").unwrap_or(false)
+}
+
+fn save_approval(key: &str, approved: bool) -> Result<(), String> {
+    let entry = credential(key)?;
+    if approved {
+        entry.set_password("approved")
+            .map_err(|_| "Could not securely save this permission.".to_string())
+    } else {
+        let _ = entry.delete_credential();
+        Ok(())
+    }
+}
+
+#[tauri::command]
+fn get_screen_capture_approval() -> bool { is_approved(SCREEN_CAPTURE_APPROVAL_KEY) }
+
+#[tauri::command]
+fn set_screen_capture_approval(approved: bool) -> Result<(), String> {
+    save_approval(SCREEN_CAPTURE_APPROVAL_KEY, approved)
+}
+
+#[tauri::command]
+fn get_accessibility_approval() -> bool { is_approved(ACCESSIBILITY_APPROVAL_KEY) }
+
+#[tauri::command]
+fn set_accessibility_approval(approved: bool) -> Result<(), String> {
+    save_approval(ACCESSIBILITY_APPROVAL_KEY, approved)
+}
+
+#[tauri::command]
+fn get_pointer_approval() -> bool { is_approved(POINTER_APPROVAL_KEY) }
+
+#[tauri::command]
+fn set_pointer_approval(approved: bool) -> Result<(), String> {
+    save_approval(POINTER_APPROVAL_KEY, approved)
+}
+
+#[tauri::command]
+fn get_keyboard_approval() -> bool { is_approved(KEYBOARD_APPROVAL_KEY) }
+
+#[tauri::command]
+fn set_keyboard_approval(approved: bool) -> Result<(), String> {
+    save_approval(KEYBOARD_APPROVAL_KEY, approved)
+}
+
+#[tauri::command]
+fn inspect_application(app_name: String) -> Result<String, String> {
+    if !is_approved(ACCESSIBILITY_APPROVAL_KEY) {
+        return Err("Windows accessibility access is disabled. Approve it in McpOS Desktop first.".into());
+    }
+    if app_name.trim().is_empty() || app_name.len() > 128 {
+        return Err("Enter a valid application name or process reference.".into());
+    }
+    let mut computer = Computer::new().map_err(|error| format!("Could not initialise Windows UI Automation: {error}"))?;
+    let options = CaptureOptions::default().include_screenshot(false).launch_if_needed(false);
+    let state = computer.get_app_state(&app_name, &options)
+        .map_err(|error| format!("Could not inspect {app_name}: {error}"))?;
+    Ok(state.render())
+}
+
+#[tauri::command]
+fn click_application(app_name: String, x: f64, y: f64) -> Result<(), String> {
+    if !is_approved(POINTER_APPROVAL_KEY) {
+        return Err("Mouse control is disabled. Approve mouse control in McpOS Desktop first.".into());
+    }
+    if app_name.trim().is_empty() || app_name.len() > 128 || !x.is_finite() || !y.is_finite() {
+        return Err("Invalid application or screen coordinates.".into());
+    }
+    let mut computer = Computer::new().map_err(|error| error.to_string())?;
+    computer.click(&app_name, ClickTarget::Screen { x, y }, ClickOptions::default())
+        .map(|_| ()).map_err(|error| format!("Mouse action failed: {error}"))
+}
+
+#[tauri::command]
+fn type_application_text(app_name: String, value: String) -> Result<(), String> {
+    if !is_approved(KEYBOARD_APPROVAL_KEY) {
+        return Err("Keyboard control is disabled. Approve keyboard control in McpOS Desktop first.".into());
+    }
+    if app_name.trim().is_empty() || app_name.len() > 128 || value.len() > 4000 {
+        return Err("Invalid application or text length (maximum 4,000 characters).".into());
+    }
+    let mut computer = Computer::new().map_err(|error| error.to_string())?;
+    computer.type_text(&app_name, &value).map_err(|error| format!("Text input failed: {error}"))
+}
+
+#[tauri::command]
+fn press_application_key(app_name: String, key: String) -> Result<(), String> {
+    if !is_approved(KEYBOARD_APPROVAL_KEY) {
+        return Err("Keyboard control is disabled. Approve keyboard control in McpOS Desktop first.".into());
+    }
+    if app_name.trim().is_empty() || app_name.len() > 128 || key.trim().is_empty() || key.len() > 64 {
+        return Err("Invalid application or key chord.".into());
+    }
+    let mut computer = Computer::new().map_err(|error| error.to_string())?;
+    computer.press_key(&app_name, &key).map_err(|error| format!("Key action failed: {error}"))
+}
+
+#[tauri::command]
+fn capture_screen() -> Result<String, String> {
+    if !is_approved(SCREEN_CAPTURE_APPROVAL_KEY) {
+        return Err("Screen capture is disabled. Approve it in the McpOS desktop app first.".into());
+    }
+    let screens = Screen::all().map_err(|error| format!("Could not enumerate displays: {error:?}"))?;
+    let screen = screens.first().ok_or("No display is available.")?;
+    let captured = screen.capture().map_err(|error| format!("Screen capture failed: {error:?}"))?;
+    let mut output = Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgba8(captured)
+        .write_to(&mut output, image::ImageFormat::Png)
+        .map_err(|error| format!("Could not encode the screen image: {error}"))?;
+    Ok(format!("data:image/png;base64,{}", BASE64.encode(output.into_inner())))
+}
+
 fn get_device_status(connected: tauri::State<'_, Arc<AtomicBool>>) -> DeviceStatus {
     let paired = stored_token().is_some();
     let device_id = credential(DEVICE_ID_KEY).ok().and_then(|entry| entry.get_password().ok());
