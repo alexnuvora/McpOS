@@ -54,14 +54,20 @@ async fn heartbeat() -> bool {
     let Some(api_key) = SUPABASE_ANON_KEY else { return false };
     if api_key.is_empty() { return false; }
 
-    reqwest::Client::new()
+    let Ok(response) = reqwest::Client::new()
         .post(format!("{SUPABASE_URL}/functions/v1/device-heartbeat"))
         .header("apikey", api_key)
         .bearer_auth(token)
         .send()
-        .await
-        .map(|response| response.status().is_success())
-        .unwrap_or(false)
+        .await else { return false; };
+    if !response.status().is_success() { return false; }
+    let data = response.json::<serde_json::Value>().await.unwrap_or_default();
+    if let Some(relay_url) = data.get("relay_url").and_then(|value| value.as_str()).filter(|url| url.starts_with("wss://")) {
+        if let Ok(entry) = credential(RELAY_URL_KEY) { let _ = entry.set_password(relay_url); }
+    } else if let Ok(entry) = credential(RELAY_URL_KEY) {
+        let _ = entry.delete_credential();
+    }
+    true
 }
 
 fn is_approved(key: &str) -> bool {
