@@ -169,6 +169,22 @@ function App() {
       {error && <div className="feedback error">{error}</div>}
       {message && <div className="feedback success">{message}</div>}
     </section>}
+    {pendingRemoteAction && <div className="approval-backdrop">
+      <section className="approval-dialog" role="dialog" aria-modal="true" aria-labelledby="approval-title">
+        <div className="eyebrow">REMOTE ACTION REQUEST</div>
+        <h2 id="approval-title">Allow this action?</h2>
+        <p><strong>{pendingRemoteAction.command.replaceAll("_", " ")}</strong></p>
+        {typeof pendingRemoteAction.args.appName === "string" && <p>Application: <strong>{pendingRemoteAction.args.appName}</strong></p>}
+        {typeof pendingRemoteAction.args.value === "string" && <div className="approval-detail">{pendingRemoteAction.args.value}</div>}
+        {typeof pendingRemoteAction.args.key === "string" && <p>Key: <strong>{pendingRemoteAction.args.key}</strong></p>}
+        {typeof pendingRemoteAction.args.x === "number" && typeof pendingRemoteAction.args.y === "number" && <p>Screen position: <strong>{pendingRemoteAction.args.x}, {pendingRemoteAction.args.y}</strong></p>}
+        <p className="hint">This approval applies to this request only. If you do nothing, it will be denied automatically in 30 seconds.</p>
+        <div className="permission-actions">
+          <button className="secondary" onClick={() => void respondToRemoteAction(false)}>Deny</button>
+          <button onClick={() => void respondToRemoteAction(true)}>Approve once</button>
+        </div>
+      </section>
+    </div>}
     <footer>Local-first by design <span>·</span> Windows Credential Manager <span>·</span> Permissions default off</footer>
   </main>;
 }
