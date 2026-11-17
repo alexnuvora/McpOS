@@ -1,9 +1,11 @@
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import "./style.css";
 
 type DeviceStatus = { paired: boolean; connected: boolean; device_id: string | null };
+type RemoteActionRequest = { requestId: string; command: string; args: Record<string, unknown>; expiresInSeconds: number };
 
 function App() {
   const [code, setCode] = useState("");
@@ -11,6 +13,16 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [captureApproved, setCaptureApproved] = useState(false);
+  const [captureBusy, setCaptureBusy] = useState(false);
+  const [screenImage, setScreenImage] = useState("");
+  const [accessibilityApproved, setAccessibilityApproved] = useState(false);
+  const [pointerApproved, setPointerApproved] = useState(false);
+  const [keyboardApproved, setKeyboardApproved] = useState(false);
+  const [targetApp, setTargetApp] = useState("");
+  const [accessibilityTree, setAccessibilityTree] = useState("");
+  const [relayConnected, setRelayConnected] = useState(false);
+  const [pendingRemoteAction, setPendingRemoteAction] = useState<RemoteActionRequest | null>(null);
 
   async function refreshStatus() {
     try { setStatus(await invoke<DeviceStatus>("get_device_status")); }
@@ -18,10 +30,90 @@ function App() {
   }
 
   useEffect(() => {
-    const initial = window.setTimeout(() => void refreshStatus(), 0);
+    const initial = window.setTimeout(() => {
+      void refreshStatus();
+      void invoke<boolean>("get_screen_capture_approval").then(setCaptureApproved).catch(() => setCaptureApproved(false));
+      void invoke<boolean>("get_accessibility_approval").then(setAccessibilityApproved).catch(() => setAccessibilityApproved(false));
+      void invoke<boolean>("get_pointer_approval").then(setPointerApproved).catch(() => setPointerApproved(false));
+      void invoke<boolean>("get_keyboard_approval").then(setKeyboardApproved).catch(() => setKeyboardApproved(false));
+    }, 0);
     const timer = window.setInterval(() => void refreshStatus(), 15000);
-    return () => { window.clearTimeout(initial); window.clearInterval(timer); };
+    let unlistenApproval: (() => void) | undefined;
+    let unlistenRelay: (() => void) | undefined;
+    void listen<RemoteActionRequest>("remote-action-request", event => setPendingRemoteAction(event.payload))
+      .then(unlisten => { unlistenApproval = unlisten; });
+    void listen<{ connected: boolean }>("relay-status", event => setRelayConnected(event.payload.connected))
+      .then(unlisten => { unlistenRelay = unlisten; });
+    return () => {
+      window.clearTimeout(initial);
+      window.clearInterval(timer);
+      unlistenApproval?.();
+      unlistenRelay?.();
+    };
   }, []);
+
+
+
+
+  async function respondToRemoteAction(approved: boolean) {
+    if (!pendingRemoteAction) return;
+    try {
+      await invoke("respond_remote_action", { requestId: pendingRemoteAction.requestId, approved });
+      setPendingRemoteAction(null);
+    } catch (reason) {
+      setError(typeof reason === "string" ? reason : "Could not submit your approval.");
+      setPendingRemoteAction(null);
+    }
+  }
+
+  async function updatePermission(capability: "accessibility" | "pointer" | "keyboard", approved: boolean) {
+    setCaptureBusy(true); setError("");
+    const commands = {
+      accessibility: { invoke: "set_accessibility_approval", set: setAccessibilityApproved },
+      pointer: { invoke: "set_pointer_approval", set: setPointerApproved },
+      keyboard: { invoke: "set_keyboard_approval", set: setKeyboardApproved },
+    } as const;
+    try {
+      await invoke(commands[capability].invoke, { approved });
+      commands[capability].set(approved);
+      setMessage(approved ? capability + " permission approved on this computer." : capability + " permission disabled.");
+    } catch (reason) {
+      setError(typeof reason === "string" ? reason : "Could not update the permission.");
+    } finally { setCaptureBusy(false); }
+  }
+
+  async function inspectApp() {
+    if (!targetApp.trim()) { setError("Enter an application name or process reference first."); return; }
+    setCaptureBusy(true); setError(""); setAccessibilityTree("");
+    try {
+      setAccessibilityTree(await invoke<string>("inspect_application", { appName: targetApp.trim() }));
+    } catch (reason) {
+      setError(typeof reason === "string" ? reason : "Could not inspect the application.");
+    } finally { setCaptureBusy(false); }
+  }
+
+  async function updateCaptureApproval(approved: boolean) {
+    setCaptureBusy(true); setError("");
+    try {
+      await invoke("set_screen_capture_approval", { approved });
+      setCaptureApproved(approved);
+      if (!approved) setScreenImage("");
+      setMessage(approved ? "Screen capture permission enabled on this computer. Captures remain local to this app." : "Screen capture permission disabled.");
+    } catch (reason) {
+      setError(typeof reason === "string" ? reason : "Could not update screen-capture permission.");
+    } finally { setCaptureBusy(false); }
+  }
+
+  async function captureScreen() {
+    setCaptureBusy(true); setError(""); setMessage("");
+    try {
+      const image = await invoke<string>("capture_screen");
+      setScreenImage(image);
+      setMessage("Screen captured locally. It has not been uploaded or shared.");
+    } catch (reason) {
+      setError(typeof reason === "string" ? reason : "Screen capture failed.");
+    } finally { setCaptureBusy(false); }
+  }
 
   async function pair() {
     setBusy(true); setError(""); setMessage("");
@@ -59,12 +151,40 @@ function App() {
       <div className="panel-heading"><div><strong>Device connection</strong><small>Device ID: {status.device_id ?? "Registered"}</small></div><span className="tag">PAIRED</span></div>
       <div className="capability"><span className="symbol">✓</span><div><strong>Device identity</strong><small>Credential stored securely on this Windows computer.</small></div><span className="enabled">Paired</span></div>
       <div className="capability"><span className="symbol">↻</span><div><strong>Connection heartbeat</strong><small>The desktop companion sends a heartbeat every 30 seconds.</small></div><span className={status.connected ? "enabled" : "disabled"}>{status.connected ? "Connected" : "Offline"}</span></div>
-      <div className="capability"><span className="symbol">▧</span><div><strong>Screen observation</strong><small>Screen capture remains disabled until a separate consent workflow is implemented.</small></div><span className="disabled">Not enabled</span></div>
-      <div className="capability"><span className="symbol">⌖</span><div><strong>Windows accessibility</strong><small>Application controls are not being read or shared.</small></div><span className="disabled">Not enabled</span></div>
-      <div className="capability"><span className="symbol">⌘</span><div><strong>Mouse & keyboard</strong><small>No remote input actions are enabled.</small></div><span className="disabled">Not enabled</span></div>
+      <div className="capability"><span className="symbol">⇄</span><div><strong>Secure remote relay</strong><small>{relayConnected ? "Authenticated relay connection established." : "Waiting for the secure relay connection."}</small></div><span className={relayConnected ? "enabled" : "disabled"}>{relayConnected ? "Connected" : "Offline"}</span></div>
+      <div className="capability"><span className="symbol">▧</span><div><strong>Screen observation</strong><small>{captureApproved ? "Approved on this computer. Captures are local and are not transmitted." : "Off by default. Enable only when you want this computer to capture its primary display."}</small></div><span className={captureApproved ? "enabled" : "disabled"}>{captureApproved ? "Approved" : "Off"}</span></div>
+      <div className="permission-actions">
+        <button className="secondary" disabled={captureBusy} onClick={() => void updateCaptureApproval(!captureApproved)}>{captureBusy ? "Please wait…" : captureApproved ? "Disable screen capture" : "Approve screen capture"}</button>
+        <button disabled={!captureApproved || captureBusy} onClick={() => void captureScreen()}>{captureBusy ? "Working…" : "Capture screen"}</button>
+      </div>
+      {screenImage && <div className="screen-preview"><img src={screenImage} alt="Locally captured primary display" /><small>Local preview · not shared with an AI client</small></div>}
+      <div className="capability"><span className="symbol">⌖</span><div><strong>Windows accessibility</strong><small>{accessibilityApproved ? "Approved locally. You can inspect an application tree in this desktop app." : "Off by default. No application controls are read."}</small></div><span className={accessibilityApproved ? "enabled" : "disabled"}>{accessibilityApproved ? "Approved" : "Off"}</span></div>
+      <div className="permission-actions"><button className="secondary" disabled={captureBusy} onClick={() => void updatePermission("accessibility", !accessibilityApproved)}>{accessibilityApproved ? "Disable accessibility" : "Approve accessibility"}</button></div>
+      {accessibilityApproved && <div className="local-inspector"><label htmlFor="target-app">Application name or process reference</label><div className="inspector-row"><input id="target-app" value={targetApp} onChange={event => setTargetApp(event.target.value)} placeholder="e.g. notepad or pid:1234" /><button disabled={captureBusy || !targetApp.trim()} onClick={() => void inspectApp()}>{captureBusy ? "Inspecting…" : "Inspect app"}</button></div>{accessibilityTree && <pre className="tree-preview">{accessibilityTree}</pre>}</div>}
+      <div className="capability"><span className="symbol">⌘</span><div><strong>Mouse control</strong><small>{pointerApproved ? (relayConnected ? "Approved locally. Each remote mouse action prompts you first." : "Approved locally, but the relay is currently offline.") : "Off by default. No pointer actions can run."}</small></div><span className={pointerApproved ? "enabled" : "disabled"}>{pointerApproved ? "Approved" : "Off"}</span></div>
+      <div className="permission-actions"><button className="secondary" disabled={captureBusy} onClick={() => void updatePermission("pointer", !pointerApproved)}>{pointerApproved ? "Disable mouse control" : "Approve mouse control"}</button></div>
+      <div className="capability"><span className="symbol">⌨</span><div><strong>Keyboard control</strong><small>{keyboardApproved ? (relayConnected ? "Approved locally. Each remote keyboard action prompts you first." : "Approved locally, but the relay is currently offline.") : "Off by default. No text or key input can run."}</small></div><span className={keyboardApproved ? "enabled" : "disabled"}>{keyboardApproved ? "Approved" : "Off"}</span></div>
+      <div className="permission-actions"><button className="secondary" disabled={captureBusy} onClick={() => void updatePermission("keyboard", !keyboardApproved)}>{keyboardApproved ? "Disable keyboard control" : "Approve keyboard control"}</button></div>
+      <p className="hint">These approvals are stored on this PC. Each remote request also requires a separate approval here before the action runs.</p>
       {error && <div className="feedback error">{error}</div>}
       {message && <div className="feedback success">{message}</div>}
     </section>}
+    {pendingRemoteAction && <div className="approval-backdrop">
+      <section className="approval-dialog" role="dialog" aria-modal="true" aria-labelledby="approval-title">
+        <div className="eyebrow">REMOTE ACTION REQUEST</div>
+        <h2 id="approval-title">Allow this action?</h2>
+        <p><strong>{pendingRemoteAction.command.replaceAll("_", " ")}</strong></p>
+        {typeof pendingRemoteAction.args.appName === "string" && <p>Application: <strong>{pendingRemoteAction.args.appName}</strong></p>}
+        {typeof pendingRemoteAction.args.value === "string" && <div className="approval-detail">{pendingRemoteAction.args.value}</div>}
+        {typeof pendingRemoteAction.args.key === "string" && <p>Key: <strong>{pendingRemoteAction.args.key}</strong></p>}
+        {typeof pendingRemoteAction.args.x === "number" && typeof pendingRemoteAction.args.y === "number" && <p>Screen position: <strong>{pendingRemoteAction.args.x}, {pendingRemoteAction.args.y}</strong></p>}
+        <p className="hint">This approval applies to this request only. If you do nothing, it will be denied automatically in 30 seconds.</p>
+        <div className="permission-actions">
+          <button className="secondary" onClick={() => void respondToRemoteAction(false)}>Deny</button>
+          <button onClick={() => void respondToRemoteAction(true)}>Approve once</button>
+        </div>
+      </section>
+    </div>}
     <footer>Local-first by design <span>·</span> Windows Credential Manager <span>·</span> Permissions default off</footer>
   </main>;
 }

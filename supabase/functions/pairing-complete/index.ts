@@ -40,5 +40,5 @@ Deno.serve(async request => {
     return reply({ error: "Could not complete pairing. Please try again." }, 500);
   }
   const result = await response.json();
-  return reply({ token, device_id: result.device_id, device_name: result.device_name });
+  return reply({ token, device_id: result.device_id, device_name: result.device_name, relay_url: Deno.env.get("MCPOS_RELAY_URL") ?? "wss://mcpos-relay.netlify.app/relay/device" });
 });

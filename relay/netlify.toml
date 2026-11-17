@@ -1,0 +1,14 @@
+[build]
+command = "npm install --no-audit --no-fund"
+publish = "public"
+
+[build.environment]
+NODE_VERSION = "24"
+
+[server]
+region = "fra"
+size = "small"
+
+[server.scale]
+min = 0
+max = 1

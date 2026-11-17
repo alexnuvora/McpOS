@@ -10,8 +10,12 @@ services:
       NODE_ENV: production
       PORT: "3000"
       HOSTNAME: 0.0.0.0
+      MCPOS_RELAY_URL: http://relay:8080
     expose:
       - "3000"
+    depends_on:
+      relay:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s
@@ -21,21 +25,44 @@ services:
     networks:
       - mcpos
 
+  relay:
+    build:
+      context: ./relay
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      PORT: "8080"
+      SUPABASE_URL: ${SUPABASE_URL:?Set SUPABASE_URL in .env}
+      MCPOS_RELAY_SECRET: ${MCPOS_RELAY_SECRET:?Set MCPOS_RELAY_SECRET in .env}
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 4s
+      retries: 3
+      start_period: 10s
+    networks:
+      - mcpos
+
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
     depends_on:
       mcpos:
         condition: service_healthy
+      relay:
+        condition: service_healthy
     environment:
-      MCPOS_DOMAIN: ${MCPOS_DOMAIN:?Set MCPOS_DOMAIN in .env}
-      ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL in .env}
+      MCPOS_PUBLIC_IP: ${MCPOS_PUBLIC_IP:?Set MCPOS_PUBLIC_IP in .env}
     ports:
-      - "80:80"
       - "443:443"
       - "443:443/udp"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
       - caddy_data:/data
       - caddy_config:/config
     networks:

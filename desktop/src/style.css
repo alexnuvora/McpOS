@@ -15,3 +15,30 @@
 .feedback.success{background:#064e3b33;border:1px solid #065f46;color:#6ee7b7}
 
 .status i.online{background:#34d399}
+
+
+.permission-actions { display: flex; gap: 10px; flex-wrap: wrap; margin: 14px 0 4px; }
+.permission-actions button { flex: 1 1 180px; }
+button.secondary { color: #dbe7f7; background: #26364a; border: 1px solid #43566e; }
+button.secondary:hover:not(:disabled) { background: #31465e; }
+.screen-preview { margin-top: 18px; padding: 10px; border: 1px solid #2a3b50; border-radius: 12px; background: #0c1420; }
+.screen-preview img { display: block; width: 100%; max-height: 420px; object-fit: contain; border-radius: 7px; background: #05080d; }
+.screen-preview small { display: block; margin: 8px 2px 0; color: #9fb0c4; font-size: 11px; }
+
+
+.local-inspector { margin: 14px 0 18px; padding: 14px; border: 1px solid #2a3b50; border-radius: 12px; background: #0c1420; }
+.local-inspector label { display: block; margin: 0 0 8px; color: #aebed0; font-size: 12px; }
+.inspector-row { display: flex; gap: 9px; align-items: center; }
+.inspector-row input { flex: 1; min-width: 0; }
+.inspector-row button { flex: 0 0 auto; }
+.tree-preview { max-height: 360px; overflow: auto; margin: 12px 0 0; padding: 12px; border-radius: 8px; background: #070c13; color: #d2deed; font: 11px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 520px) { .inspector-row { align-items: stretch; flex-direction: column; } .inspector-row button { width: 100%; } }
+
+
+.approval-backdrop { position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; padding: 18px; background: rgba(3, 7, 13, .82); backdrop-filter: blur(8px); }
+.approval-dialog { width: min(100%, 480px); padding: 24px; border: 1px solid #51637b; border-radius: 18px; background: #111c2a; box-shadow: 0 24px 90px rgba(0,0,0,.55); }
+.approval-dialog h2 { margin: 8px 0 14px; color: #f5f8fc; font-size: 23px; }
+.approval-dialog p { color: #c3d0df; line-height: 1.5; overflow-wrap: anywhere; }
+.approval-detail { max-height: 150px; overflow: auto; padding: 12px; border-radius: 9px; background: #09111c; color: #dce7f4; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; }
+.approval-dialog .permission-actions { margin-top: 20px; }
+.approval-dialog .permission-actions button { min-height: 44px; }

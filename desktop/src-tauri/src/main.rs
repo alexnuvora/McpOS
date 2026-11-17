@@ -1,6 +1,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod relay;
+
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use computer_use::{CaptureOptions, ClickOptions, ClickTarget, Computer};
 use keyring::Entry;
+use screenshots::Screen;
+use std::io::Cursor;
 use serde::{Deserialize, Serialize};
 use std::{sync::{Arc, atomic::{AtomicBool, Ordering}}, time::Duration};
 use tauri::{
@@ -14,6 +20,11 @@ const SUPABASE_ANON_KEY: Option<&str> = option_env!("SUPABASE_ANON_KEY");
 const KEYRING_SERVICE: &str = "co.mcpos.desktop";
 const TOKEN_KEY: &str = "device_token";
 const DEVICE_ID_KEY: &str = "device_id";
+const RELAY_URL_KEY: &str = "relay_url";
+const SCREEN_CAPTURE_APPROVAL_KEY: &str = "approval_screen_capture";
+const ACCESSIBILITY_APPROVAL_KEY: &str = "approval_accessibility";
+const POINTER_APPROVAL_KEY: &str = "approval_pointer";
+const KEYBOARD_APPROVAL_KEY: &str = "approval_keyboard";
 
 #[derive(Serialize)]
 struct DeviceStatus {
@@ -27,6 +38,7 @@ struct PairingResponse {
     token: String,
     device_id: String,
     device_name: String,
+    relay_url: Option<String>,
 }
 
 fn credential(key: &str) -> Result<Entry, String> {
@@ -42,14 +54,135 @@ async fn heartbeat() -> bool {
     let Some(api_key) = SUPABASE_ANON_KEY else { return false };
     if api_key.is_empty() { return false; }
 
-    reqwest::Client::new()
+    let Ok(response) = reqwest::Client::new()
         .post(format!("{SUPABASE_URL}/functions/v1/device-heartbeat"))
         .header("apikey", api_key)
         .bearer_auth(token)
         .send()
-        .await
-        .map(|response| response.status().is_success())
-        .unwrap_or(false)
+        .await else { return false; };
+    if !response.status().is_success() { return false; }
+    let data = response.json::<serde_json::Value>().await.unwrap_or_default();
+    if let Some(relay_url) = data.get("relay_url").and_then(|value| value.as_str()).filter(|url| url.starts_with("wss://")) {
+        if let Ok(entry) = credential(RELAY_URL_KEY) { let _ = entry.set_password(relay_url); }
+    } else if let Ok(entry) = credential(RELAY_URL_KEY) {
+        let _ = entry.delete_credential();
+    }
+    true
+}
+
+fn is_approved(key: &str) -> bool {
+    credential(key).ok().and_then(|entry| entry.get_password().ok())
+        .map(|value| value == "approved").unwrap_or(false)
+}
+
+fn save_approval(key: &str, approved: bool) -> Result<(), String> {
+    let entry = credential(key)?;
+    if approved {
+        entry.set_password("approved")
+            .map_err(|_| "Could not securely save this permission.".to_string())
+    } else {
+        let _ = entry.delete_credential();
+        Ok(())
+    }
+}
+
+#[tauri::command]
+fn get_screen_capture_approval() -> bool { is_approved(SCREEN_CAPTURE_APPROVAL_KEY) }
+
+#[tauri::command]
+fn set_screen_capture_approval(approved: bool) -> Result<(), String> {
+    save_approval(SCREEN_CAPTURE_APPROVAL_KEY, approved)
+}
+
+#[tauri::command]
+fn get_accessibility_approval() -> bool { is_approved(ACCESSIBILITY_APPROVAL_KEY) }
+
+#[tauri::command]
+fn set_accessibility_approval(approved: bool) -> Result<(), String> {
+    save_approval(ACCESSIBILITY_APPROVAL_KEY, approved)
+}
+
+#[tauri::command]
+fn get_pointer_approval() -> bool { is_approved(POINTER_APPROVAL_KEY) }
+
+#[tauri::command]
+fn set_pointer_approval(approved: bool) -> Result<(), String> {
+    save_approval(POINTER_APPROVAL_KEY, approved)
+}
+
+#[tauri::command]
+fn get_keyboard_approval() -> bool { is_approved(KEYBOARD_APPROVAL_KEY) }
+
+#[tauri::command]
+fn set_keyboard_approval(approved: bool) -> Result<(), String> {
+    save_approval(KEYBOARD_APPROVAL_KEY, approved)
+}
+
+#[tauri::command]
+fn inspect_application(app_name: String) -> Result<String, String> {
+    if !is_approved(ACCESSIBILITY_APPROVAL_KEY) {
+        return Err("Windows accessibility access is disabled. Approve it in McpOS Desktop first.".into());
+    }
+    if app_name.trim().is_empty() || app_name.len() > 128 {
+        return Err("Enter a valid application name or process reference.".into());
+    }
+    let mut computer = Computer::new().map_err(|error| format!("Could not initialise Windows UI Automation: {error}"))?;
+    let options = CaptureOptions::default().include_screenshot(false).launch_if_needed(false);
+    let state = computer.get_app_state(&app_name, &options)
+        .map_err(|error| format!("Could not inspect {app_name}: {error}"))?;
+    Ok(state.render())
+}
+
+#[tauri::command]
+fn click_application(app_name: String, x: f64, y: f64) -> Result<(), String> {
+    if !is_approved(POINTER_APPROVAL_KEY) {
+        return Err("Mouse control is disabled. Approve mouse control in McpOS Desktop first.".into());
+    }
+    if app_name.trim().is_empty() || app_name.len() > 128 || !x.is_finite() || !y.is_finite() {
+        return Err("Invalid application or screen coordinates.".into());
+    }
+    let mut computer = Computer::new().map_err(|error| error.to_string())?;
+    computer.click(&app_name, ClickTarget::Screen { x, y }, ClickOptions::default())
+        .map(|_| ()).map_err(|error| format!("Mouse action failed: {error}"))
+}
+
+#[tauri::command]
+fn type_application_text(app_name: String, value: String) -> Result<(), String> {
+    if !is_approved(KEYBOARD_APPROVAL_KEY) {
+        return Err("Keyboard control is disabled. Approve keyboard control in McpOS Desktop first.".into());
+    }
+    if app_name.trim().is_empty() || app_name.len() > 128 || value.len() > 4000 {
+        return Err("Invalid application or text length (maximum 4,000 characters).".into());
+    }
+    let mut computer = Computer::new().map_err(|error| error.to_string())?;
+    computer.type_text(&app_name, &value).map_err(|error| format!("Text input failed: {error}"))
+}
+
+#[tauri::command]
+fn press_application_key(app_name: String, key: String) -> Result<(), String> {
+    if !is_approved(KEYBOARD_APPROVAL_KEY) {
+        return Err("Keyboard control is disabled. Approve keyboard control in McpOS Desktop first.".into());
+    }
+    if app_name.trim().is_empty() || app_name.len() > 128 || key.trim().is_empty() || key.len() > 64 {
+        return Err("Invalid application or key chord.".into());
+    }
+    let mut computer = Computer::new().map_err(|error| error.to_string())?;
+    computer.press_key(&app_name, &key).map_err(|error| format!("Key action failed: {error}"))
+}
+
+#[tauri::command]
+fn capture_screen() -> Result<String, String> {
+    if !is_approved(SCREEN_CAPTURE_APPROVAL_KEY) {
+        return Err("Screen capture is disabled. Approve it in the McpOS desktop app first.".into());
+    }
+    let screens = Screen::all().map_err(|error| format!("Could not enumerate displays: {error:?}"))?;
+    let screen = screens.first().ok_or("No display is available.")?;
+    let captured = screen.capture().map_err(|error| format!("Screen capture failed: {error:?}"))?;
+    let mut output = Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgba8(captured)
+        .write_to(&mut output, image::ImageFormat::Png)
+        .map_err(|error| format!("Could not encode the screen image: {error}"))?;
+    Ok(format!("data:image/png;base64,{}", BASE64.encode(output.into_inner())))
 }
 
 #[tauri::command]
@@ -92,6 +225,12 @@ async fn pair_device(code: String, connected: tauri::State<'_, Arc<AtomicBool>>)
         .map_err(|_| "Could not securely store the device credential in Windows Credential Manager.".to_string())?;
     credential(DEVICE_ID_KEY)?.set_password(&paired.device_id)
         .map_err(|_| "Could not store the device identity.".to_string())?;
+    if let Some(relay_url) = paired.relay_url.as_deref().filter(|url| url.starts_with("wss://")) {
+        credential(RELAY_URL_KEY)?.set_password(relay_url)
+            .map_err(|_| "Could not securely store the relay endpoint.".to_string())?;
+    } else {
+        let _ = credential(RELAY_URL_KEY)?.delete_credential();
+    }
 
     connection_state.store(heartbeat().await, Ordering::Relaxed);
     Ok(paired.device_name)
@@ -121,7 +260,7 @@ fn start_heartbeat(app: tauri::AppHandle, connected: Arc<AtomicBool>) {
 
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![pair_device, get_device_status])
+        .invoke_handler(tauri::generate_handler![pair_device, get_device_status, relay::respond_remote_action, get_screen_capture_approval, set_screen_capture_approval, capture_screen, get_accessibility_approval, set_accessibility_approval, get_pointer_approval, set_pointer_approval, get_keyboard_approval, set_keyboard_approval, inspect_application, click_application, type_application_text, press_application_key])
         .setup(|app| {
             let open = MenuItem::with_id(app, "open", "Open McpOS", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit McpOS", true, None::<&str>)?;
@@ -149,8 +288,11 @@ fn main() {
                 .build(app)?;
 
             let connection_state = Arc::new(AtomicBool::new(false));
+            let relay_state = Arc::new(AtomicBool::new(false));
             app.manage(connection_state.clone());
+            app.manage(relay_state.clone());
             start_heartbeat(app.handle().clone(), connection_state);
+            relay::start_relay(app.handle().clone(), relay_state);
             Ok(())
         })
         .on_window_event(|window, event| {
