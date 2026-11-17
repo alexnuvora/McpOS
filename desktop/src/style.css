@@ -24,3 +24,12 @@ button.secondary:hover:not(:disabled) { background: #31465e; }
 .screen-preview { margin-top: 18px; padding: 10px; border: 1px solid #2a3b50; border-radius: 12px; background: #0c1420; }
 .screen-preview img { display: block; width: 100%; max-height: 420px; object-fit: contain; border-radius: 7px; background: #05080d; }
 .screen-preview small { display: block; margin: 8px 2px 0; color: #9fb0c4; font-size: 11px; }
+
+
+.local-inspector { margin: 14px 0 18px; padding: 14px; border: 1px solid #2a3b50; border-radius: 12px; background: #0c1420; }
+.local-inspector label { display: block; margin: 0 0 8px; color: #aebed0; font-size: 12px; }
+.inspector-row { display: flex; gap: 9px; align-items: center; }
+.inspector-row input { flex: 1; min-width: 0; }
+.inspector-row button { flex: 0 0 auto; }
+.tree-preview { max-height: 360px; overflow: auto; margin: 12px 0 0; padding: 12px; border-radius: 8px; background: #070c13; color: #d2deed; font: 11px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 520px) { .inspector-row { align-items: stretch; flex-direction: column; } .inspector-row button { width: 100%; } }
