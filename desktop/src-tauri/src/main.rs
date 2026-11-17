@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod relay;
+
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use computer_use::{CaptureOptions, ClickOptions, ClickTarget, Computer};
 use keyring::Entry;
@@ -18,6 +20,7 @@ const SUPABASE_ANON_KEY: Option<&str> = option_env!("SUPABASE_ANON_KEY");
 const KEYRING_SERVICE: &str = "co.mcpos.desktop";
 const TOKEN_KEY: &str = "device_token";
 const DEVICE_ID_KEY: &str = "device_id";
+const RELAY_URL_KEY: &str = "relay_url";
 const SCREEN_CAPTURE_APPROVAL_KEY: &str = "approval_screen_capture";
 const ACCESSIBILITY_APPROVAL_KEY: &str = "approval_accessibility";
 const POINTER_APPROVAL_KEY: &str = "approval_pointer";
@@ -35,6 +38,7 @@ struct PairingResponse {
     token: String,
     device_id: String,
     device_name: String,
+    relay_url: Option<String>,
 }
 
 fn credential(key: &str) -> Result<Entry, String> {
@@ -216,6 +220,10 @@ async fn pair_device(code: String, connected: tauri::State<'_, Arc<AtomicBool>>)
         .map_err(|_| "Could not securely store the device credential in Windows Credential Manager.".to_string())?;
     credential(DEVICE_ID_KEY)?.set_password(&paired.device_id)
         .map_err(|_| "Could not store the device identity.".to_string())?;
+    if let Some(relay_url) = paired.relay_url.as_deref().filter(|url| url.starts_with("wss://")) {
+        credential(RELAY_URL_KEY)?.set_password(relay_url)
+            .map_err(|_| "Could not securely store the relay endpoint.".to_string())?;
+    }
 
     connection_state.store(heartbeat().await, Ordering::Relaxed);
     Ok(paired.device_name)
@@ -245,7 +253,7 @@ fn start_heartbeat(app: tauri::AppHandle, connected: Arc<AtomicBool>) {
 
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![pair_device, get_device_status, get_screen_capture_approval, set_screen_capture_approval, capture_screen, get_accessibility_approval, set_accessibility_approval, get_pointer_approval, set_pointer_approval, get_keyboard_approval, set_keyboard_approval, inspect_application, click_application, type_application_text, press_application_key])
+        .invoke_handler(tauri::generate_handler![pair_device, get_device_status, relay::respond_remote_action, get_screen_capture_approval, set_screen_capture_approval, capture_screen, get_accessibility_approval, set_accessibility_approval, get_pointer_approval, set_pointer_approval, get_keyboard_approval, set_keyboard_approval, inspect_application, click_application, type_application_text, press_application_key])
         .setup(|app| {
             let open = MenuItem::with_id(app, "open", "Open McpOS", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit McpOS", true, None::<&str>)?;
@@ -273,8 +281,11 @@ fn main() {
                 .build(app)?;
 
             let connection_state = Arc::new(AtomicBool::new(false));
+            let relay_state = Arc::new(AtomicBool::new(false));
             app.manage(connection_state.clone());
+            app.manage(relay_state.clone());
             start_heartbeat(app.handle().clone(), connection_state);
+            relay::start_relay(app.handle().clone(), relay_state);
             Ok(())
         })
         .on_window_event(|window, event| {
