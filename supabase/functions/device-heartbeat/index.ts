@@ -45,5 +45,5 @@ Deno.serve(async request => {
     }),
   ]);
   if (!deviceUpdate.ok || !credentialUpdate.ok) return reply({ error: "Could not update device heartbeat." }, 503);
-  return reply({ ok: true, device_id: credential.device_id, last_seen_at: now });
+  return reply({ ok: true, device_id: credential.device_id, last_seen_at: now, relay_url: Deno.env.get("MCPOS_RELAY_URL") ?? null });
 });
