@@ -222,6 +222,8 @@ async fn pair_device(code: String, connected: tauri::State<'_, Arc<AtomicBool>>)
     if let Some(relay_url) = paired.relay_url.as_deref().filter(|url| url.starts_with("wss://")) {
         credential(RELAY_URL_KEY)?.set_password(relay_url)
             .map_err(|_| "Could not securely store the relay endpoint.".to_string())?;
+    } else {
+        let _ = credential(RELAY_URL_KEY)?.delete_credential();
     }
 
     connection_state.store(heartbeat().await, Ordering::Relaxed);
