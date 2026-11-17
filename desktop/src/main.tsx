@@ -1,9 +1,11 @@
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import "./style.css";
 
 type DeviceStatus = { paired: boolean; connected: boolean; device_id: string | null };
+type RemoteActionRequest = { requestId: string; command: string; args: Record<string, unknown>; expiresInSeconds: number };
 
 function App() {
   const [code, setCode] = useState("");
@@ -19,6 +21,8 @@ function App() {
   const [keyboardApproved, setKeyboardApproved] = useState(false);
   const [targetApp, setTargetApp] = useState("");
   const [accessibilityTree, setAccessibilityTree] = useState("");
+  const [relayConnected, setRelayConnected] = useState(false);
+  const [pendingRemoteAction, setPendingRemoteAction] = useState<RemoteActionRequest | null>(null);
 
   async function refreshStatus() {
     try { setStatus(await invoke<DeviceStatus>("get_device_status")); }
@@ -34,10 +38,33 @@ function App() {
       void invoke<boolean>("get_keyboard_approval").then(setKeyboardApproved).catch(() => setKeyboardApproved(false));
     }, 0);
     const timer = window.setInterval(() => void refreshStatus(), 15000);
-    return () => { window.clearTimeout(initial); window.clearInterval(timer); };
+    let unlistenApproval: (() => void) | undefined;
+    let unlistenRelay: (() => void) | undefined;
+    void listen<RemoteActionRequest>("remote-action-request", event => setPendingRemoteAction(event.payload))
+      .then(unlisten => { unlistenApproval = unlisten; });
+    void listen<{ connected: boolean }>("relay-status", event => setRelayConnected(event.payload.connected))
+      .then(unlisten => { unlistenRelay = unlisten; });
+    return () => {
+      window.clearTimeout(initial);
+      window.clearInterval(timer);
+      unlistenApproval?.();
+      unlistenRelay?.();
+    };
   }, []);
 
 
+
+
+  async function respondToRemoteAction(approved: boolean) {
+    if (!pendingRemoteAction) return;
+    try {
+      await invoke("respond_remote_action", { requestId: pendingRemoteAction.requestId, approved });
+      setPendingRemoteAction(null);
+    } catch (reason) {
+      setError(typeof reason === "string" ? reason : "Could not submit your approval.");
+      setPendingRemoteAction(null);
+    }
+  }
 
   async function updatePermission(capability: "accessibility" | "pointer" | "keyboard", approved: boolean) {
     setCaptureBusy(true); setError("");
