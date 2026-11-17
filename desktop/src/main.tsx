@@ -14,6 +14,11 @@ function App() {
   const [captureApproved, setCaptureApproved] = useState(false);
   const [captureBusy, setCaptureBusy] = useState(false);
   const [screenImage, setScreenImage] = useState("");
+  const [accessibilityApproved, setAccessibilityApproved] = useState(false);
+  const [pointerApproved, setPointerApproved] = useState(false);
+  const [keyboardApproved, setKeyboardApproved] = useState(false);
+  const [targetApp, setTargetApp] = useState("");
+  const [accessibilityTree, setAccessibilityTree] = useState("");
 
   async function refreshStatus() {
     try { setStatus(await invoke<DeviceStatus>("get_device_status")); }
@@ -24,11 +29,41 @@ function App() {
     const initial = window.setTimeout(() => {
       void refreshStatus();
       void invoke<boolean>("get_screen_capture_approval").then(setCaptureApproved).catch(() => setCaptureApproved(false));
+      void invoke<boolean>("get_accessibility_approval").then(setAccessibilityApproved).catch(() => setAccessibilityApproved(false));
+      void invoke<boolean>("get_pointer_approval").then(setPointerApproved).catch(() => setPointerApproved(false));
+      void invoke<boolean>("get_keyboard_approval").then(setKeyboardApproved).catch(() => setKeyboardApproved(false));
     }, 0);
     const timer = window.setInterval(() => void refreshStatus(), 15000);
     return () => { window.clearTimeout(initial); window.clearInterval(timer); };
   }, []);
 
+
+
+  async function updatePermission(capability: "accessibility" | "pointer" | "keyboard", approved: boolean) {
+    setCaptureBusy(true); setError("");
+    const commands = {
+      accessibility: { invoke: "set_accessibility_approval", set: setAccessibilityApproved },
+      pointer: { invoke: "set_pointer_approval", set: setPointerApproved },
+      keyboard: { invoke: "set_keyboard_approval", set: setKeyboardApproved },
+    } as const;
+    try {
+      await invoke(commands[capability].invoke, { approved });
+      commands[capability].set(approved);
+      setMessage(approved ? capability + " permission approved on this computer." : capability + " permission disabled.");
+    } catch (reason) {
+      setError(typeof reason === "string" ? reason : "Could not update the permission.");
+    } finally { setCaptureBusy(false); }
+  }
+
+  async function inspectApp() {
+    if (!targetApp.trim()) { setError("Enter an application name or process reference first."); return; }
+    setCaptureBusy(true); setError(""); setAccessibilityTree("");
+    try {
+      setAccessibilityTree(await invoke<string>("inspect_application", { appName: targetApp.trim() }));
+    } catch (reason) {
+      setError(typeof reason === "string" ? reason : "Could not inspect the application.");
+    } finally { setCaptureBusy(false); }
+  }
 
   async function updateCaptureApproval(approved: boolean) {
     setCaptureBusy(true); setError("");
@@ -95,8 +130,14 @@ function App() {
         <button disabled={!captureApproved || captureBusy} onClick={() => void captureScreen()}>{captureBusy ? "Working…" : "Capture screen"}</button>
       </div>
       {screenImage && <div className="screen-preview"><img src={screenImage} alt="Locally captured primary display" /><small>Local preview · not shared with an AI client</small></div>}
-      <div className="capability"><span className="symbol">⌖</span><div><strong>Windows accessibility</strong><small>Application controls are not being read or shared.</small></div><span className="disabled">Not enabled</span></div>
-      <div className="capability"><span className="symbol">⌘</span><div><strong>Mouse & keyboard</strong><small>No remote input actions are enabled.</small></div><span className="disabled">Not enabled</span></div>
+      <div className="capability"><span className="symbol">⌖</span><div><strong>Windows accessibility</strong><small>{accessibilityApproved ? "Approved locally. You can inspect an application tree in this desktop app." : "Off by default. No application controls are read."}</small></div><span className={accessibilityApproved ? "enabled" : "disabled"}>{accessibilityApproved ? "Approved" : "Off"}</span></div>
+      <div className="permission-actions"><button className="secondary" disabled={captureBusy} onClick={() => void updatePermission("accessibility", !accessibilityApproved)}>{accessibilityApproved ? "Disable accessibility" : "Approve accessibility"}</button></div>
+      {accessibilityApproved && <div className="local-inspector"><label htmlFor="target-app">Application name or process reference</label><div className="inspector-row"><input id="target-app" value={targetApp} onChange={event => setTargetApp(event.target.value)} placeholder="e.g. notepad or pid:1234" /><button disabled={captureBusy || !targetApp.trim()} onClick={() => void inspectApp()}>{captureBusy ? "Inspecting…" : "Inspect app"}</button></div>{accessibilityTree && <pre className="tree-preview">{accessibilityTree}</pre>}</div>}
+      <div className="capability"><span className="symbol">⌘</span><div><strong>Mouse control</strong><small>{pointerApproved ? "Locally approved. Remote relay is not connected." : "Off by default. No pointer actions can run."}</small></div><span className={pointerApproved ? "enabled" : "disabled"}>{pointerApproved ? "Approved" : "Off"}</span></div>
+      <div className="permission-actions"><button className="secondary" disabled={captureBusy} onClick={() => void updatePermission("pointer", !pointerApproved)}>{pointerApproved ? "Disable mouse control" : "Approve mouse control"}</button></div>
+      <div className="capability"><span className="symbol">⌨</span><div><strong>Keyboard control</strong><small>{keyboardApproved ? "Locally approved. Remote relay is not connected." : "Off by default. No text or key input can run."}</small></div><span className={keyboardApproved ? "enabled" : "disabled"}>{keyboardApproved ? "Approved" : "Off"}</span></div>
+      <div className="permission-actions"><button className="secondary" disabled={captureBusy} onClick={() => void updatePermission("keyboard", !keyboardApproved)}>{keyboardApproved ? "Disable keyboard control" : "Approve keyboard control"}</button></div>
+      <p className="hint">These approvals are stored on this PC. They do not yet enable remote AI control; the authenticated relay and per-action approval workflow are still being built.</p>
       {error && <div className="feedback error">{error}</div>}
       {message && <div className="feedback success">{message}</div>}
     </section>}
