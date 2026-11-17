@@ -24,7 +24,7 @@ async function sendDesktopCommand(deviceId: string, command: string, args: Recor
   if (!relaySecret || relaySecret.length < 32) {
     throw new Error("McpOS relay is not configured on the server.");
   }
-  const response = await fetch(relayUrl.replace(/\\/$/, "") + "/internal/command", {
+  const response = await fetch((relayUrl.endsWith("/") ? relayUrl.slice(0, -1) : relayUrl) + "/internal/command", {
     method: "POST",
     headers: {
       authorization: "Bearer " + relaySecret,
@@ -56,8 +56,9 @@ function makeServer() {
       content: [{ type: "text" as const, text: JSON.stringify({
         name: "McpOS",
         version: "0.1.0",
-        mode: "foundation",
+        mode: "desktop-control-foundation",
         executionEnabled: false,
+        desktopControlEnabled: true,
         availableTools: ["mcpos_status", "mcpos_capabilities", "mcpos_desktop"],
       }, null, 2) }],
     }),
@@ -72,8 +73,9 @@ function makeServer() {
     },
     async ({ includePlanned }) => ({
       content: [{ type: "text", text: JSON.stringify({
-        enabled: ["authenticated MCP endpoint", "workspace status", "capability discovery", "paired desktop relay", "Windows accessibility inspection", "permission-gated screen capture and input"],
+        enabled: ["authenticated MCP endpoint", "workspace status", "capability discovery", "desktop MCP tool implemented", "Windows accessibility inspection", "permission-gated screen capture and input (relay deployment required)"],
         planned: includePlanned === false ? [] : [
+          "Oracle relay deployment and end-to-end connection verification",
           "GitHub repository browsing and pull request workflows",
           "AI coding tasks with explicit approval",
           "isolated terminal sessions",
