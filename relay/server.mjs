@@ -1,5 +1,7 @@
 import http from "node:http";
 import crypto from "node:crypto";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { WebSocketServer, WebSocket } from "ws";
 
 const PORT = Number(process.env.PORT || 8080);
@@ -202,30 +204,39 @@ server.on("upgrade", async (req, socket, head) => {
   });
 });
 
-const keepAlive = setInterval(() => {
-  for (const [deviceId, ws] of devices) {
-    if (ws.readyState !== WebSocket.OPEN) {
-      devices.delete(deviceId);
-      rejectDevicePending(deviceId, "Desktop connection is no longer available.");
-      continue;
+export default server;
+
+// Keep the standalone Docker/local entry point working. Netlify Server imports
+// this module and owns the HTTP listener when the module is not the main script.
+const isMain = Boolean(process.argv[1]) &&
+  import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
+
+if (isMain) {
+  const keepAlive = setInterval(() => {
+    for (const [deviceId, ws] of devices) {
+      if (ws.readyState !== WebSocket.OPEN) {
+        devices.delete(deviceId);
+        rejectDevicePending(deviceId, "Desktop connection is no longer available.");
+        continue;
+      }
+      ws.ping();
     }
-    ws.ping();
-  }
-}, 30_000);
+  }, 30_000);
 
-server.listen(PORT, "0.0.0.0", () => {
-  process.stdout.write(`McpOS relay listening on ${PORT}\n`);
-});
+  server.listen(PORT, "0.0.0.0", () => {
+    process.stdout.write(`McpOS relay listening on ${PORT}\n`);
+  });
 
-function shutdown() {
-  clearInterval(keepAlive);
-  for (const ws of devices.values()) ws.close(1001, "Relay shutting down.");
-  for (const item of pending.values()) {
-    clearTimeout(item.timer);
-    item.reject(new Error("Relay is shutting down."));
+  function shutdown() {
+    clearInterval(keepAlive);
+    for (const ws of devices.values()) ws.close(1001, "Relay shutting down.");
+    for (const item of pending.values()) {
+      clearTimeout(item.timer);
+      item.reject(new Error("Relay is shutting down."));
+    }
+    pending.clear();
+    server.close();
   }
-  pending.clear();
-  server.close(() => process.exit(0));
+  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", shutdown);
 }
-process.on("SIGTERM", shutdown);
-process.on("SIGINT", shutdown);
