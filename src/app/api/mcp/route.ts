@@ -130,7 +130,7 @@ function makeServer() {
           ],
         };
       }
-      return { content: [{ type: "text" as const, text: typeof result === "string" ? result : JSON.stringify(result, null, 2) }] };
+      return { content: [{ type: "text" as const, text: typeof result === "string" ? result : JSON.stringify(result ?? null, null, 2) }] };
     },
   );
 
