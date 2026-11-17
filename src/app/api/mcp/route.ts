@@ -19,9 +19,9 @@ function isAuthorized(request: NextRequest): boolean {
 
 
 async function sendDesktopCommand(deviceId: string, command: string, args: Record<string, unknown>) {
-  const relayUrl = process.env.MCPOS_RELAY_URL ?? "http://relay:8080";
+  const relayUrl = process.env.MCPOS_RELAY_HTTP_URL ?? "";
   const relaySecret = process.env.MCPOS_RELAY_SECRET;
-  if (!relaySecret || relaySecret.length < 32) {
+  if (!relayUrl.startsWith("https://") || !relaySecret || relaySecret.length < 32) {
     throw new Error("McpOS relay is not configured on the server.");
   }
   const response = await fetch((relayUrl.endsWith("/") ? relayUrl.slice(0, -1) : relayUrl) + "/internal/command", {
