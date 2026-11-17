@@ -4,7 +4,6 @@ import { WebSocketServer, WebSocket } from "ws";
 
 const PORT = Number(process.env.PORT || 8080);
 const SUPABASE_URL = (process.env.SUPABASE_URL || "").replace(/\/$/, "");
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || "";
 const RELAY_SECRET = process.env.MCPOS_RELAY_SECRET || "";
 const MAX_BODY_BYTES = 64 * 1024;
 const MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
@@ -13,7 +12,7 @@ const COMMAND_TIMEOUT_MS = 45_000;
 const devices = new Map();
 const pending = new Map();
 if (!RELAY_SECRET || RELAY_SECRET.length < 32) throw new Error("MCPOS_RELAY_SECRET must contain at least 32 characters.");
-if (!SUPABASE_URL || !SUPABASE_ANON_KEY) throw new Error("SUPABASE_URL and SUPABASE_ANON_KEY are required.");
+if (!SUPABASE_URL) throw new Error("SUPABASE_URL is required.");
 
 const allowedCommands = new Set([
   "capture_screen",
@@ -81,7 +80,6 @@ async function authenticateDevice(deviceId, token) {
     const response = await fetch(`${SUPABASE_URL}/functions/v1/device-heartbeat`, {
       method: "POST",
       headers: {
-        apikey: SUPABASE_ANON_KEY,
         authorization: `Bearer ${token}`,
         "content-type": "application/json",
       },
