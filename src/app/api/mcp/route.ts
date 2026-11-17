@@ -103,7 +103,7 @@ function makeServer() {
       }),
     },
     async ({ deviceId, action, appName, x, y, text, key }) => {
-      let commandArgs: Record<string, unknown> = {};
+      const commandArgs: Record<string, unknown> = {};
       if (action !== "capture_screen") {
         if (!appName?.trim()) throw new Error("appName is required for this action.");
         commandArgs.appName = appName.trim();
