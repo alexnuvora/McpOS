@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use computer_use::{CaptureOptions, ClickOptions, ClickTarget, Computer};
 use keyring::Entry;
 use screenshots::Screen;
 use std::io::Cursor;
@@ -18,6 +19,9 @@ const KEYRING_SERVICE: &str = "co.mcpos.desktop";
 const TOKEN_KEY: &str = "device_token";
 const DEVICE_ID_KEY: &str = "device_id";
 const SCREEN_CAPTURE_APPROVAL_KEY: &str = "approval_screen_capture";
+const ACCESSIBILITY_APPROVAL_KEY: &str = "approval_accessibility";
+const POINTER_APPROVAL_KEY: &str = "approval_pointer";
+const KEYBOARD_APPROVAL_KEY: &str = "approval_keyboard";
 
 #[derive(Serialize)]
 struct DeviceStatus {
@@ -125,7 +129,7 @@ fn start_heartbeat(app: tauri::AppHandle, connected: Arc<AtomicBool>) {
 
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![pair_device, get_device_status, get_screen_capture_approval, set_screen_capture_approval, capture_screen])
+        .invoke_handler(tauri::generate_handler![pair_device, get_device_status, get_screen_capture_approval, set_screen_capture_approval, capture_screen, get_accessibility_approval, set_accessibility_approval, get_pointer_approval, set_pointer_approval, get_keyboard_approval, set_keyboard_approval, inspect_application, click_application, type_application_text, press_application_key])
         .setup(|app| {
             let open = MenuItem::with_id(app, "open", "Open McpOS", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit McpOS", true, None::<&str>)?;
