@@ -1,8 +1,13 @@
-{
-	email {$ACME_EMAIL}
-}
+:443 {
+  tls /etc/letsencrypt/live/{$MCPOS_PUBLIC_IP}/fullchain.pem /etc/letsencrypt/live/{$MCPOS_PUBLIC_IP}/privkey.pem
 
-{$MCPOS_DOMAIN} {
-	encode zstd gzip
-	reverse_proxy mcpos:3000
+  @relay path /relay/*
+  handle @relay {
+    reverse_proxy relay:8080
+  }
+
+  handle {
+    encode zstd gzip
+    reverse_proxy mcpos:3000
+  }
 }
