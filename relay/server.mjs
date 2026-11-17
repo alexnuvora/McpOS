@@ -12,6 +12,9 @@ const COMMAND_TIMEOUT_MS = 45_000;
 
 const devices = new Map();
 const pending = new Map();
+if (!RELAY_SECRET || RELAY_SECRET.length < 32) throw new Error("MCPOS_RELAY_SECRET must contain at least 32 characters.");
+if (!SUPABASE_URL || !SUPABASE_ANON_KEY) throw new Error("SUPABASE_URL and SUPABASE_ANON_KEY are required.");
+
 const allowedCommands = new Set([
   "capture_screen",
   "inspect_application",
@@ -187,12 +190,16 @@ server.on("upgrade", async (req, socket, head) => {
     });
 
     ws.on("close", () => {
-      if (devices.get(deviceId) === ws) devices.delete(deviceId);
-      rejectDevicePending(deviceId, "Desktop disconnected before responding.");
+      if (devices.get(deviceId) === ws) {
+        devices.delete(deviceId);
+        rejectDevicePending(deviceId, "Desktop disconnected before responding.");
+      }
     });
     ws.on("error", () => {
-      if (devices.get(deviceId) === ws) devices.delete(deviceId);
-      rejectDevicePending(deviceId, "Desktop relay connection failed.");
+      if (devices.get(deviceId) === ws) {
+        devices.delete(deviceId);
+        rejectDevicePending(deviceId, "Desktop relay connection failed.");
+      }
     });
   });
 });
