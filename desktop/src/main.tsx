@@ -11,6 +11,9 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [captureApproved, setCaptureApproved] = useState(false);
+  const [captureBusy, setCaptureBusy] = useState(false);
+  const [screenImage, setScreenImage] = useState("");
 
   async function refreshStatus() {
     try { setStatus(await invoke<DeviceStatus>("get_device_status")); }
@@ -18,10 +21,37 @@ function App() {
   }
 
   useEffect(() => {
-    const initial = window.setTimeout(() => void refreshStatus(), 0);
+    const initial = window.setTimeout(() => {
+      void refreshStatus();
+      void invoke<boolean>("get_screen_capture_approval").then(setCaptureApproved).catch(() => setCaptureApproved(false));
+    }, 0);
     const timer = window.setInterval(() => void refreshStatus(), 15000);
     return () => { window.clearTimeout(initial); window.clearInterval(timer); };
   }, []);
+
+
+  async function updateCaptureApproval(approved: boolean) {
+    setCaptureBusy(true); setError("");
+    try {
+      await invoke("set_screen_capture_approval", { approved });
+      setCaptureApproved(approved);
+      if (!approved) setScreenImage("");
+      setMessage(approved ? "Screen capture permission enabled on this computer. Captures remain local to this app." : "Screen capture permission disabled.");
+    } catch (reason) {
+      setError(typeof reason === "string" ? reason : "Could not update screen-capture permission.");
+    } finally { setCaptureBusy(false); }
+  }
+
+  async function captureScreen() {
+    setCaptureBusy(true); setError(""); setMessage("");
+    try {
+      const image = await invoke<string>("capture_screen");
+      setScreenImage(image);
+      setMessage("Screen captured locally. It has not been uploaded or shared.");
+    } catch (reason) {
+      setError(typeof reason === "string" ? reason : "Screen capture failed.");
+    } finally { setCaptureBusy(false); }
+  }
 
   async function pair() {
     setBusy(true); setError(""); setMessage("");
@@ -59,7 +89,12 @@ function App() {
       <div className="panel-heading"><div><strong>Device connection</strong><small>Device ID: {status.device_id ?? "Registered"}</small></div><span className="tag">PAIRED</span></div>
       <div className="capability"><span className="symbol">✓</span><div><strong>Device identity</strong><small>Credential stored securely on this Windows computer.</small></div><span className="enabled">Paired</span></div>
       <div className="capability"><span className="symbol">↻</span><div><strong>Connection heartbeat</strong><small>The desktop companion sends a heartbeat every 30 seconds.</small></div><span className={status.connected ? "enabled" : "disabled"}>{status.connected ? "Connected" : "Offline"}</span></div>
-      <div className="capability"><span className="symbol">▧</span><div><strong>Screen observation</strong><small>Screen capture remains disabled until a separate consent workflow is implemented.</small></div><span className="disabled">Not enabled</span></div>
+      <div className="capability"><span className="symbol">▧</span><div><strong>Screen observation</strong><small>{captureApproved ? "Approved on this computer. Captures are local and are not transmitted." : "Off by default. Enable only when you want this computer to capture its primary display."}</small></div><span className={captureApproved ? "enabled" : "disabled"}>{captureApproved ? "Approved" : "Off"}</span></div>
+      <div className="permission-actions">
+        <button className="secondary" disabled={captureBusy} onClick={() => void updateCaptureApproval(!captureApproved)}>{captureBusy ? "Please wait…" : captureApproved ? "Disable screen capture" : "Approve screen capture"}</button>
+        <button disabled={!captureApproved || captureBusy} onClick={() => void captureScreen()}>{captureBusy ? "Working…" : "Capture screen"}</button>
+      </div>
+      {screenImage && <div className="screen-preview"><img src={screenImage} alt="Locally captured primary display" /><small>Local preview · not shared with an AI client</small></div>}
       <div className="capability"><span className="symbol">⌖</span><div><strong>Windows accessibility</strong><small>Application controls are not being read or shared.</small></div><span className="disabled">Not enabled</span></div>
       <div className="capability"><span className="symbol">⌘</span><div><strong>Mouse & keyboard</strong><small>No remote input actions are enabled.</small></div><span className="disabled">Not enabled</span></div>
       {error && <div className="feedback error">{error}</div>}
