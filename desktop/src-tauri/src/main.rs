@@ -1,6 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use keyring::Entry;
+use screenshots::Screen;
+use std::io::Cursor;
 use serde::{Deserialize, Serialize};
 use std::{sync::{Arc, atomic::{AtomicBool, Ordering}}, time::Duration};
 use tauri::{
@@ -14,6 +17,7 @@ const SUPABASE_ANON_KEY: Option<&str> = option_env!("SUPABASE_ANON_KEY");
 const KEYRING_SERVICE: &str = "co.mcpos.desktop";
 const TOKEN_KEY: &str = "device_token";
 const DEVICE_ID_KEY: &str = "device_id";
+const SCREEN_CAPTURE_APPROVAL_KEY: &str = "approval_screen_capture";
 
 #[derive(Serialize)]
 struct DeviceStatus {
@@ -121,7 +125,7 @@ fn start_heartbeat(app: tauri::AppHandle, connected: Arc<AtomicBool>) {
 
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![pair_device, get_device_status])
+        .invoke_handler(tauri::generate_handler![pair_device, get_device_status, get_screen_capture_approval, set_screen_capture_approval, capture_screen])
         .setup(|app| {
             let open = MenuItem::with_id(app, "open", "Open McpOS", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit McpOS", true, None::<&str>)?;
