@@ -49,7 +49,8 @@ test("relay authenticates a paired device and returns command results", async t 
 
   t.after(async () => {
     child.kill("SIGTERM");
-    mockSupabase.close();
+    await once(child, "exit").catch(() => {});
+    await new Promise(resolve => mockSupabase.close(resolve));
   });
 
   let ready = false;
@@ -83,18 +84,20 @@ test("relay authenticates a paired device and returns command results", async t 
   const socket = new WebSocket("ws://127.0.0.1:" + relayPort + "/relay/device", {
     headers: { authorization: "Bearer " + DEVICE_TOKEN, "x-device-id": DEVICE_ID },
   });
+  const connectedMessage = once(socket, "message");
   await once(socket, "open");
-  const connected = JSON.parse((await once(socket, "message"))[0].toString());
+  const connected = JSON.parse((await connectedMessage)[0].toString());
   assert.equal(connected.type, "connected");
   assert.equal(connected.deviceId, DEVICE_ID);
 
+  const incomingMessage = once(socket, "message");
   const commandPromise = fetch("http://127.0.0.1:" + relayPort + "/internal/command", {
     method: "POST",
     headers: { authorization: "Bearer " + RELAY_SECRET, "content-type": "application/json" },
     body: JSON.stringify({ deviceId: DEVICE_ID, command: "inspect_application", args: { appName: "notepad" } }),
   });
 
-  const incoming = JSON.parse((await once(socket, "message"))[0].toString());
+  const incoming = JSON.parse((await incomingMessage)[0].toString());
   assert.equal(incoming.type, "command");
   assert.equal(incoming.command, "inspect_application");
   socket.send(JSON.stringify({ type: "result", id: incoming.id, ok: true, result: "window tree" }));
