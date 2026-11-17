@@ -48,8 +48,10 @@ test("relay authenticates a paired device and returns command results", async t 
   });
 
   t.after(async () => {
-    child.kill("SIGTERM");
-    await once(child, "exit").catch(() => {});
+    if (child.exitCode === null) {
+      child.kill("SIGTERM");
+      await once(child, "exit").catch(() => {});
+    }
     await new Promise(resolve => mockSupabase.close(resolve));
   });
 
