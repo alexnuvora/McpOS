@@ -57,6 +57,18 @@ jobs:
           printf '%s\n' "$rpc_info"
           printf '%s' "$rpc_info" | jq -e 'length == 1 and .[0].service_role_can_execute == true' >/dev/null || (echo "::error::Public pairing RPC is missing or not executable by service_role" && exit 1)
 
+      - name: Configure optional desktop relay endpoint
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
+          MCPOS_RELAY_URL: ${{ vars.MCPOS_RELAY_URL }}
+        run: |
+          if [ -n "$MCPOS_RELAY_URL" ]; then
+            supabase secrets set MCPOS_RELAY_URL="$MCPOS_RELAY_URL" --project-ref "$SUPABASE_PROJECT_REF"
+          else
+            echo "MCPOS_RELAY_URL is not configured yet; paired devices will not start the remote relay."
+          fi
+
       - name: Deploy Edge Functions
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
