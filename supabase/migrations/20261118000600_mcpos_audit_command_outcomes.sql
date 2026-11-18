@@ -15,7 +15,9 @@ begin
     raise exception 'invalid_device_credential' using errcode = 'P0001';
   end if;
   update public.mcpos_device_commands
-     set status = case when p_error_message is null then 'completed'\n                        when p_error_message like 'The user denied%' then 'denied'\n                        else 'failed' end,
+     set status = case when p_error_message is null then 'completed'
+                        when p_error_message like 'The user denied%' then 'denied'
+                        else 'failed' end,
          result = coalesce(p_result, '{}'::jsonb),
          error_message = case when p_error_message is null then null else left(p_error_message, 500) end,
          completed_at = pg_catalog.now()
