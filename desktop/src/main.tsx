@@ -121,7 +121,7 @@ function App() {
     <section className="hero">
       <div className="eyebrow">WINDOWS COMPANION · LOCAL SESSION</div>
       <h1>Your AI, with permission to act.</h1>
-      <p>Pair this computer with your McpOS workspace. Pairing establishes device identity only — it does not grant screen, accessibility, mouse, keyboard or file access.</p>
+      <p>Pair this computer with your McpOS workspace. Pairing establishes device identity only — it does not grant screen, accessibility, browser, mouse, keyboard or file access.</p>
       <div className="notice"><span className="lock">⌑</span><div><strong>{status.paired ? "This computer has a device identity" : "Desktop access is not enabled"}</strong><small>{status.paired ? status.connected ? "Connected to McpOS. The companion sends a secure heartbeat every 30 seconds." : "The device is paired, but the heartbeat is currently offline. Check your internet connection." : "No desktop data or controls are shared until you separately approve a capability."}</small></div></div>
     </section>
     {!status.paired && <section className="panel pairing-panel">
