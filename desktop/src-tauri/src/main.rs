@@ -567,7 +567,8 @@ async fn approve_pending_action(pending: tauri::State<'_, PendingAction>, app: t
     } else {
         execute_input_action(&command)
     };
-    let (result, error) = match action_result { Ok(result) => (result, None), Err(message) => (serde_json::json!({}), Some(message)) };
+    let (mut result, error) = match action_result { Ok(result) => (result, None), Err(message) => (serde_json::json!({}), Some(message)) };
+    if error.is_none() { result["approval_mode"] = serde_json::Value::String("manual".into()); }
     let submission = submit_relay_result(&command.id, result, error.clone()).await;
     pending.0.lock().map_err(|_| "Approval state is unavailable.".to_string())?.take();
     submission?;
@@ -621,7 +622,8 @@ async fn poll_relay_once(connected: &Arc<AtomicBool>, screen_consent: &Arc<Atomi
             } else {
                 execute_input_action(&command)
             };
-            let (result, error) = match action { Ok(v) => (v, None), Err(e) => (serde_json::json!({}), Some(e)) };
+            let (mut result, error) = match action { Ok(v) => (v, None), Err(e) => (serde_json::json!({}), Some(e)) };
+            if error.is_none() { result["approval_mode"] = serde_json::Value::String("auto".into()); }
             let _ = submit_relay_result(&command.id, result, error).await;
             return;
         }
@@ -670,7 +672,7 @@ async fn poll_relay_once(connected: &Arc<AtomicBool>, screen_consent: &Arc<Atomi
             } else {
                 match capture_screen_jpeg() {
                     Ok((image_base64, width, height)) => (
-                        serde_json::json!({ "image_base64": image_base64, "mime_type": "image/jpeg", "width": width, "height": height }),
+                        serde_json::json!({ "image_base64": image_base64, "mime_type": "image/jpeg", "width": width, "height": height, "approval_mode": if allowed_by_policy { "auto" } else { "local_consent" } }),
                         None,
                     ),
                     Err(message) => (serde_json::json!({}), Some(message)),
