@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use base64::Engine;
+use enigo::{Button, Coordinate, Direction, Enigo, Keyboard, Mouse, Settings};
 use keyring::Entry;
 use serde::{Deserialize, Serialize};
 use std::{path::{Path, PathBuf}, sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}}, time::Duration};
@@ -58,6 +59,7 @@ async fn heartbeat() -> bool {
 struct ScreenCaptureConsent(Arc<AtomicBool>);
 struct AccessibilityConsent(Arc<AtomicBool>);
 struct ApprovedFolders(Arc<Mutex<Vec<PathBuf>>>);
+struct PendingAction(Arc<Mutex<Option<RelayCommand>>>);
 
 #[tauri::command]
 fn get_accessibility_consent(consent: tauri::State<'_, AccessibilityConsent>) -> bool {
@@ -119,6 +121,17 @@ fn capture_screen_jpeg() -> Result<(String, u32, u32), String> {
 #[tauri::command]
 fn get_device_status(connected: tauri::State<'_, Arc<AtomicBool>>) -> DeviceStatus {
     let paired = stored_token().is_some();
+    if command.command == "input.pointer.click" || command.command == "input.keyboard.type" {
+        let mut pending = pending_action.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if pending.is_none() {
+            *pending = Some(command);
+        } else {
+            let command_id = command.id.clone();
+            drop(pending);
+            let _ = submit_relay_result(&command_id, serde_json::json!({}), Some("Another local approval is already pending.".to_string())).await;
+        }
+        return;
+    }
     let device_id = credential(DEVICE_ID_KEY).ok().and_then(|entry| entry.get_password().ok());
     DeviceStatus { paired, connected: connected.load(Ordering::Relaxed), device_id }
 }
@@ -162,7 +175,7 @@ async fn pair_device(code: String, connected: tauri::State<'_, Arc<AtomicBool>>)
 }
 
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct RelayCommand {
     id: String,
     command: String,
@@ -243,7 +256,64 @@ struct RelayPollResponse {
     command: Option<RelayCommand>,
 }
 
-async fn poll_relay_once(connected: &Arc<AtomicBool>, screen_consent: &Arc<AtomicBool>, accessibility_consent: &Arc<AtomicBool>, approved_folders: &Arc<Mutex<Vec<PathBuf>>>) {
+fn execute_input_action(command: &RelayCommand) -> Result<serde_json::Value, String> {
+    let mut enigo = Enigo::new(&Settings::default()).map_err(|_| "Windows input simulation could not start.".to_string())?;
+    match command.command.as_str() {
+        "input.pointer.click" => {
+            let x = command.payload.get("x").and_then(|value| value.as_i64()).ok_or("A valid x coordinate is required.")?;
+            let y = command.payload.get("y").and_then(|value| value.as_i64()).ok_or("A valid y coordinate is required.")?;
+            let button = command.payload.get("button").and_then(|value| value.as_str()).unwrap_or("left");
+            let (width, height) = enigo.main_display().map_err(|_| "Could not read the primary display dimensions.".to_string())?;
+            if x < 0 || y < 0 || x >= width as i64 || y >= height as i64 { return Err("Click coordinates are outside the primary display.".to_string()); }
+            let mouse_button = match button { "left" => Button::Left, "right" => Button::Right, _ => return Err("Only left and right clicks are supported.".to_string()) };
+            enigo.move_mouse(x as i32, y as i32, Coordinate::Abs).map_err(|_| "Could not move the pointer.".to_string())?;
+            enigo.button(mouse_button, Direction::Click).map_err(|_| "The click action failed.".to_string())?;
+            Ok(serde_json::json!({ "action": "click", "x": x, "y": y, "button": button, "approved_locally": true }))
+        },
+        "input.keyboard.type" => {
+            let text = command.payload.get("text").and_then(|value| value.as_str()).ok_or("Text is required.")?;
+            if text.is_empty() || text.chars().count() > 200 || text.chars().any(|character| character.is_control()) { return Err("Text must be 1–200 characters and contain no control characters.".to_string()); }
+            enigo.text(text).map_err(|_| "Windows could not enter the approved text.".to_string())?;
+            Ok(serde_json::json!({ "action": "type_text", "characters": text.chars().count(), "approved_locally": true }))
+        },
+        _ => Err("Unsupported input action.".to_string()),
+    }
+}
+
+async fn submit_relay_result(command_id: &str, result: serde_json::Value, error_message: Option<String>) -> Result<(), String> {
+    let token = stored_token().ok_or("This computer is no longer paired.".to_string())?;
+    let api_key = SUPABASE_ANON_KEY.filter(|value| !value.is_empty()).ok_or("Desktop relay is not configured.".to_string())?;
+    let mut body = serde_json::json!({ "command_id": command_id, "result": result });
+    if let Some(message) = error_message { body["error_message"] = serde_json::Value::String(message); }
+    let response = reqwest::Client::new().post(format!("{SUPABASE_URL}/functions/v1/device-result"))
+        .header("apikey", api_key).bearer_auth(&token).json(&body).send().await
+        .map_err(|_| "Could not submit the action result.".to_string())?;
+    if !response.status().is_success() { return Err(format!("The relay rejected the action result ({}).", response.status())); }
+    Ok(())
+}
+
+#[tauri::command]
+fn get_pending_action(pending: tauri::State<'_, PendingAction>) -> Option<serde_json::Value> {
+    pending.0.lock().ok()?.as_ref().map(|command| serde_json::json!({ "id": command.id, "command": command.command, "payload": command.payload }))
+}
+
+#[tauri::command]
+async fn approve_pending_action(pending: tauri::State<'_, PendingAction>) -> Result<String, String> {
+    let command = pending.0.lock().map_err(|_| "Approval state is unavailable.".to_string())?.clone().ok_or("There is no pending action to approve.")?;
+    let (result, error) = match execute_input_action(&command) { Ok(result) => (result, None), Err(message) => (serde_json::json!({}), Some(message)) };
+    submit_relay_result(&command.id, result, error.clone()).await?;
+    pending.0.lock().map_err(|_| "Approval state is unavailable.".to_string())?.take();
+    if let Some(message) = error { Err(message) } else { Ok("The approved action was executed on this computer.".to_string()) }
+}
+
+#[tauri::command]
+async fn deny_pending_action(pending: tauri::State<'_, PendingAction>) -> Result<String, String> {
+    let command = pending.0.lock().map_err(|_| "Approval state is unavailable.".to_string())?.clone().ok_or("There is no pending action to deny.")?;
+    submit_relay_result(&command.id, serde_json::json!({}), Some("The user denied this action on the Windows computer.".to_string())).await?;
+    pending.0.lock().map_err(|_| "Approval state is unavailable.".to_string())?.take();
+    Ok("Action denied. Nothing was executed.".to_string())
+}
+async fn poll_relay_once(connected: &Arc<AtomicBool>, screen_consent: &Arc<AtomicBool>, accessibility_consent: &Arc<AtomicBool>, approved_folders: &Arc<Mutex<Vec<PathBuf>>>, pending_action: &Arc<Mutex<Option<RelayCommand>>>) {
     let Some(token) = stored_token() else { return };
     let Some(api_key) = SUPABASE_ANON_KEY else { return };
     if api_key.is_empty() { return; }
@@ -331,10 +401,10 @@ async fn poll_relay_once(connected: &Arc<AtomicBool>, screen_consent: &Arc<Atomi
         .await;
 }
 
-fn start_relay_polling(connected: Arc<AtomicBool>, screen_consent: Arc<AtomicBool>, accessibility_consent: Arc<AtomicBool>, approved_folders: Arc<Mutex<Vec<PathBuf>>>) {
+fn start_relay_polling(connected: Arc<AtomicBool>, screen_consent: Arc<AtomicBool>, accessibility_consent: Arc<AtomicBool>, approved_folders: Arc<Mutex<Vec<PathBuf>>>, pending_action: Arc<Mutex<Option<RelayCommand>>>) {
     tauri::async_runtime::spawn(async move {
         loop {
-            poll_relay_once(&connected, &screen_consent, &accessibility_consent, &approved_folders).await;
+            poll_relay_once(&connected, &screen_consent, &accessibility_consent, &approved_folders, &pending_action).await;
             tokio::time::sleep(Duration::from_secs(10)).await;
         }
     });
@@ -364,7 +434,7 @@ fn start_heartbeat(app: tauri::AppHandle, connected: Arc<AtomicBool>) {
 
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![pair_device, get_device_status, get_screen_capture_consent, set_screen_capture_consent, get_accessibility_consent, set_accessibility_consent, get_approved_folders, pick_approved_folder, remove_approved_folder])
+        .invoke_handler(tauri::generate_handler![pair_device, get_device_status, get_screen_capture_consent, set_screen_capture_consent, get_accessibility_consent, set_accessibility_consent, get_approved_folders, pick_approved_folder, remove_approved_folder, get_pending_action, approve_pending_action, deny_pending_action])
         .setup(|app| {
             let open = MenuItem::with_id(app, "open", "Open McpOS", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit McpOS", true, None::<&str>)?;
@@ -399,8 +469,10 @@ fn main() {
             app.manage(AccessibilityConsent(accessibility_consent.clone()));
             let approved_folders = Arc::new(Mutex::new(Vec::new()));
             app.manage(ApprovedFolders(approved_folders.clone()));
+            let pending_action = Arc::new(Mutex::new(None));
+            app.manage(PendingAction(pending_action.clone()));
             start_heartbeat(app.handle().clone(), connection_state.clone());
-            start_relay_polling(connection_state, screen_consent, accessibility_consent, approved_folders);
+            start_relay_polling(connection_state, screen_consent, accessibility_consent, approved_folders, pending_action);
             Ok(())
         })
         .on_window_event(|window, event| {
