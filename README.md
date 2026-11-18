@@ -65,6 +65,26 @@ npm run dev
 
 Open http://localhost:3000.
 
+
+## Dashboard authentication
+
+The control centre uses Supabase Auth email magic links. No GitHub App or GitHub OAuth credentials are required. GitHub Actions remains responsible for deployment automation and is independent of dashboard sign-in.
+
+Configure these Netlify environment variables:
+
+- `NEXT_PUBLIC_SUPABASE_URL`: the McpOS Supabase project URL.
+- `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`: the project's publishable key. This is designed for browser use.
+- `SUPABASE_URL`: the same project URL, for server-side device operations.
+- `SUPABASE_SERVICE_ROLE_KEY`: server-only service-role/secret key. Never prefix this with `NEXT_PUBLIC_`.
+- `MCPOS_ALLOWED_EMAILS`: comma-separated allowlist of email addresses permitted to use this private workspace.
+
+In Supabase Authentication > URL Configuration, set the Site URL to `https://mcpos-dashboard.netlify.app` and add these Redirect URLs:
+
+- `https://mcpos-dashboard.netlify.app/auth/callback`
+- `http://localhost:3000/auth/callback` (local development)
+
+Ensure the Email provider is enabled. The callback verifies the signed-in user's email against `MCPOS_ALLOWED_EMAILS`; unapproved users are signed out and cannot access device APIs. Device ownership continues to use the authenticated Supabase user ID. The service-role key is used only by server-side API routes.
+
 ## Existing MCP endpoint
 
 After deploying the web application and configuring `MCP_BEARER_TOKEN`, the current endpoint is:
