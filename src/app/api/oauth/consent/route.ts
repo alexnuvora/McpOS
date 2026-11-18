@@ -5,7 +5,7 @@ import { MCP_RESOURCE_URL, MCP_SCOPES } from "@/lib/mcp-oauth";
 
 export const dynamic = "force-dynamic";
 
-type ConsentRequest = { clientId: string; redirectUri: string; challenge: string; resource: string; scopes: string[]; state?: string };
+type ConsentRequest = { clientId: string; clientName: string; redirectUri: string; challenge: string; resource: string; scopes: string[]; state?: string };
 
 export async function POST(request: NextRequest) {
   const auth = await getDeviceAccount(request);
