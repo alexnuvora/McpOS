@@ -57,15 +57,24 @@ export async function POST(request: NextRequest) {
 export async function DELETE(request: NextRequest) {
   const auth = await getDeviceAccount(request);
   if ("response" in auth) return auth.response;
-  let body: { client_id?: unknown };
+  let body: { client_id?: unknown; revoke_all?: unknown };
   try { body = await request.json(); } catch { return NextResponse.json({ error: "Invalid request body." }, { status: 400 }); }
+  const revokedAt = new Date().toISOString();
+  if (body.revoke_all === true) {
+    const response = await supabaseRest(`mcpos_mcp_clients?user_id=eq.${auth.account.userId}&revoked_at=is.null`, {
+      method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ revoked_at: revokedAt }),
+    });
+    if (!response.ok) return NextResponse.json({ error: "Could not revoke all AI clients." }, { status: 503 });
+    await supabaseRest("mcpos_device_audit", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ user_id: auth.account.userId, event_type: "mcp.clients.revoked_all", outcome: "success", metadata: {} }) });
+    return NextResponse.json({ ok: true, revokedAll: true });
+  }
   if (typeof body.client_id !== "string" || !/^[0-9a-f-]{36}$/i.test(body.client_id)) {
     return NextResponse.json({ error: "A valid client_id is required." }, { status: 400 });
   }
-  const response = await supabaseRest(
-    `mcpos_mcp_clients?id=eq.${body.client_id}&user_id=eq.${auth.account.userId}&revoked_at=is.null`,
-    { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ revoked_at: new Date().toISOString() }) },
-  );
+  const response = await supabaseRest(`mcpos_mcp_clients?id=eq.${body.client_id}&user_id=eq.${auth.account.userId}&revoked_at=is.null`, {
+    method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ revoked_at: revokedAt }),
+  });
   if (!response.ok) return NextResponse.json({ error: "Could not revoke the MCP client." }, { status: 503 });
+  await supabaseRest("mcpos_device_audit", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ user_id: auth.account.userId, event_type: "mcp.client.revoked", outcome: "success", metadata: { client_id: body.client_id } }) });
   return NextResponse.json({ ok: true });
 }
