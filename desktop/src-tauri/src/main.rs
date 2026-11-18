@@ -66,6 +66,18 @@ struct BrowserConsent(Arc<AtomicBool>);
 struct BrowserBridge { port: u16, pending: Arc<Mutex<HashMap<String, SyncSender<String>>>> }
 
 #[tauri::command]
+fn get_browser_consent(consent: tauri::State<'_, BrowserConsent>) -> bool {
+    consent.0.load(Ordering::Relaxed)
+}
+
+#[tauri::command]
+fn set_browser_consent(enabled: bool, consent: tauri::State<'_, BrowserConsent>) -> bool {
+    consent.0.store(enabled, Ordering::Relaxed);
+    enabled
+}
+
+
+#[tauri::command]
 fn get_accessibility_consent(consent: tauri::State<'_, AccessibilityConsent>) -> bool {
     consent.0.load(Ordering::Relaxed)
 }
@@ -296,7 +308,8 @@ fn open_isolated_browser(app: &tauri::AppHandle, raw_url: &str) -> Result<String
     if let Some(host) = url.host_str() {
         if host.eq_ignore_ascii_case("localhost") || host.ends_with(".local") { return Err("Local and .local network hosts are blocked in the isolated browser.".to_string()); }
         if let Ok(address) = host.parse::<std::net::IpAddr>() {
-            if address.is_loopback() || address.is_private_or_unique_local() { return Err("Private and loopback IP addresses are blocked in the isolated browser.".to_string()); }
+            const is_private = match address { std::net::IpAddr::V4(value) => value.is_loopback() || value.is_private() || value.is_link_local(), std::net::IpAddr::V6(value) => value.is_loopback() || (value.segments()[0] & 0xfe00) == 0xfc00 || value.is_unicast_link_local() };
+            if is_private { return Err("Private and loopback IP addresses are blocked in the isolated browser.".to_string()); }
         }
     }
     if let Some(window) = app.get_webview_window("mcpos-isolated-browser") {
