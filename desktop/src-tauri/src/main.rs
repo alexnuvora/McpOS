@@ -153,6 +153,33 @@ fn capture_screen_jpeg() -> Result<(String, u32, u32), String> {
     Ok((base64::engine::general_purpose::STANDARD.encode(bytes), width, height))
 }
 #[tauri::command]
+fn reset_device_pairing(
+    connected: tauri::State<'_, Arc<AtomicBool>>,
+    screen_consent: tauri::State<'_, ScreenCaptureConsent>,
+    accessibility_consent: tauri::State<'_, AccessibilityConsent>,
+    browser_consent: tauri::State<'_, BrowserConsent>,
+    approved_folders: tauri::State<'_, ApprovedFolders>,
+    pending_action: tauri::State<'_, PendingAction>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    // Remove the locally stored identity only. The dashboard remains the authority
+    // for revocation; a fresh one-time code is required to register this computer again.
+    credential(TOKEN_KEY)?.delete_credential()
+        .map_err(|error| format!("Could not remove the saved device token from Windows Credential Manager: {error}"))?;
+    credential(DEVICE_ID_KEY)?.delete_credential()
+        .map_err(|error| format!("Could not remove the saved device ID from Windows Credential Manager: {error}"))?;
+
+    connected.store(false, Ordering::Relaxed);
+    screen_consent.store(false, Ordering::Relaxed);
+    accessibility_consent.store(false, Ordering::Relaxed);
+    browser_consent.store(false, Ordering::Relaxed);
+    approved_folders.lock().map_err(|_| "Could not clear local folder approvals.".to_string())?.clear();
+    pending_action.lock().map_err(|_| "Could not clear the pending local action.".to_string())?.take();
+    if let Some(window) = app.get_webview_window("mcpos-isolated-browser") { let _ = window.close(); }
+    Ok(())
+}
+
+#[tauri::command]
 fn get_device_status(connected: tauri::State<'_, Arc<AtomicBool>>) -> DeviceStatus {
     let paired = stored_token().is_some();
 
@@ -630,7 +657,7 @@ fn start_heartbeat(app: tauri::AppHandle, connected: Arc<AtomicBool>) {
 
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![pair_device, get_device_status, get_screen_capture_consent, set_screen_capture_consent, get_accessibility_consent, set_accessibility_consent, get_approved_folders, pick_approved_folder, remove_approved_folder, get_pending_action, approve_pending_action, deny_pending_action, get_browser_consent, set_browser_consent])
+        .invoke_handler(tauri::generate_handler![pair_device, reset_device_pairing, get_device_status, get_screen_capture_consent, set_screen_capture_consent, get_accessibility_consent, set_accessibility_consent, get_approved_folders, pick_approved_folder, remove_approved_folder, get_pending_action, approve_pending_action, deny_pending_action, get_browser_consent, set_browser_consent])
         .setup(|app| {
             let open = MenuItem::with_id(app, "open", "Open McpOS", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit McpOS", true, None::<&str>)?;
