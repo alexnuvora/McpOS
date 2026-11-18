@@ -121,6 +121,7 @@ function makeServer(client: McpClient) {
         headers: { Prefer: "return=representation" },
         body: JSON.stringify({
           user_id: client.user_id,
+          mcp_client_id: client.id,
           device_id: device.id,
           command: "desktop.status",
           payload: {},
