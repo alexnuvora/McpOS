@@ -21,6 +21,9 @@ export async function POST(request: NextRequest) {
     await supabaseRest(`mcpos_mcp_clients?id=eq.${revoked[0].mcp_client_id}`, {
       method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ revoked_at: new Date().toISOString() }),
     });
+    await supabaseRest(`mcpos_oauth_refresh_tokens?mcp_client_id=eq.${revoked[0].mcp_client_id}&revoked_at=is.null`, {
+      method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ revoked_at: new Date().toISOString() }),
+    });
   } else {
     const access = await supabaseRest(`mcpos_mcp_clients?token_hash=eq.${refreshHash}&revoked_at=is.null`, {
       method: "PATCH", headers: { Prefer: "return=representation" }, body: JSON.stringify({ revoked_at: new Date().toISOString() }),
