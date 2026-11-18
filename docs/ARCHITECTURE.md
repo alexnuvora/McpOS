@@ -8,16 +8,16 @@ McpOS is a Windows-first desktop agent platform with three cooperating component
 2. **Gateway** — the web-hosted identity, MCP and relay service. It authenticates AI clients and paired devices, authorises individual tool calls, routes requests to the correct online device and records audit events.
 3. **Control Centre** — the Next.js web application for account management, device pairing, permissions, active sessions, audit history and integrations.
 
-The desktop companion makes an outbound authenticated connection to the gateway. No public inbound port or direct internet exposure of the user's PC is required.
+The desktop companion makes outbound authenticated HTTPS polling requests to the Supabase command queue and posts results back. No public inbound port or direct internet exposure of the user's PC is required. A persistent WebSocket relay is not yet implemented.
 
 ## Request flow
 
 1. The user installs the signed desktop companion and signs in or pairs it using a short-lived one-time code.
-2. The companion creates a device identity and establishes an outbound encrypted connection to the gateway.
-3. An AI client authenticates separately to the MCP gateway.
-4. The gateway verifies the user, client, device, capability grant and session state for every tool call.
-5. The companion validates the request again locally, checks consent and approval requirements, then performs the narrow native action.
-6. The companion returns a structured result. The gateway records the action metadata and returns the result to the MCP client.
+2. The companion creates a device identity and polls the authenticated command queue over outbound HTTPS.
+3. An AI client authenticates separately to the MCP gateway using an individually revocable, hashed client credential.
+4. The gateway verifies the user, client, device, capability grant and session state for every tool call, then queues a typed command.
+5. The companion claims the queued command using its device credential, validates the typed command locally, and returns a structured result. Only the read-only desktop.status command is implemented today.
+6. The gateway returns the result to the authenticated MCP client. Screen observation is guarded by local consent switches; mouse, keyboard and browser actions wait for a fresh local approval.
 
 The gateway is a broker, not a remote desktop host. Screen pixels and local files should not be retained by default.
 
@@ -56,15 +56,13 @@ The native API choices must be validated with a Windows prototype before broad c
 
 ## Gateway and MCP
 
-The current `/api/mcp` endpoint is a single-bearer-token, stateless, read-only discovery foundation. It is not the final multi-user device relay.
+The `/api/mcp` endpoint uses stateless Streamable HTTP. Claude and other bearer-token clients use individually revocable credentials. ChatGPT Enterprise uses OAuth 2.1 authorization-code + PKCE with DCR, protected-resource and authorization-server discovery, resource-bound one-hour access tokens, rotating refresh tokens, user consent, token revocation and per-tool `securitySchemes`. The tool catalogue includes device status, screen capture, bounded Windows application discovery, approved-folder text reads, locally approved pointer/keyboard actions, isolated browser automation, command results, profile identity and paginated audit history. The outbound device relay polls every 10 seconds; persistent streaming remains outstanding.
 
-Before device control is exposed, replace the shared token with:
-- User and AI-client identities.
-- Individually paired device identities.
-- Short-lived, revocable credentials.
-- Per-device and per-tool authorisation.
-- Device-initiated authenticated relay connections.
-- Request correlation, expiry, replay protection and rate limiting.
+Before screen or input control is exposed, complete:
+- CIMD and OpenAI private-key JWT client authentication are not enabled; ChatGPT uses the supported DCR public-client PKCE flow.
+- Per-device and per-tool authorisation, including local consent state.
+- A visible local approval surface and immediate pause control.
+- Request correlation, expiry, replay protection and rate limiting for every command type.
 - Append-only audit records with secret and sensitive-content redaction.
 
 MCP tools should have narrow schemas and explicit descriptions of side effects. The gateway must never forward an unvalidated arbitrary command string to the desktop.

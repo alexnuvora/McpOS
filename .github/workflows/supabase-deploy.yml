@@ -91,6 +91,10 @@ jobs:
           test -n "$key" || (echo "::error::Could not resolve publishable key for smoke tests" && exit 1)
           pairing_status="$(curl --silent --output /dev/null --write-out "%{http_code}" -X POST "https://$SUPABASE_PROJECT_REF.supabase.co/functions/v1/pairing-complete" -H "apikey: $key" -H "Content-Type: application/json" -d '{"code":"AAAAAAAAAA"}')"
           heartbeat_status="$(curl --silent --output /dev/null --write-out "%{http_code}" -X POST "https://$SUPABASE_PROJECT_REF.supabase.co/functions/v1/device-heartbeat" -H "apikey: $key" -H "Authorization: Bearer invalid-token")"
+          poll_status="$(curl --silent --output /dev/null --write-out "%{http_code}" -X POST "https://$SUPABASE_PROJECT_REF.supabase.co/functions/v1/device-poll" -H "apikey: $key" -H "Authorization: Bearer invalid-token" -H "Content-Type: application/json" -d '{}')"
+          result_status="$(curl --silent --output /dev/null --write-out "%{http_code}" -X POST "https://$SUPABASE_PROJECT_REF.supabase.co/functions/v1/device-result" -H "apikey: $key" -H "Authorization: Bearer invalid-token" -H "Content-Type: application/json" -d '{}')"
           test "$pairing_status" = "400" || (echo "::error::Pairing endpoint smoke test expected HTTP 400, got $pairing_status" && exit 1)
           test "$heartbeat_status" = "401" || (echo "::error::Heartbeat endpoint smoke test expected HTTP 401, got $heartbeat_status" && exit 1)
-          echo "Device pairing and heartbeat endpoints are reachable and enforce expected authentication."
+          test "$poll_status" = "401" || (echo "::error::Device poll endpoint expected HTTP 401, got $poll_status" && exit 1)
+          test "$result_status" = "401" || (echo "::error::Device result endpoint expected HTTP 401, got $result_status" && exit 1)
+          echo "Pairing, heartbeat and relay endpoints are reachable and enforce expected authentication."

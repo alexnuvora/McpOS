@@ -4,24 +4,102 @@ import { invoke } from "@tauri-apps/api/core";
 import "./style.css";
 
 type DeviceStatus = { paired: boolean; connected: boolean; device_id: string | null };
+type PendingAction = { id: string; command: string; payload: Record<string, unknown> };
 
 function App() {
   const [code, setCode] = useState("");
   const [status, setStatus] = useState<DeviceStatus>({ paired: false, connected: false, device_id: null });
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const [screenConsent, setScreenConsent] = useState(false);
+  const [accessibilityConsent, setAccessibilityConsent] = useState(false);
+  const [browserConsent, setBrowserConsent] = useState(false);
+  const [approvedFolders, setApprovedFolders] = useState<string[]>([]);
+  const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
+  const [approvalBusy, setApprovalBusy] = useState(false);
   const [error, setError] = useState("");
 
   async function refreshStatus() {
-    try { setStatus(await invoke<DeviceStatus>("get_device_status")); }
+    try {
+      setStatus(await invoke<DeviceStatus>("get_device_status"));
+      setScreenConsent(await invoke<boolean>("get_screen_capture_consent"));
+      setAccessibilityConsent(await invoke<boolean>("get_accessibility_consent"));
+      setBrowserConsent(await invoke<boolean>("get_browser_consent"));
+      setApprovedFolders(await invoke<string[]>("get_approved_folders"));
+    }
     catch { setError("Could not read the local device credential."); }
   }
 
   useEffect(() => {
     const initial = window.setTimeout(() => void refreshStatus(), 0);
     const timer = window.setInterval(() => void refreshStatus(), 15000);
-    return () => { window.clearTimeout(initial); window.clearInterval(timer); };
+    const approvalTimer = window.setInterval(() => { void invoke<PendingAction | null>("get_pending_action").then(setPendingAction).catch(() => undefined); }, 1200);
+    return () => { window.clearTimeout(initial); window.clearInterval(timer); window.clearInterval(approvalTimer); };
   }, []);
+
+  async function toggleScreenConsent(enabled: boolean) {
+    setError(""); setMessage("");
+    try {
+      const actual = await invoke<boolean>("set_screen_capture_consent", { enabled });
+      setScreenConsent(actual);
+      setMessage(actual ? "Screen capture is enabled locally. AI requests still require a separately scoped client key." : "Screen capture has been disabled on this computer.");
+    } catch {
+      setError("Could not update the local screen-capture consent setting.");
+    }
+  }
+
+  async function toggleAccessibilityConsent(enabled: boolean) {
+    setError(""); setMessage("");
+    try {
+      const actual = await invoke<boolean>("set_accessibility_consent", { enabled });
+      setAccessibilityConsent(actual);
+      setMessage(actual ? "Windows accessibility understanding is enabled locally. Only a bounded list of top-level app windows is exposed." : "Windows accessibility understanding has been disabled on this computer.");
+    } catch {
+      setError("Could not update the local Windows accessibility setting.");
+    }
+  }
+
+  async function approvePendingAction() {
+    if (approvalBusy) return;
+    setApprovalBusy(true); setError(""); setMessage("");
+    try { setMessage(await invoke<string>("approve_pending_action")); setPendingAction(null); }
+    catch (reason) { setError(typeof reason === "string" ? reason : "Could not execute the approved action."); setPendingAction(null); }
+    finally { setApprovalBusy(false); }
+  }
+
+  async function denyPendingAction() {
+    if (approvalBusy) return;
+    setApprovalBusy(true); setError(""); setMessage("");
+    try { setMessage(await invoke<string>("deny_pending_action")); setPendingAction(null); }
+    catch (reason) { setError(typeof reason === "string" ? reason : "Could not deny the pending action."); }
+    finally { setApprovalBusy(false); }
+  }
+
+  async function toggleBrowserConsent(enabled: boolean) {
+    setError(""); setMessage("");
+    try {
+      const actual = await invoke<boolean>("set_browser_consent", { enabled });
+      setBrowserConsent(actual);
+      setMessage(actual ? "Isolated browser automation is enabled. The browser uses a separate profile; navigation and page actions still require local approval." : "Isolated browser access has been disabled on this computer.");
+    } catch { setError("Could not update isolated browser consent."); }
+  }
+
+  async function addApprovedFolder() {
+    setError(""); setMessage("");
+    try {
+      const folders = await invoke<string[]>("pick_approved_folder");
+      setApprovedFolders(folders);
+      setMessage("Folder approval updated. Only these folders can be read by a separately scoped AI client.");
+    } catch { setError("Could not add the selected folder."); }
+  }
+
+  async function removeApprovedFolder(path: string) {
+    setError(""); setMessage("");
+    try {
+      setApprovedFolders(await invoke<string[]>("remove_approved_folder", { path }));
+      setMessage("Folder access revoked locally.");
+    } catch { setError("Could not revoke folder access."); }
+  }
 
   async function pair() {
     setBusy(true); setError(""); setMessage("");
@@ -43,7 +121,7 @@ function App() {
     <section className="hero">
       <div className="eyebrow">WINDOWS COMPANION · LOCAL SESSION</div>
       <h1>Your AI, with permission to act.</h1>
-      <p>Pair this computer with your McpOS workspace. Pairing establishes device identity only — it does not grant screen, accessibility, mouse, keyboard or file access.</p>
+      <p>Pair this computer with your McpOS workspace. Pairing establishes device identity only — it does not grant screen, accessibility, browser, mouse, keyboard or file access.</p>
       <div className="notice"><span className="lock">⌑</span><div><strong>{status.paired ? "This computer has a device identity" : "Desktop access is not enabled"}</strong><small>{status.paired ? status.connected ? "Connected to McpOS. The companion sends a secure heartbeat every 30 seconds." : "The device is paired, but the heartbeat is currently offline. Check your internet connection." : "No desktop data or controls are shared until you separately approve a capability."}</small></div></div>
     </section>
     {!status.paired && <section className="panel pairing-panel">
@@ -59,9 +137,21 @@ function App() {
       <div className="panel-heading"><div><strong>Device connection</strong><small>Device ID: {status.device_id ?? "Registered"}</small></div><span className="tag">PAIRED</span></div>
       <div className="capability"><span className="symbol">✓</span><div><strong>Device identity</strong><small>Credential stored securely on this Windows computer.</small></div><span className="enabled">Paired</span></div>
       <div className="capability"><span className="symbol">↻</span><div><strong>Connection heartbeat</strong><small>The desktop companion sends a heartbeat every 30 seconds.</small></div><span className={status.connected ? "enabled" : "disabled"}>{status.connected ? "Connected" : "Offline"}</span></div>
-      <div className="capability"><span className="symbol">▧</span><div><strong>Screen observation</strong><small>Screen capture remains disabled until a separate consent workflow is implemented.</small></div><span className="disabled">Not enabled</span></div>
-      <div className="capability"><span className="symbol">⌖</span><div><strong>Windows accessibility</strong><small>Application controls are not being read or shared.</small></div><span className="disabled">Not enabled</span></div>
-      <div className="capability"><span className="symbol">⌘</span><div><strong>Mouse & keyboard</strong><small>No remote input actions are enabled.</small></div><span className="disabled">Not enabled</span></div>
+      <div className="capability consent-capability"><span className="symbol">▧</span><div><strong>Screen capture consent</strong><small>This is a local Windows switch. It resets to off when McpOS restarts. Turn it off at any time to stop further captures.</small></div><button className={"consent-switch " + (screenConsent ? "is-on" : "")} role="switch" aria-checked={screenConsent} aria-label="Allow screen capture on this computer" onClick={() => void toggleScreenConsent(!screenConsent)}><span /></button></div>
+      <div className="capability consent-capability"><span className="symbol">⌖</span><div><strong>Application understanding</strong><small>Read-only Windows UI Automation. Shares a limited list of top-level window names and process IDs, not control text or keystrokes. Local consent resets to off on restart.</small></div><button className={"consent-switch " + (accessibilityConsent ? "is-on" : "")} role="switch" aria-checked={accessibilityConsent} aria-label="Allow Windows accessibility inspection" onClick={() => void toggleAccessibilityConsent(!accessibilityConsent)}><span /></button></div>
+      <div className="capability consent-capability"><span className="symbol">◎</span><div><strong>Isolated browser automation</strong><small>Uses a separate WebView2 profile with separate cookies and storage. Only HTTPS sites are allowed; every navigation, click and text-entry action requires local approval.</small></div><button className={"consent-switch " + (browserConsent ? "is-on" : "")} role="switch" aria-checked={browserConsent} aria-label="Allow isolated browser automation" onClick={() => void toggleBrowserConsent(!browserConsent)}><span /></button></div>
+      <div className="capability"><span className="symbol">⌘</span><div><strong>Mouse & keyboard</strong><small>Each pointer click and text-entry action is shown here and requires a separate approval.</small></div><span className="disabled">Approve each action</span></div>
+      {pendingAction && <section className="approval-card">
+        <div className="approval-eyebrow">LOCAL APPROVAL REQUIRED</div>
+        <strong>{pendingAction.command === "input.pointer.click" ? "AI wants to click your screen" : pendingAction.command === "input.keyboard.type" ? "AI wants to type on your computer" : pendingAction.command === "browser.open" ? "AI wants to open a website in the isolated browser" : pendingAction.command === "browser.click" ? "AI wants to click a page element" : "AI wants to type into a page field"}</strong>
+        {pendingAction.command === "input.pointer.click" ? <p>Button: {String(pendingAction.payload.button ?? "left")} · Position: {String(pendingAction.payload.x)}, {String(pendingAction.payload.y)}</p> : pendingAction.command === "browser.open" ? <p className="approval-text">{String(pendingAction.payload.url ?? "")}</p> : pendingAction.command === "browser.click" ? <p className="approval-text">CSS selector: {String(pendingAction.payload.selector ?? "")}</p> : pendingAction.command === "browser.type" ? <p className="approval-text">Selector: {String(pendingAction.payload.selector ?? "")} · Text: “{String(pendingAction.payload.text ?? "")}”</p> : <p className="approval-text">Text to enter: “{String(pendingAction.payload.text ?? "")}”</p>}
+        <div className="approval-actions"><button className="deny" disabled={approvalBusy} onClick={() => void denyPendingAction()}>{approvalBusy ? "Working…" : "Deny"}</button><button className="approve" disabled={approvalBusy} onClick={() => void approvePendingAction()}>{approvalBusy ? "Working…" : "Approve once"}</button></div>
+        <small>Nothing happens unless you approve this exact action here. Each action requires a separate approval.</small>
+      </section>}
+      <section className="approved-folders">
+        <div className="folder-heading"><div><strong>Approved folders</strong><small>Only folders you select here are eligible for read-only AI access. This approval list resets when McpOS restarts.</small></div><button onClick={() => void addApprovedFolder()}>Choose folder</button></div>
+        {approvedFolders.length === 0 ? <p className="folder-empty">No folders approved.</p> : approvedFolders.map(path => <div className="folder-row" key={path}><span title={path}>{path}</span><button onClick={() => void removeApprovedFolder(path)}>Remove</button></div>)}
+      </section>
       {error && <div className="feedback error">{error}</div>}
       {message && <div className="feedback success">{message}</div>}
     </section>}

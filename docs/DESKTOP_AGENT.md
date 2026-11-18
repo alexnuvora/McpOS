@@ -1,88 +1,52 @@
-# McpOS architecture
+# McpOS desktop-agent architecture
 
-## Product shape
+## Components
 
-McpOS is a Windows-first desktop agent platform with three cooperating components:
+1. **Desktop companion** — a Tauri 2 + Rust Windows application. It owns screen, accessibility, input, approved-folder and isolated-browser operations.
+2. **Gateway** — the Next.js MCP endpoint and Supabase Edge Functions. It authenticates AI clients and devices, queues typed commands and records outcomes.
+3. **Control Centre** — the Next.js dashboard for pairing, per-client scopes, device/session revocation and audit history.
 
-1. **Desktop companion** — a locally installed Tauri 2 + Rust application. It owns all access to the user's screen, input devices, files, browser and desktop applications.
-2. **Gateway** — the web-hosted identity, MCP and relay service. It authenticates AI clients and paired devices, authorises individual tool calls, routes requests to the correct online device and records audit events.
-3. **Control Centre** — the Next.js web application for account management, device pairing, permissions, active sessions, audit history and integrations.
+The desktop companion polls the Supabase queue over outbound HTTPS every 10 seconds. No inbound PC port is exposed. This is a polling relay, not a persistent low-latency stream.
 
-The desktop companion makes an outbound authenticated connection to the gateway. No public inbound port or direct internet exposure of the user's PC is required.
+## Authentication and revocation
 
-## Request flow
+- Claude/compatible bearer clients have individually generated tokens. ChatGPT Enterprise uses OAuth 2.1 authorization-code + PKCE with DCR, protected-resource discovery, explicit user consent, resource-bound short-lived access tokens and rotating refresh tokens. Only SHA-256 token hashes are stored.
+- Every queued command records the requesting AI client ID.
+- Revoking a client cancels its queued and claimed commands. The Windows companion rechecks device credentials and the requesting client session immediately before executing a locally approved action.
+- Device credentials are stored in the Windows credential store.
+- Audit rows record requests, command outcomes, denials, failures and revocations. The audit table is an application log, not a tamper-proof compliance ledger.
 
-1. The user installs the signed desktop companion and signs in or pairs it using a short-lived one-time code.
-2. The companion creates a device identity and establishes an outbound encrypted connection to the gateway.
-3. An AI client authenticates separately to the MCP gateway.
-4. The gateway verifies the user, client, device, capability grant and session state for every tool call.
-5. The companion validates the request again locally, checks consent and approval requirements, then performs the narrow native action.
-6. The companion returns a structured result. The gateway records the action metadata and returns the result to the MCP client.
+## Implemented capabilities
 
-The gateway is a broker, not a remote desktop host. Screen pixels and local files should not be retained by default.
+| Capability | Boundary |
+|---|---|
+| `desktop.status` | Read-only device status |
+| `screen.capture` | One primary-display JPEG snapshot; visible local switch defaults OFF and resets OFF on restart; optional MCP scope |
+| `screen.accessibility` | Read-only list of up to 40 top-level Windows windows (name, class, role and process ID); local switch defaults OFF |
+| `files.read` | Native folder picker; canonical-path containment; 100-entry listing cap; 512 KB UTF-8 text reads; extension allowlist; no writes/deletes |
+| `input.pointer` | One left/right click within primary display bounds; exact action shown in local approval prompt |
+| `input.keyboard` | Text entry limited to 200 printable characters; exact text shown in local approval prompt |
+| `browser.control` | Dedicated WebView2 data directory; public HTTPS only; pop-ups and downloads blocked; bounded text snapshot; selector click/text entry each require local approval |
 
-## Desktop capability boundaries
+All optional scopes are unchecked when creating an AI client key. Local screen, accessibility and browser switches default OFF and reset to OFF on restart. Folder grants reset to an empty list on restart. Pointer/keyboard and browser navigation/click/type requests require a fresh one-time local approval.
 
-Capabilities are independent grants and default to disabled:
+## Browser isolation
 
-- `desktop.status` — device and session status.
-- `screen.capture` — capture the screen during a visible, user-started session.
-- `screen.accessibility` — inspect accessible UI element names, roles and bounds.
-- `input.pointer` — bounded pointer movement and clicks.
-- `input.keyboard` — text entry and key presses, with sensitive-field safeguards.
-- `browser.*` — operate a dedicated, user-approved browser profile.
-- `files.read` / `files.write` — access only user-selected folders.
-- `apps.launch` — launch explicitly allowed applications.
+The isolated browser is a separate WebView2 window with its own data directory, not the user's normal Edge/Chrome profile. It rejects non-HTTPS navigation, embedded credentials, localhost, `.local` and literal private/loopback IP addresses. Pop-up windows and downloads are blocked. A loopback-only, ephemeral-port bridge with one-time random nonces returns bounded page snapshots and action results; sites with restrictive Content Security Policy or browser private-network policy may block that bridge.
 
-No generic `shell.exec`, arbitrary PowerShell, credential-store access, hidden persistence, or unrestricted filesystem tool is part of the initial design.
+## File-access boundary
 
-## Approval model
+Only folders explicitly selected in the Windows companion are readable. Every requested path is canonicalised and checked to remain beneath one of those roots; symlink entries are skipped. Only a small allowlist of UTF-8 text extensions is readable, and each file is capped at 512 KB. There is no remote write, delete, execute or upload command.
 
-Always require a fresh, visible user confirmation for consequential actions, including sending or publishing content, purchases, submitting external forms, deleting or overwriting files, installing software, changing security settings, privilege elevation and actions that cannot be readily undone.
+## Not implemented
 
-The user can pause a session, revoke a capability, disconnect a device or revoke all device credentials from the Control Centre. A visible tray indicator shows when screen observation or control is active.
+- Arbitrary shell, PowerShell or generic command execution.
+- Application launch, clipboard access, continuous screen recording or full accessibility-tree traversal.
+- File writes, deletes or uploads.
+- CIMD and private_key_jwt OAuth client authentication; ChatGPT currently uses DCR with a public PKCE client.
+- Persistent WebSocket relay.
+- Tamper-proof external audit retention.
 
-## Windows implementation
+## Deployment and validation
 
-- Tauri 2 provides the desktop shell and Rust process boundary.
-- Rust owns privileged operations and exposes a small typed command surface to the UI.
-- Windows UI Automation is the preferred route for semantic controls and accessibility information.
-- Windows Graphics Capture is the preferred route for user-consented screen frames.
-- Input simulation is limited to the active, consented desktop session.
-- Browser automation runs through a dedicated adapter and isolated browser profile, not the user's personal browser profile by default.
-- Local secrets are stored with Windows DPAPI/Credential Manager; never in plaintext config files.
-
-The native API choices must be validated with a Windows prototype before broad capability rollout. The repository's CI environment is not a substitute for testing on a real Windows desktop.
-
-## Gateway and MCP
-
-The current `/api/mcp` endpoint is a single-bearer-token, stateless, read-only discovery foundation. It is not the final multi-user device relay.
-
-Before device control is exposed, replace the shared token with:
-- User and AI-client identities.
-- Individually paired device identities.
-- Short-lived, revocable credentials.
-- Per-device and per-tool authorisation.
-- Device-initiated authenticated relay connections.
-- Request correlation, expiry, replay protection and rate limiting.
-- Append-only audit records with secret and sensitive-content redaction.
-
-MCP tools should have narrow schemas and explicit descriptions of side effects. The gateway must never forward an unvalidated arbitrary command string to the desktop.
-
-## Existing integrations
-
-The GitHub App OAuth and read-only repository picker remain optional integrations in the Control Centre. They are separate from local desktop access. Repository write operations, agent execution, production deployments and database mutations remain disabled until their own approval and isolation designs are implemented.
-
-## Security requirements
-
-- Default-deny permissions and least privilege.
-- User-visible session indicator and immediate pause control.
-- No public inbound listener on the user's computer.
-- Mutual authentication between companion and gateway.
-- TLS in transit and OS-backed local secret storage.
-- Explicit consent for screen capture and approvals for consequential actions.
-- Folder allow-lists and browser profile isolation.
-- Signed installers and update packages.
-- No raw shell, unrestricted filesystem, credential extraction or stealth operation.
-- Auditable actions with sensitive data minimised and redacted.
-- Threat modelling and independent security review before general availability.
+The feature branch is a draft PR. It is not production until the Windows build, web CI, Supabase migration/Edge Function deployment and Netlify deployment all pass. Real-device testing is still required for screenshot rendering, UI Automation, input approval, browser bridge compatibility, folder path restrictions and revocation races.

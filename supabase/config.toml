@@ -14,3 +14,9 @@ verify_jwt = false
 
 [functions.device-heartbeat]
 verify_jwt = false
+
+[functions.device-poll]
+verify_jwt = false
+
+[functions.device-result]
+verify_jwt = false
