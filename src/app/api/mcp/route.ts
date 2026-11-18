@@ -8,18 +8,18 @@ import { supabaseRest } from "@/lib/device-auth";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-type McpClient = { id: string; user_id: string; client_name: string; scopes: string[]; revoked_at: string | null };
+type McpClient = { id: string; user_id: string; client_name: string; scopes: string[]; revoked_at: string | null; token_expires_at?: string | null };
 
 async function authenticateClient(request: NextRequest): Promise<McpClient | null> {
   const token = (request.headers.get("authorization") ?? "").match(/^Bearer\s+(.+)$/i)?.[1];
   if (!token || !token.startsWith("mcpos_") || token.length < 40 || token.length > 128) return null;
   const tokenHash = createHash("sha256").update(token).digest("hex");
   const response = await supabaseRest(
-    `mcpos_mcp_clients?select=id,user_id,client_name,scopes,revoked_at&token_hash=eq.${tokenHash}&limit=1`,
+    `mcpos_mcp_clients?select=id,user_id,client_name,scopes,revoked_at,token_expires_at&token_hash=eq.${tokenHash}&limit=1`,
   );
   if (!response.ok) throw new Error("McpOS client authentication service is unavailable.");
   const [client] = await response.json() as McpClient[];
-  if (!client || client.revoked_at) return null;
+  if (!client || client.revoked_at || (client.token_expires_at && new Date(client.token_expires_at).getTime() <= Date.now())) return null;
   await supabaseRest(`mcpos_mcp_clients?id=eq.${client.id}&revoked_at=is.null`, {
     method: "PATCH",
     headers: { Prefer: "return=minimal" },
@@ -344,7 +344,7 @@ async function handle(request: NextRequest) {
   if (!client) {
     return NextResponse.json(
       { error: "Unauthorized. Create an MCP client key in the McpOS dashboard." },
-      { status: 401, headers: { "WWW-Authenticate": "Bearer" } },
+      { status: 401, headers: { "WWW-Authenticate": 'Bearer resource_metadata="https://mcpos-dashboard.netlify.app/.well-known/oauth-protected-resource", error="invalid_token"' } },
     );
   }
 
