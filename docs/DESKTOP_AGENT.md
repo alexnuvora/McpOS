@@ -10,7 +10,7 @@ The desktop companion polls the Supabase queue over outbound HTTPS every 10 seco
 
 ## Authentication and revocation
 
-- Each AI client has an individually generated bearer token. Only its SHA-256 hash is stored.
+- Claude/compatible bearer clients have individually generated tokens. ChatGPT Enterprise uses OAuth 2.1 authorization-code + PKCE with DCR, protected-resource discovery, explicit user consent, resource-bound short-lived access tokens and rotating refresh tokens. Only SHA-256 token hashes are stored.
 - Every queued command records the requesting AI client ID.
 - Revoking a client cancels its queued and claimed commands. The Windows companion rechecks device credentials and the requesting client session immediately before executing a locally approved action.
 - Device credentials are stored in the Windows credential store.
@@ -43,7 +43,8 @@ Only folders explicitly selected in the Windows companion are readable. Every re
 - Arbitrary shell, PowerShell or generic command execution.
 - Application launch, clipboard access, continuous screen recording or full accessibility-tree traversal.
 - File writes, deletes or uploads.
-- MCP OAuth and persistent WebSocket relay.
+- CIMD and private_key_jwt OAuth client authentication; ChatGPT currently uses DCR with a public PKCE client.
+- Persistent WebSocket relay.
 - Tamper-proof external audit retention.
 
 ## Deployment and validation
