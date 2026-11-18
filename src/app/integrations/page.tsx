@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { ArrowLeft, Copy, KeyRound, Plus, RefreshCw, ShieldCheck, Trash2 } from "lucide-react";
 
 type Client = { id: string; client_name: string; scopes: string[]; created_at: string; last_used_at: string | null; revoked_at: string | null };
@@ -25,7 +26,7 @@ export default function IntegrationsPage() {
     } finally { setBusy(false); }
   }, []);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { const initial = window.setTimeout(() => void load(), 0); return () => window.clearTimeout(initial); }, [load]);
 
   async function createClient() {
     setBusy(true); setError(""); setMessage(""); setToken("");
@@ -70,7 +71,7 @@ export default function IntegrationsPage() {
 
   return <main className="min-h-screen bg-[#0a0e15] px-4 py-8 text-slate-100 sm:px-8">
     <div className="mx-auto max-w-4xl">
-      <a href="/" className="mb-7 inline-flex items-center gap-2 text-sm text-slate-400 hover:text-white"><ArrowLeft size={15}/> Back to dashboard</a>
+      <Link href="/" className="mb-7 inline-flex items-center gap-2 text-sm text-slate-400 hover:text-white"><ArrowLeft size={15}/> Back to dashboard</Link>
       <div className="mb-8 flex items-start gap-3">
         <div className="rounded-xl bg-indigo-500/15 p-3 text-indigo-300"><KeyRound size={22}/></div>
         <div><div className="text-xs font-semibold uppercase tracking-widest text-indigo-300">Integrations</div><h1 className="mt-1 text-3xl font-semibold">AI client connections</h1><p className="mt-2 max-w-2xl text-sm leading-6 text-slate-400">Create separate, revocable credentials for Claude and other compatible MCP clients. Credentials are shown only once and stored as hashes.</p></div>
