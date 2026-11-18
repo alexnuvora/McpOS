@@ -12,6 +12,7 @@ function App() {
   const [message, setMessage] = useState("");
   const [screenConsent, setScreenConsent] = useState(false);
   const [accessibilityConsent, setAccessibilityConsent] = useState(false);
+  const [approvedFolders, setApprovedFolders] = useState<string[]>([]);
   const [error, setError] = useState("");
 
   async function refreshStatus() {
@@ -19,6 +20,7 @@ function App() {
       setStatus(await invoke<DeviceStatus>("get_device_status"));
       setScreenConsent(await invoke<boolean>("get_screen_capture_consent"));
       setAccessibilityConsent(await invoke<boolean>("get_accessibility_consent"));
+      setApprovedFolders(await invoke<string[]>("get_approved_folders"));
     }
     catch { setError("Could not read the local device credential."); }
   }
@@ -49,6 +51,23 @@ function App() {
     } catch {
       setError("Could not update the local Windows accessibility setting.");
     }
+  }
+
+  async function addApprovedFolder() {
+    setError(""); setMessage("");
+    try {
+      const folders = await invoke<string[]>("pick_approved_folder");
+      setApprovedFolders(folders);
+      setMessage("Folder approval updated. Only these folders can be read by a separately scoped AI client.");
+    } catch { setError("Could not add the selected folder."); }
+  }
+
+  async function removeApprovedFolder(path: string) {
+    setError(""); setMessage("");
+    try {
+      setApprovedFolders(await invoke<string[]>("remove_approved_folder", { path }));
+      setMessage("Folder access revoked locally.");
+    } catch { setError("Could not revoke folder access."); }
   }
 
   async function pair() {
@@ -90,6 +109,10 @@ function App() {
       <div className="capability consent-capability"><span className="symbol">▧</span><div><strong>Screen capture consent</strong><small>This is a local Windows switch. It resets to off when McpOS restarts. Turn it off at any time to stop further captures.</small></div><button className={"consent-switch " + (screenConsent ? "is-on" : "")} role="switch" aria-checked={screenConsent} aria-label="Allow screen capture on this computer" onClick={() => void toggleScreenConsent(!screenConsent)}><span /></button></div>
       <div className="capability consent-capability"><span className="symbol">⌖</span><div><strong>Application understanding</strong><small>Read-only Windows UI Automation. Shares a limited list of top-level window names and process IDs, not control text or keystrokes. Local consent resets to off on restart.</small></div><button className={"consent-switch " + (accessibilityConsent ? "is-on" : "")} role="switch" aria-checked={accessibilityConsent} aria-label="Allow Windows accessibility inspection" onClick={() => void toggleAccessibilityConsent(!accessibilityConsent)}><span /></button></div>
       <div className="capability"><span className="symbol">⌘</span><div><strong>Mouse & keyboard</strong><small>No remote input actions are enabled.</small></div><span className="disabled">Not enabled</span></div>
+      <section className="approved-folders">
+        <div className="folder-heading"><div><strong>Approved folders</strong><small>Only folders you select here are eligible for read-only AI access. This approval list resets when McpOS restarts.</small></div><button onClick={() => void addApprovedFolder()}>Choose folder</button></div>
+        {approvedFolders.length === 0 ? <p className="folder-empty">No folders approved.</p> : approvedFolders.map(path => <div className="folder-row" key={path}><span title={path}>{path}</span><button onClick={() => void removeApprovedFolder(path)}>Remove</button></div>)}
+      </section>
       {error && <div className="feedback error">{error}</div>}
       {message && <div className="feedback success">{message}</div>}
     </section>}
