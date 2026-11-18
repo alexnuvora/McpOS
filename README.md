@@ -25,10 +25,14 @@ The repository currently contains:
 - Hashed device credentials, owner-scoped revocation, and audit events; capabilities remain disabled by default.
 - Windows Tauri companion with device pairing and credential storage through Windows Credential Manager.
 - Persistent 30-second heartbeat and live connected/disconnected tray indicator.
-- Authenticated, stateless Streamable HTTP MCP endpoint at `/api/mcp`, still limited to read-only workspace discovery.
+- Authenticated, stateless Streamable HTTP MCP endpoint at `/api/mcp`, with separate hashed/revocable AI-client credentials.
+- Dashboard AI Connections page for creating and revoking client credentials.
+- Supabase-backed outbound command queue, with device-authenticated polling and result submission.
+- First end-to-end read-only desktop relay command: `desktop.status`.
+- MCP tools for client status, capability discovery, paired-device listing, desktop-status requests and command-result retrieval.
 - GitHub Actions for Supabase migrations/function deployment, endpoint smoke tests, Next.js validation and Windows installer builds.
 
-**Screen capture, Windows accessibility, mouse/keyboard control, outbound MCP relay and desktop MCP tools are not implemented yet.** The current GitHub integration is retained as an optional developer-workspace integration, not the centre of the product.
+**Still not implemented:** screen capture, Windows accessibility, mouse/keyboard control, browser automation, app launching, approved-folder file access, interactive approval prompts and MCP OAuth. These remain disabled; the relay deliberately accepts only the typed `desktop.status` command.
 
 ## Proposed technical direction
 
@@ -85,15 +89,9 @@ In Supabase Authentication > URL Configuration, set the Site URL to `https://mcp
 
 Ensure the Email provider is enabled. The callback verifies the signed-in user's email against `MCPOS_ALLOWED_EMAILS`; unapproved users are signed out and cannot access device APIs. Device ownership continues to use the authenticated Supabase user ID. The service-role key is used only by server-side API routes.
 
-## Existing MCP endpoint
+## Remote MCP clients
 
-After deploying the web application and configuring `MCP_BEARER_TOKEN`, the current endpoint is:
-
-- URL: `https://YOUR_HOST/api/mcp`
-- Transport: Streamable HTTP
-- Authentication: HTTP Bearer token
-
-This is currently a single-token, read-only discovery endpoint. It is not yet the multi-user device relay and must not be treated as the finished desktop connection.
+The endpoint is `https://mcpos-dashboard.netlify.app/api/mcp`. Create a separate client credential from the dashboard's **AI connections** page; credentials are hashed in storage and can be revoked independently. The first remote relay supports paired-device listing and a read-only `desktop.status` request. See [docs/MCP_CLIENT_SETUP.md](docs/MCP_CLIENT_SETUP.md) for Claude setup and ChatGPT plan limitations.
 
 ## Delivery milestones
 
