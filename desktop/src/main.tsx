@@ -13,6 +13,7 @@ function App() {
   const [message, setMessage] = useState("");
   const [screenConsent, setScreenConsent] = useState(false);
   const [accessibilityConsent, setAccessibilityConsent] = useState(false);
+  const [browserConsent, setBrowserConsent] = useState(false);
   const [approvedFolders, setApprovedFolders] = useState<string[]>([]);
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
   const [error, setError] = useState("");
@@ -22,6 +23,7 @@ function App() {
       setStatus(await invoke<DeviceStatus>("get_device_status"));
       setScreenConsent(await invoke<boolean>("get_screen_capture_consent"));
       setAccessibilityConsent(await invoke<boolean>("get_accessibility_consent"));
+      setBrowserConsent(await invoke<boolean>("get_browser_consent"));
       setApprovedFolders(await invoke<string[]>("get_approved_folders"));
     }
     catch { setError("Could not read the local device credential."); }
@@ -66,6 +68,15 @@ function App() {
     setError(""); setMessage("");
     try { setMessage(await invoke<string>("deny_pending_action")); setPendingAction(null); }
     catch (reason) { setError(typeof reason === "string" ? reason : "Could not deny the pending action."); }
+  }
+
+  async function toggleBrowserConsent(enabled: boolean) {
+    setError(""); setMessage("");
+    try {
+      const actual = await invoke<boolean>("set_browser_consent", { enabled });
+      setBrowserConsent(actual);
+      setMessage(actual ? "Isolated browser automation is enabled. The browser uses a separate profile; navigation and page actions still require local approval." : "Isolated browser access has been disabled on this computer.");
+    } catch { setError("Could not update isolated browser consent."); }
   }
 
   async function addApprovedFolder() {
@@ -123,11 +134,12 @@ function App() {
       <div className="capability"><span className="symbol">↻</span><div><strong>Connection heartbeat</strong><small>The desktop companion sends a heartbeat every 30 seconds.</small></div><span className={status.connected ? "enabled" : "disabled"}>{status.connected ? "Connected" : "Offline"}</span></div>
       <div className="capability consent-capability"><span className="symbol">▧</span><div><strong>Screen capture consent</strong><small>This is a local Windows switch. It resets to off when McpOS restarts. Turn it off at any time to stop further captures.</small></div><button className={"consent-switch " + (screenConsent ? "is-on" : "")} role="switch" aria-checked={screenConsent} aria-label="Allow screen capture on this computer" onClick={() => void toggleScreenConsent(!screenConsent)}><span /></button></div>
       <div className="capability consent-capability"><span className="symbol">⌖</span><div><strong>Application understanding</strong><small>Read-only Windows UI Automation. Shares a limited list of top-level window names and process IDs, not control text or keystrokes. Local consent resets to off on restart.</small></div><button className={"consent-switch " + (accessibilityConsent ? "is-on" : "")} role="switch" aria-checked={accessibilityConsent} aria-label="Allow Windows accessibility inspection" onClick={() => void toggleAccessibilityConsent(!accessibilityConsent)}><span /></button></div>
+      <div className="capability consent-capability"><span className="symbol">◎</span><div><strong>Isolated browser automation</strong><small>Uses a separate WebView2 profile with separate cookies and storage. Only HTTPS sites are allowed; every navigation, click and text-entry action requires local approval.</small></div><button className={"consent-switch " + (browserConsent ? "is-on" : "")} role="switch" aria-checked={browserConsent} aria-label="Allow isolated browser automation" onClick={() => void toggleBrowserConsent(!browserConsent)}><span /></button></div>
       <div className="capability"><span className="symbol">⌘</span><div><strong>Mouse & keyboard</strong><small>No remote input actions are enabled.</small></div><span className="disabled">Not enabled</span></div>
       {pendingAction && <section className="approval-card">
         <div className="approval-eyebrow">LOCAL APPROVAL REQUIRED</div>
-        <strong>{pendingAction.command === "input.pointer.click" ? "AI wants to click your screen" : "AI wants to type on your computer"}</strong>
-        {pendingAction.command === "input.pointer.click" ? <p>Button: {String(pendingAction.payload.button ?? "left")} · Position: {String(pendingAction.payload.x)}, {String(pendingAction.payload.y)}</p> : <p className="approval-text">Text to enter: “{String(pendingAction.payload.text ?? "")}”</p>}
+        <strong>{pendingAction.command === "input.pointer.click" ? "AI wants to click your screen" : pendingAction.command === "input.keyboard.type" ? "AI wants to type on your computer" : pendingAction.command === "browser.open" ? "AI wants to open a website in the isolated browser" : pendingAction.command === "browser.click" ? "AI wants to click a page element" : "AI wants to type into a page field"}</strong>
+        {pendingAction.command === "input.pointer.click" ? <p>Button: {String(pendingAction.payload.button ?? "left")} · Position: {String(pendingAction.payload.x)}, {String(pendingAction.payload.y)}</p> : pendingAction.command === "browser.open" ? <p className="approval-text">{String(pendingAction.payload.url ?? "")}</p> : pendingAction.command === "browser.click" ? <p className="approval-text">CSS selector: {String(pendingAction.payload.selector ?? "")}</p> : pendingAction.command === "browser.type" ? <p className="approval-text">Selector: {String(pendingAction.payload.selector ?? "")} · Text: “{String(pendingAction.payload.text ?? "")}”</p> : <p className="approval-text">Text to enter: “{String(pendingAction.payload.text ?? "")}”</p>}
         <div className="approval-actions"><button className="deny" onClick={() => void denyPendingAction()}>Deny</button><button className="approve" onClick={() => void approvePendingAction()}>Approve once</button></div>
         <small>Nothing happens unless you approve this exact action here. Each action requires a separate approval.</small>
       </section>}
