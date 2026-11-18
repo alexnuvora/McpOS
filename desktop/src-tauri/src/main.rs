@@ -71,8 +71,11 @@ fn get_browser_consent(consent: tauri::State<'_, BrowserConsent>) -> bool {
 }
 
 #[tauri::command]
-fn set_browser_consent(enabled: bool, consent: tauri::State<'_, BrowserConsent>) -> bool {
+fn set_browser_consent(enabled: bool, consent: tauri::State<'_, BrowserConsent>, app: tauri::AppHandle) -> bool {
     consent.0.store(enabled, Ordering::Relaxed);
+    if !enabled {
+        if let Some(window) = app.get_webview_window("mcpos-isolated-browser") { let _ = window.close(); }
+    }
     enabled
 }
 
@@ -336,6 +339,7 @@ fn open_isolated_browser(app: &tauri::AppHandle, raw_url: &str) -> Result<String
 }
 
 fn browser_eval_and_collect(app: &tauri::AppHandle, bridge: &BrowserBridge, expression: &str) -> Result<serde_json::Value, String> {
+    if bridge.port == 0 { return Err("The private browser bridge is unavailable on this computer.".to_string()); }
     let window = app.get_webview_window("mcpos-isolated-browser").ok_or("Open a page in the isolated browser first.")?;
     let nonce = format!("{}-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos(), std::process::id());
     let (sender, receiver) = sync_channel(1);
@@ -426,9 +430,15 @@ fn get_pending_action(pending: tauri::State<'_, PendingAction>) -> Option<serde_
 }
 
 #[tauri::command]
-async fn approve_pending_action(pending: tauri::State<'_, PendingAction>, app: tauri::AppHandle, bridge: tauri::State<'_, BrowserBridge>) -> Result<String, String> {
+async fn approve_pending_action(pending: tauri::State<'_, PendingAction>, app: tauri::AppHandle, bridge: tauri::State<'_, BrowserBridge>, browser_consent: tauri::State<'_, BrowserConsent>) -> Result<String, String> {
     let command = pending.0.lock().map_err(|_| "Approval state is unavailable.".to_string())?.clone().ok_or("There is no pending action to approve.")?;
-    let action_result = if command.command.starts_with("browser.") { execute_browser_action(&command, &app, &bridge) } else { execute_input_action(&command) };
+    let action_result = if command.command.starts_with("browser.") && !browser_consent.0.load(Ordering::Relaxed) {
+        Err("Isolated browser consent was switched off before approval.".to_string())
+    } else if command.command.starts_with("browser.") {
+        execute_browser_action(&command, &app, &bridge)
+    } else {
+        execute_input_action(&command)
+    };
     let (result, error) = match action_result { Ok(result) => (result, None), Err(message) => (serde_json::json!({}), Some(message)) };
     let submission = submit_relay_result(&command.id, result, error.clone()).await;
     pending.0.lock().map_err(|_| "Approval state is unavailable.".to_string())?.take();
@@ -499,7 +509,7 @@ async fn poll_relay_once(connected: &Arc<AtomicBool>, screen_consent: &Arc<Atomi
                     "input.pointer": true,
                     "input.keyboard": true,
                     "browser.control": browser_consent.load(Ordering::Relaxed),
-                    "files.read": false,
+                    "files.read": !approved_folders.lock().map(|items| items.is_empty()).unwrap_or(true),
                     "files.write": false,
                     "apps.launch": false
                 }
@@ -629,7 +639,7 @@ fn main() {
             app.manage(PendingAction(pending_action.clone()));
             let browser_consent = Arc::new(AtomicBool::new(false));
             app.manage(BrowserConsent(browser_consent.clone()));
-            let browser_bridge = start_browser_bridge().expect("McpOS private browser bridge must start");
+            let browser_bridge = start_browser_bridge().unwrap_or_else(|_| BrowserBridge { port: 0, pending: Arc::new(Mutex::new(HashMap::new())) });
             app.manage(browser_bridge.clone());
             start_heartbeat(app.handle().clone(), connection_state.clone());
             start_relay_polling(connection_state, screen_consent, accessibility_consent, browser_consent, approved_folders, pending_action, browser_bridge, app.handle().clone());
