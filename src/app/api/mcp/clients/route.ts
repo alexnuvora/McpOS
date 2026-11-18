@@ -65,6 +65,10 @@ export async function DELETE(request: NextRequest) {
       method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ revoked_at: revokedAt }),
     });
     if (!response.ok) return NextResponse.json({ error: "Could not revoke all AI clients." }, { status: 503 });
+    await supabaseRest(`mcpos_device_commands?user_id=eq.${auth.account.userId}&mcp_client_id=not.is.null&status=in.(queued,claimed)`, {
+      method: "PATCH", headers: { Prefer: "return=minimal" },
+      body: JSON.stringify({ status: "denied", error_message: "AI client session revoked before execution.", completed_at: revokedAt }),
+    });
     await supabaseRest("mcpos_device_audit", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ user_id: auth.account.userId, event_type: "mcp.clients.revoked_all", outcome: "success", metadata: {} }) });
     return NextResponse.json({ ok: true, revokedAll: true });
   }
@@ -75,6 +79,10 @@ export async function DELETE(request: NextRequest) {
     method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ revoked_at: revokedAt }),
   });
   if (!response.ok) return NextResponse.json({ error: "Could not revoke the MCP client." }, { status: 503 });
+  await supabaseRest(`mcpos_device_commands?mcp_client_id=eq.${body.client_id}&status=in.(queued,claimed)`, {
+    method: "PATCH", headers: { Prefer: "return=minimal" },
+    body: JSON.stringify({ status: "denied", error_message: "AI client session revoked before execution.", completed_at: revokedAt }),
+  });
   await supabaseRest("mcpos_device_audit", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ user_id: auth.account.userId, event_type: "mcp.client.revoked", outcome: "success", metadata: { client_id: body.client_id } }) });
   return NextResponse.json({ ok: true });
 }
