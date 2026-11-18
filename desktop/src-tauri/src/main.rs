@@ -1,8 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use base64::Engine;
 use keyring::Entry;
 use serde::{Deserialize, Serialize};
 use std::{sync::{Arc, atomic::{AtomicBool, Ordering}}, time::Duration};
+use xcap::{image::{codecs::jpeg::JpegEncoder, DynamicImage}, Monitor};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -52,6 +54,32 @@ async fn heartbeat() -> bool {
         .unwrap_or(false)
 }
 
+#[tauri::command]
+fn get_screen_capture_consent(consent: tauri::State<'_, Arc<AtomicBool>>) -> bool {
+    consent.load(Ordering::Relaxed)
+}
+
+#[tauri::command]
+fn set_screen_capture_consent(enabled: bool, consent: tauri::State<'_, Arc<AtomicBool>>) -> bool {
+    consent.store(enabled, Ordering::Relaxed);
+    enabled
+}
+
+fn capture_screen_jpeg() -> Result<(String, u32, u32), String> {
+    let monitors = Monitor::all().map_err(|_| "Windows could not enumerate the displays.".to_string())?;
+    let monitor = monitors.first().ok_or("No active display was found.".to_string())?;
+    let image = monitor.capture_image().map_err(|_| "Windows screen capture failed.".to_string())?;
+    let width = image.width();
+    let height = image.height();
+    let mut bytes = Vec::new();
+    JpegEncoder::new_with_quality(&mut bytes, 68)
+        .encode_image(&DynamicImage::ImageRgba8(image))
+        .map_err(|_| "Could not encode the screen image.".to_string())?;
+    if bytes.len() > 4 * 1024 * 1024 {
+        return Err("Screen image exceeds the 4 MB safety limit.".to_string());
+    }
+    Ok((base64::engine::general_purpose::STANDARD.encode(bytes), width, height))
+}
 #[tauri::command]
 fn get_device_status(connected: tauri::State<'_, Arc<AtomicBool>>) -> DeviceStatus {
     let paired = stored_token().is_some();
@@ -110,7 +138,7 @@ struct RelayPollResponse {
     command: Option<RelayCommand>,
 }
 
-async fn poll_relay_once(connected: &Arc<AtomicBool>) {
+async fn poll_relay_once(connected: &Arc<AtomicBool>, screen_consent: &Arc<AtomicBool>) {
     let Some(token) = stored_token() else { return };
     let Some(api_key) = SUPABASE_ANON_KEY else { return };
     if api_key.is_empty() { return; }
@@ -139,10 +167,10 @@ async fn poll_relay_once(connected: &Arc<AtomicBool>) {
                 "connected": connected.load(Ordering::Relaxed),
                 "device_id": device_id,
                 "agent_version": env!("CARGO_PKG_VERSION"),
-                "supported_commands": ["desktop.status"],
+                "supported_commands": ["desktop.status", "screen.capture"],
                 "execution_enabled": false,
                 "permissions": {
-                    "screen.capture": false,
+                    "screen.capture": screen_consent.load(Ordering::Relaxed),
                     "screen.accessibility": false,
                     "input.pointer": false,
                     "input.keyboard": false,
@@ -154,6 +182,19 @@ async fn poll_relay_once(connected: &Arc<AtomicBool>) {
             }),
             None,
         ),
+        "screen.capture" => {
+            if !screen_consent.load(Ordering::Relaxed) {
+                (serde_json::json!({}), Some("Screen capture consent is switched off on this Windows computer.".to_string()))
+            } else {
+                match capture_screen_jpeg() {
+                    Ok((image_base64, width, height)) => (
+                        serde_json::json!({ "image_base64": image_base64, "mime_type": "image/jpeg", "width": width, "height": height }),
+                        None,
+                    ),
+                    Err(message) => (serde_json::json!({}), Some(message)),
+                }
+            }
+        },
         _ => (serde_json::json!({}), Some("Unsupported desktop command.".to_string())),
     };
 
@@ -174,10 +215,10 @@ async fn poll_relay_once(connected: &Arc<AtomicBool>) {
         .await;
 }
 
-fn start_relay_polling(connected: Arc<AtomicBool>) {
+fn start_relay_polling(connected: Arc<AtomicBool>, screen_consent: Arc<AtomicBool>) {
     tauri::async_runtime::spawn(async move {
         loop {
-            poll_relay_once(&connected).await;
+            poll_relay_once(&connected, &screen_consent).await;
             tokio::time::sleep(Duration::from_secs(10)).await;
         }
     });
@@ -207,7 +248,7 @@ fn start_heartbeat(app: tauri::AppHandle, connected: Arc<AtomicBool>) {
 
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![pair_device, get_device_status])
+        .invoke_handler(tauri::generate_handler![pair_device, get_device_status, get_screen_capture_consent, set_screen_capture_consent])
         .setup(|app| {
             let open = MenuItem::with_id(app, "open", "Open McpOS", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit McpOS", true, None::<&str>)?;
@@ -236,8 +277,10 @@ fn main() {
 
             let connection_state = Arc::new(AtomicBool::new(false));
             app.manage(connection_state.clone());
+            let screen_consent = Arc::new(AtomicBool::new(false));
+            app.manage(screen_consent.clone());
             start_heartbeat(app.handle().clone(), connection_state.clone());
-            start_relay_polling(connection_state);
+            start_relay_polling(connection_state, screen_consent);
             Ok(())
         })
         .on_window_event(|window, event| {
