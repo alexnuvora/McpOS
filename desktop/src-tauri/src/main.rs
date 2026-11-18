@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use base64::Engine;
-use enigo::{Button, Coordinate, Direction, Enigo, Keyboard, Mouse, Settings};
+use enigo::{Button, Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
 use keyring::Entry;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, io::Read, path::{Path, PathBuf}, sync::{mpsc::{sync_channel, SyncSender}, Arc, Mutex, atomic::{AtomicBool, Ordering}}, time::{Duration, SystemTime, UNIX_EPOCH}};
@@ -97,11 +97,11 @@ fn policy_active(policy: &AutomationPolicy) -> bool {
 fn policy_auto_approves(policy: &AutomationPolicy, command: &str) -> bool {
     if !policy_active(policy) { return false; }
     if policy.mode == "all" {
-        return matches!(command, "input.pointer.click" | "input.keyboard.type" | "browser.open" | "browser.click" | "browser.type" | "screen.capture");
+        return matches!(command, "input.pointer.click" | "input.keyboard.type" | "input.keyboard.shortcut" | "browser.open" | "browser.click" | "browser.type" | "screen.capture");
     }
     match command {
         "input.pointer.click" => policy.auto_pointer,
-        "input.keyboard.type" => policy.auto_keyboard,
+        "input.keyboard.type" | "input.keyboard.shortcut" => policy.auto_keyboard,
         "browser.open" | "browser.click" | "browser.type" => policy.auto_browser,
         "screen.capture" => policy.auto_screen,
         _ => false,
@@ -493,6 +493,38 @@ fn execute_input_action(command: &RelayCommand) -> Result<serde_json::Value, Str
             enigo.text(text).map_err(|_| "Windows could not enter the approved text.".to_string())?;
             Ok(serde_json::json!({ "action": "type_text", "characters": text.chars().count(), "approved_locally": true }))
         },
+        "input.keyboard.shortcut" => {
+            let names = command.payload.get("keys").and_then(|value| value.as_array()).ok_or("A shortcut key array is required.")?;
+            if names.len() < 2 || names.len() > 4 { return Err("A shortcut must contain 2–4 keys.".into()); }
+            let mut keys: Vec<Key> = Vec::new();
+            for name in names {
+                let value = name.as_str().ok_or("Shortcut keys must be strings.")?;
+                let key = match value.to_ascii_uppercase().as_str() {
+                    "CTRL" | "CONTROL" => Key::Control, "SHIFT" => Key::Shift, "ALT" => Key::Alt, "WIN" | "META" => Key::Meta,
+                    "ENTER" => Key::Return, "TAB" => Key::Tab, "ESC" | "ESCAPE" => Key::Escape, "SPACE" => Key::Space,
+                    "BACKSPACE" => Key::Backspace, "DELETE" => Key::Delete, "HOME" => Key::Home, "END" => Key::End,
+                    "PAGEUP" => Key::PageUp, "PAGEDOWN" => Key::PageDown, "UP" => Key::UpArrow, "DOWN" => Key::DownArrow,
+                    "LEFT" => Key::LeftArrow, "RIGHT" => Key::RightArrow,
+                    "F1" => Key::F1, "F2" => Key::F2, "F3" => Key::F3, "F4" => Key::F4, "F5" => Key::F5, "F6" => Key::F6,
+                    "F7" => Key::F7, "F8" => Key::F8, "F9" => Key::F9, "F10" => Key::F10, "F11" => Key::F11, "F12" => Key::F12,
+                    v if v.len() == 1 && v.as_bytes()[0].is_ascii_alphanumeric() => Key::Unicode(v.chars().next().unwrap().to_ascii_lowercase()),
+                    _ => return Err("Unsupported shortcut key. Use modifiers, letters, digits, F1–F12, navigation and editing keys.".into()),
+                };
+                keys.push(key);
+            }
+            let mut pressed: Vec<Key> = Vec::new();
+            for key in &keys {
+                if let Err(_) = enigo.key(*key, Direction::Press) {
+                    for held in pressed.iter().rev() { let _ = enigo.key(*held, Direction::Release); }
+                    return Err("Windows could not press the requested shortcut.".into());
+                }
+                pressed.push(*key);
+            }
+            for key in pressed.iter().rev() {
+                enigo.key(*key, Direction::Release).map_err(|_| "Windows could not release a shortcut key.".to_string())?;
+            }
+            Ok(serde_json::json!({ "action": "keyboard_shortcut", "keys": names, "approved_locally": true }))
+        },
         _ => Err("Unsupported input action.".to_string()),
     }
 }
@@ -567,7 +599,7 @@ async fn poll_relay_once(connected: &Arc<AtomicBool>, screen_consent: &Arc<Atomi
     let Ok(envelope) = response.json::<RelayPollResponse>().await else { return };
     let Some(command) = envelope.command else { return };
 
-    if command.command == "input.pointer.click" || command.command == "input.keyboard.type" || command.command == "browser.open" || command.command == "browser.click" || command.command == "browser.type" {
+    if command.command == "input.pointer.click" || command.command == "input.keyboard.type" || command.command == "input.keyboard.shortcut" || command.command == "browser.open" || command.command == "browser.click" || command.command == "browser.type" {
         if command.command.starts_with("browser.") && !browser_consent.load(Ordering::Relaxed) {
             let _ = submit_relay_result(&command.id, serde_json::json!({}), Some("Isolated browser consent is switched off on this Windows computer.".to_string())).await;
             return;
