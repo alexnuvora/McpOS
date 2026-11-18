@@ -32,7 +32,11 @@ The repository currently contains:
 - MCP tools for client status, capability discovery, paired-device listing, desktop-status requests and command-result retrieval.
 - GitHub Actions for Supabase migrations/function deployment, endpoint smoke tests, Next.js validation and Windows installer builds.
 
-**Still not implemented:** screen capture, Windows accessibility, mouse/keyboard control, browser automation, app launching, approved-folder file access, interactive approval prompts and MCP OAuth. These remain disabled; the relay deliberately accepts only the typed `desktop.status` command.
+**Implemented in the current feature branch (not yet production-deployed):** one-shot JPEG screen capture behind a visible local Windows switch; bounded read-only top-level Windows application discovery behind a separate local switch; one-click pointer and short text-entry requests that require a fresh local approval in the companion; an isolated WebView2 browser profile with public-HTTPS navigation, page snapshots and locally approved selector click/text actions; and read-only listing/text access limited to folders selected with the native Windows folder picker. Local consent and folder grants reset to deny on companion restart.
+
+The dashboard now includes paginated audit history and a revoke-all-AI-clients control. Command completion, denial and failure outcomes are recorded. This is an application audit trail, not a tamper-proof compliance log.
+
+**Still not implemented:** arbitrary shell/terminal execution, application launching, file writes/deletes, clipboard access, continuous screen recording, full accessibility-tree inspection and MCP OAuth. Browser operations may fail on websites whose Content Security Policy or browser network policy blocks the local result bridge. The current relay uses 10-second polling rather than a persistent low-latency stream.
 
 ## Proposed technical direction
 
