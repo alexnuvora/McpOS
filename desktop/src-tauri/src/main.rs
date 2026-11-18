@@ -8,7 +8,7 @@ use std::{collections::HashMap, io::Read, path::{Path, PathBuf}, sync::{mpsc::{s
 use xcap::{image::{codecs::jpeg::JpegEncoder, DynamicImage}, Monitor};
 use uiautomation::UIAutomation;
 use uuid::Uuid;
-use tauri::{webview::{DownloadEvent, WebviewWindowBuilder}, WebviewUrl};
+use tauri::{utils::config::WebviewUrl, webview::{DownloadEvent, WebviewWindowBuilder}};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
