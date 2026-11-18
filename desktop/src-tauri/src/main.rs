@@ -373,7 +373,11 @@ fn browser_eval_and_collect(app: &tauri::AppHandle, bridge: &BrowserBridge, expr
             return Err("The isolated browser did not return a result. The page may block local bridge requests.".to_string());
         }
     };
-    serde_json::from_str(&body).map_err(|_| "The isolated browser returned an invalid result.".to_string())
+    let value: serde_json::Value = serde_json::from_str(&body).map_err(|_| "The isolated browser returned an invalid result.".to_string())?;
+    if value.get("ok").and_then(|item| item.as_bool()) == Some(false) {
+        return Err(value.get("error").and_then(|item| item.as_str()).unwrap_or("The browser operation failed.").to_string());
+    }
+    Ok(value)
 }
 
 fn get_browser_snapshot(app: &tauri::AppHandle, bridge: &BrowserBridge) -> Result<serde_json::Value, String> {
