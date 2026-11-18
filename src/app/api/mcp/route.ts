@@ -11,7 +11,7 @@ export const dynamic = "force-dynamic";
 type McpClient = { id: string; user_id: string; client_name: string; scopes: string[]; revoked_at: string | null };
 
 async function authenticateClient(request: NextRequest): Promise<McpClient | null> {
-  const token = (request.headers.get("authorization") ?? "").match(/^Bearer\\s+(.+)$/i)?.[1];
+  const token = (request.headers.get("authorization") ?? "").match(/^Bearer\s+(.+)$/i)?.[1];
   if (!token || !token.startsWith("mcpos_") || token.length < 40 || token.length > 128) return null;
   const tokenHash = createHash("sha256").update(token).digest("hex");
   const response = await supabaseRest(
