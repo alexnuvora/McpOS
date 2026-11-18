@@ -125,6 +125,8 @@ fn get_device_status(connected: tauri::State<'_, Arc<AtomicBool>>) -> DeviceStat
         let mut pending = pending_action.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         if pending.is_none() {
             *pending = Some(command);
+            drop(pending);
+            show_main_window(app);
         } else {
             let command_id = command.id.clone();
             drop(pending);
@@ -294,26 +296,28 @@ async fn submit_relay_result(command_id: &str, result: serde_json::Value, error_
 
 #[tauri::command]
 fn get_pending_action(pending: tauri::State<'_, PendingAction>) -> Option<serde_json::Value> {
-    pending.0.lock().ok()?.as_ref().map(|command| serde_json::json!({ "id": command.id, "command": command.command, "payload": command.payload }))
+    pending.0.lock().ok()?.as_ref().map(|command| serde_json::json!({ "id": command.id, "command": command.command, "payload": command.payload.clone() }))
 }
 
 #[tauri::command]
 async fn approve_pending_action(pending: tauri::State<'_, PendingAction>) -> Result<String, String> {
     let command = pending.0.lock().map_err(|_| "Approval state is unavailable.".to_string())?.clone().ok_or("There is no pending action to approve.")?;
     let (result, error) = match execute_input_action(&command) { Ok(result) => (result, None), Err(message) => (serde_json::json!({}), Some(message)) };
-    submit_relay_result(&command.id, result, error.clone()).await?;
+    let submission = submit_relay_result(&command.id, result, error.clone()).await;
     pending.0.lock().map_err(|_| "Approval state is unavailable.".to_string())?.take();
+    submission?;
     if let Some(message) = error { Err(message) } else { Ok("The approved action was executed on this computer.".to_string()) }
 }
 
 #[tauri::command]
 async fn deny_pending_action(pending: tauri::State<'_, PendingAction>) -> Result<String, String> {
     let command = pending.0.lock().map_err(|_| "Approval state is unavailable.".to_string())?.clone().ok_or("There is no pending action to deny.")?;
-    submit_relay_result(&command.id, serde_json::json!({}), Some("The user denied this action on the Windows computer.".to_string())).await?;
+    let submission = submit_relay_result(&command.id, serde_json::json!({}), Some("The user denied this action on the Windows computer.".to_string())).await;
     pending.0.lock().map_err(|_| "Approval state is unavailable.".to_string())?.take();
+    submission?;
     Ok("Action denied. Nothing was executed.".to_string())
 }
-async fn poll_relay_once(connected: &Arc<AtomicBool>, screen_consent: &Arc<AtomicBool>, accessibility_consent: &Arc<AtomicBool>, approved_folders: &Arc<Mutex<Vec<PathBuf>>>, pending_action: &Arc<Mutex<Option<RelayCommand>>>) {
+async fn poll_relay_once(connected: &Arc<AtomicBool>, screen_consent: &Arc<AtomicBool>, accessibility_consent: &Arc<AtomicBool>, approved_folders: &Arc<Mutex<Vec<PathBuf>>>, pending_action: &Arc<Mutex<Option<RelayCommand>>>, app: &tauri::AppHandle) {
     let Some(token) = stored_token() else { return };
     let Some(api_key) = SUPABASE_ANON_KEY else { return };
     if api_key.is_empty() { return; }
@@ -342,13 +346,13 @@ async fn poll_relay_once(connected: &Arc<AtomicBool>, screen_consent: &Arc<Atomi
                 "connected": connected.load(Ordering::Relaxed),
                 "device_id": device_id,
                 "agent_version": env!("CARGO_PKG_VERSION"),
-                "supported_commands": ["desktop.status", "screen.capture", "desktop.accessibility"],
+                "supported_commands": ["desktop.status", "screen.capture", "desktop.accessibility", "files.list", "files.read", "input.pointer.click", "input.keyboard.type"],
                 "execution_enabled": false,
                 "permissions": {
                     "screen.capture": screen_consent.load(Ordering::Relaxed),
                     "screen.accessibility": accessibility_consent.load(Ordering::Relaxed),
-                    "input.pointer": false,
-                    "input.keyboard": false,
+                    "input.pointer": true,
+                    "input.keyboard": true,
                     "browser.control": false,
                     "files.read": false,
                     "files.write": false,
@@ -401,10 +405,10 @@ async fn poll_relay_once(connected: &Arc<AtomicBool>, screen_consent: &Arc<Atomi
         .await;
 }
 
-fn start_relay_polling(connected: Arc<AtomicBool>, screen_consent: Arc<AtomicBool>, accessibility_consent: Arc<AtomicBool>, approved_folders: Arc<Mutex<Vec<PathBuf>>>, pending_action: Arc<Mutex<Option<RelayCommand>>>) {
+fn start_relay_polling(connected: Arc<AtomicBool>, screen_consent: Arc<AtomicBool>, accessibility_consent: Arc<AtomicBool>, approved_folders: Arc<Mutex<Vec<PathBuf>>>, pending_action: Arc<Mutex<Option<RelayCommand>>>, app: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         loop {
-            poll_relay_once(&connected, &screen_consent, &accessibility_consent, &approved_folders, &pending_action).await;
+            poll_relay_once(&connected, &screen_consent, &accessibility_consent, &approved_folders, &pending_action, &app).await;
             tokio::time::sleep(Duration::from_secs(10)).await;
         }
     });
@@ -472,7 +476,7 @@ fn main() {
             let pending_action = Arc::new(Mutex::new(None));
             app.manage(PendingAction(pending_action.clone()));
             start_heartbeat(app.handle().clone(), connection_state.clone());
-            start_relay_polling(connection_state, screen_consent, accessibility_consent, approved_folders, pending_action);
+            start_relay_polling(connection_state, screen_consent, accessibility_consent, approved_folders, pending_action, app.handle().clone());
             Ok(())
         })
         .on_window_event(|window, event| {
