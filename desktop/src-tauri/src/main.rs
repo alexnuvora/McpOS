@@ -3,7 +3,7 @@
 use base64::Engine;
 use keyring::Entry;
 use serde::{Deserialize, Serialize};
-use std::{sync::{Arc, atomic::{AtomicBool, Ordering}}, time::Duration};
+use std::{path::{Path, PathBuf}, sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}}, time::Duration};
 use xcap::{image::{codecs::jpeg::JpegEncoder, DynamicImage}, Monitor};
 use uiautomation::UIAutomation;
 use tauri::{
@@ -57,6 +57,7 @@ async fn heartbeat() -> bool {
 
 struct ScreenCaptureConsent(Arc<AtomicBool>);
 struct AccessibilityConsent(Arc<AtomicBool>);
+struct ApprovedFolders(Arc<Mutex<Vec<PathBuf>>>);
 
 #[tauri::command]
 fn get_accessibility_consent(consent: tauri::State<'_, AccessibilityConsent>) -> bool {
@@ -169,11 +170,79 @@ struct RelayCommand {
 }
 
 #[derive(Deserialize)]
+#[tauri::command]
+fn get_approved_folders(folders: tauri::State<'_, ApprovedFolders>) -> Vec<String> {
+    folders.0.lock().map(|items| items.iter().map(|path| path.display().to_string()).collect()).unwrap_or_default()
+}
+
+#[tauri::command]
+fn pick_approved_folder(folders: tauri::State<'_, ApprovedFolders>) -> Result<Vec<String>, String> {
+    let Some(selected) = rfd::FileDialog::new().pick_folder() else {
+        return Ok(get_folder_paths(&folders.0));
+    };
+    let canonical = selected.canonicalize().map_err(|_| "Could not resolve the selected folder.".to_string())?;
+    let mut approved = folders.0.lock().map_err(|_| "Folder approval state is unavailable.".to_string())?;
+    if !approved.iter().any(|existing| existing == &canonical) { approved.push(canonical); }
+    Ok(approved.iter().map(|path| path.display().to_string()).collect())
+}
+
+#[tauri::command]
+fn remove_approved_folder(path: String, folders: tauri::State<'_, ApprovedFolders>) -> Result<Vec<String>, String> {
+    let target = PathBuf::from(path).canonicalize().map_err(|_| "Folder is no longer available.".to_string())?;
+    let mut approved = folders.0.lock().map_err(|_| "Folder approval state is unavailable.".to_string())?;
+    approved.retain(|existing| existing != &target);
+    Ok(approved.iter().map(|item| item.display().to_string()).collect())
+}
+
+fn get_folder_paths(folders: &Arc<Mutex<Vec<PathBuf>>>) -> Vec<String> {
+    folders.lock().map(|items| items.iter().map(|path| path.display().to_string()).collect()).unwrap_or_default()
+}
+
+fn execute_files_command(command: &RelayCommand, folders: &Arc<Mutex<Vec<PathBuf>>>) -> (serde_json::Value, Option<String>) {
+    let approved = match folders.lock() { Ok(items) => items.clone(), Err(_) => return (serde_json::json!({}), Some("Approved-folder state is unavailable.".to_string())) };
+    if command.command == "files.list" && command.payload.get("path").is_none() {
+        let roots: Vec<_> = approved.iter().map(|path| serde_json::json!({ "path": path.display().to_string(), "name": path.file_name().and_then(|v| v.to_str()).unwrap_or("Approved folder") })).collect();
+        return (serde_json::json!({ "approved_folders": roots }), None);
+    }
+    let requested = match command.payload.get("path").and_then(|value| value.as_str()) {
+        Some(value) if !value.trim().is_empty() => value,
+        _ => return (serde_json::json!({}), Some("A file or folder path is required.".to_string())),
+    };
+    let target = match Path::new(requested).canonicalize() {
+        Ok(path) => path,
+        Err(_) => return (serde_json::json!({}), Some("The requested path does not exist.".to_string())),
+    };
+    if !approved.iter().any(|root| target.starts_with(root)) {
+        return (serde_json::json!({}), Some("Access denied. This path is outside every locally approved folder.".to_string()));
+    }
+    if command.command == "files.list" {
+        let entries = match std::fs::read_dir(&target) { Ok(items) => items, Err(_) => return (serde_json::json!({}), Some("Could not read this folder.".to_string())) };
+        let mut items = Vec::new();
+        for entry in entries.flatten().take(100) {
+            let kind = match entry.file_type() { Ok(kind) if kind.is_file() => "file", Ok(kind) if kind.is_dir() => "folder", _ => continue };
+            let name = entry.file_name().to_string_lossy().to_string();
+            let size = entry.metadata().map(|meta| meta.len()).unwrap_or(0);
+            items.push(serde_json::json!({ "name": name, "kind": kind, "size_bytes": size }));
+        }
+        return (serde_json::json!({ "path": target.display().to_string(), "items": items, "truncated": items.len() >= 100 }), None);
+    }
+    if command.command == "files.read" {
+        if !target.is_file() { return (serde_json::json!({}), Some("Only files can be read.".to_string())); }
+        let allowed_extensions = ["txt","md","csv","json","yaml","yml","toml","log","html","css","js","ts","tsx","rs","py","xml"];
+        let extension = target.extension().and_then(|value| value.to_str()).unwrap_or("").to_ascii_lowercase();
+        if !allowed_extensions.contains(&extension.as_str()) { return (serde_json::json!({}), Some("This file type is not enabled for text reading.".to_string())); }
+        let metadata = match std::fs::metadata(&target) { Ok(meta) => meta, Err(_) => return (serde_json::json!({}), Some("Could not inspect the requested file.".to_string())) };
+        if metadata.len() > 512 * 1024 { return (serde_json::json!({}), Some("File exceeds the 512 KB text-read limit.".to_string())); }
+        let content = match std::fs::read_to_string(&target) { Ok(text) => text, Err(_) => return (serde_json::json!({}), Some("File is not valid UTF-8 text or could not be read.".to_string())) };
+        return (serde_json::json!({ "path": target.display().to_string(), "content": content }), None);
+    }
+    (serde_json::json!({}), Some("Unsupported file operation.".to_string()))
+}
 struct RelayPollResponse {
     command: Option<RelayCommand>,
 }
 
-async fn poll_relay_once(connected: &Arc<AtomicBool>, screen_consent: &Arc<AtomicBool>, accessibility_consent: &Arc<AtomicBool>) {
+async fn poll_relay_once(connected: &Arc<AtomicBool>, screen_consent: &Arc<AtomicBool>, accessibility_consent: &Arc<AtomicBool>, approved_folders: &Arc<Mutex<Vec<PathBuf>>>) {
     let Some(token) = stored_token() else { return };
     let Some(api_key) = SUPABASE_ANON_KEY else { return };
     if api_key.is_empty() { return; }
@@ -240,6 +309,7 @@ async fn poll_relay_once(connected: &Arc<AtomicBool>, screen_consent: &Arc<Atomi
                 }
             }
         },
+        "files.list" | "files.read" => execute_files_command(&command, approved_folders),
         _ => (serde_json::json!({}), Some("Unsupported desktop command.".to_string())),
     };
 
@@ -260,10 +330,10 @@ async fn poll_relay_once(connected: &Arc<AtomicBool>, screen_consent: &Arc<Atomi
         .await;
 }
 
-fn start_relay_polling(connected: Arc<AtomicBool>, screen_consent: Arc<AtomicBool>, accessibility_consent: Arc<AtomicBool>) {
+fn start_relay_polling(connected: Arc<AtomicBool>, screen_consent: Arc<AtomicBool>, accessibility_consent: Arc<AtomicBool>, approved_folders: Arc<Mutex<Vec<PathBuf>>>) {
     tauri::async_runtime::spawn(async move {
         loop {
-            poll_relay_once(&connected, &screen_consent, &accessibility_consent).await;
+            poll_relay_once(&connected, &screen_consent, &accessibility_consent, &approved_folders).await;
             tokio::time::sleep(Duration::from_secs(10)).await;
         }
     });
@@ -293,7 +363,7 @@ fn start_heartbeat(app: tauri::AppHandle, connected: Arc<AtomicBool>) {
 
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![pair_device, get_device_status, get_screen_capture_consent, set_screen_capture_consent, get_accessibility_consent, set_accessibility_consent])
+        .invoke_handler(tauri::generate_handler![pair_device, get_device_status, get_screen_capture_consent, set_screen_capture_consent, get_accessibility_consent, set_accessibility_consent, get_approved_folders, pick_approved_folder, remove_approved_folder])
         .setup(|app| {
             let open = MenuItem::with_id(app, "open", "Open McpOS", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit McpOS", true, None::<&str>)?;
@@ -326,8 +396,10 @@ fn main() {
             app.manage(ScreenCaptureConsent(screen_consent.clone()));
             let accessibility_consent = Arc::new(AtomicBool::new(false));
             app.manage(AccessibilityConsent(accessibility_consent.clone()));
+            let approved_folders = Arc::new(Mutex::new(Vec::new()));
+            app.manage(ApprovedFolders(approved_folders.clone()));
             start_heartbeat(app.handle().clone(), connection_state.clone());
-            start_relay_polling(connection_state, screen_consent, accessibility_consent);
+            start_relay_polling(connection_state, screen_consent, accessibility_consent, approved_folders);
             Ok(())
         })
         .on_window_event(|window, event| {
