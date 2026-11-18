@@ -170,11 +170,11 @@ fn reset_device_pairing(
         .map_err(|error| format!("Could not remove the saved device ID from Windows Credential Manager: {error}"))?;
 
     connected.store(false, Ordering::Relaxed);
-    screen_consent.store(false, Ordering::Relaxed);
-    accessibility_consent.store(false, Ordering::Relaxed);
-    browser_consent.store(false, Ordering::Relaxed);
-    approved_folders.lock().map_err(|_| "Could not clear local folder approvals.".to_string())?.clear();
-    pending_action.lock().map_err(|_| "Could not clear the pending local action.".to_string())?.take();
+    screen_consent.0.store(false, Ordering::Relaxed);
+    accessibility_consent.0.store(false, Ordering::Relaxed);
+    browser_consent.0.store(false, Ordering::Relaxed);
+    approved_folders.0.lock().map_err(|_| "Could not clear local folder approvals.".to_string())?.clear();
+    pending_action.0.lock().map_err(|_| "Could not clear the pending local action.".to_string())?.take();
     if let Some(window) = app.get_webview_window("mcpos-isolated-browser") { let _ = window.close(); }
     Ok(())
 }
