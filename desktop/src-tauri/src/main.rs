@@ -42,6 +42,20 @@ fn stored_token() -> Option<String> {
     credential(TOKEN_KEY).ok()?.get_password().ok()
 }
 
+async fn authorize_pending_command(command_id: &str) -> bool {
+    let Some(token) = stored_token() else { return false };
+    let Some(api_key) = SUPABASE_ANON_KEY else { return false };
+    if api_key.is_empty() { return false; }
+    let response = reqwest::Client::new()
+        .post(format!("{SUPABASE_URL}/functions/v1/device-poll"))
+        .header("apikey", api_key).bearer_auth(token)
+        .json(&serde_json::json!({ "authorize_command_id": command_id }))
+        .send().await;
+    match response {
+        Ok(response) if response.status().is_success() => response.json::<serde_json::Value>().await.ok().and_then(|value| value.get("authorized").and_then(|v| v.as_bool())).unwrap_or(false),
+        _ => false,
+    }
+}
 async fn heartbeat() -> bool {
     let Some(token) = stored_token() else { return false };
     let Some(api_key) = SUPABASE_ANON_KEY else { return false };
@@ -432,6 +446,10 @@ fn get_pending_action(pending: tauri::State<'_, PendingAction>) -> Option<serde_
 #[tauri::command]
 async fn approve_pending_action(pending: tauri::State<'_, PendingAction>, app: tauri::AppHandle, bridge: tauri::State<'_, BrowserBridge>, browser_consent: tauri::State<'_, BrowserConsent>) -> Result<String, String> {
     let command = pending.0.lock().map_err(|_| "Approval state is unavailable.".to_string())?.clone().ok_or("There is no pending action to approve.")?;
+    if !heartbeat().await || !authorize_pending_command(&command.id).await {
+        pending.0.lock().map_err(|_| "Approval state is unavailable.".to_string())?.take();
+        return Err("McpOS could not verify that this device and AI session are still authorised. The action was not executed.".to_string());
+    }
     let action_result = if command.command.starts_with("browser.") && !browser_consent.0.load(Ordering::Relaxed) {
         Err("Isolated browser consent was switched off before approval.".to_string())
     } else if command.command.starts_with("browser.") {
