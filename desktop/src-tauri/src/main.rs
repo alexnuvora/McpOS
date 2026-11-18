@@ -178,7 +178,7 @@ fn start_relay_polling(connected: Arc<AtomicBool>) {
     tauri::async_runtime::spawn(async move {
         loop {
             poll_relay_once(&connected).await;
-            tokio::time::sleep(Duration::from_secs(2)).await;
+            tokio::time::sleep(Duration::from_secs(10)).await;
         }
     });
 }
