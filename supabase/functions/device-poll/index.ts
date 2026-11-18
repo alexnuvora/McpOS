@@ -18,7 +18,7 @@ function getServiceKey(): string | null {
 Deno.serve(async request => {
   if (request.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (request.method !== "POST") return reply({ error: "Method not allowed" }, 405);
-  const bearer = (request.headers.get("Authorization") ?? "").match(/^Bearer\\s+(.+)$/i)?.[1];
+  const bearer = (request.headers.get("Authorization") ?? "").match(/^Bearer\s+(.+)$/i)?.[1];
   if (!bearer || bearer.length < 40 || bearer.length > 256) return reply({ error: "Unauthorized" }, 401);
   const url = Deno.env.get("SUPABASE_URL");
   const key = getServiceKey();
