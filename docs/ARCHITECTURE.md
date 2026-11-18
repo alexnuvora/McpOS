@@ -17,7 +17,7 @@ The desktop companion makes outbound authenticated HTTPS polling requests to the
 3. An AI client authenticates separately to the MCP gateway using an individually revocable, hashed client credential.
 4. The gateway verifies the user, client, device, capability grant and session state for every tool call, then queues a typed command.
 5. The companion claims the queued command using its device credential, validates the typed command locally, and returns a structured result. Only the read-only desktop.status command is implemented today.
-6. The gateway returns the result to the MCP client. Screen observation and computer-control commands remain disabled pending local consent and approval flows.
+6. The gateway returns the result to the authenticated MCP client. Screen observation is guarded by local consent switches; mouse, keyboard and browser actions wait for a fresh local approval.
 
 The gateway is a broker, not a remote desktop host. Screen pixels and local files should not be retained by default.
 
@@ -56,10 +56,10 @@ The native API choices must be validated with a Windows prototype before broad c
 
 ## Gateway and MCP
 
-The `/api/mcp` endpoint uses individually revocable MCP client credentials and exposes device listing plus a read-only `desktop.status` request over a Supabase-backed outbound polling queue. Persistent streaming relay, OAuth discovery, screen capture and input control remain outstanding.
+The `/api/mcp` endpoint uses stateless Streamable HTTP. Claude and other bearer-token clients use individually revocable credentials. ChatGPT Enterprise uses OAuth 2.1 authorization-code + PKCE with DCR, protected-resource and authorization-server discovery, resource-bound one-hour access tokens, rotating refresh tokens, user consent, token revocation and per-tool `securitySchemes`. The tool catalogue includes device status, screen capture, bounded Windows application discovery, approved-folder text reads, locally approved pointer/keyboard actions, isolated browser automation, command results, profile identity and paginated audit history. The outbound device relay polls every 10 seconds; persistent streaming remains outstanding.
 
 Before screen or input control is exposed, complete:
-- OAuth 2.1 / MCP protected-resource metadata for clients that require OAuth.
+- CIMD and OpenAI private-key JWT client authentication are not enabled; ChatGPT uses the supported DCR public-client PKCE flow.
 - Per-device and per-tool authorisation, including local consent state.
 - A visible local approval surface and immediate pause control.
 - Request correlation, expiry, replay protection and rate limiting for every command type.
