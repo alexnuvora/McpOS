@@ -649,8 +649,9 @@ async fn poll_relay_once(connected: &Arc<AtomicBool>, screen_consent: &Arc<Atomi
                 "connected": connected.load(Ordering::Relaxed),
                 "device_id": device_id,
                 "agent_version": env!("CARGO_PKG_VERSION"),
-                "supported_commands": ["desktop.status", "screen.capture", "desktop.accessibility", "files.list", "files.read", "input.pointer.click", "input.keyboard.type", "browser.open", "browser.snapshot", "browser.click", "browser.type"],
-                "execution_enabled": false,
+                "supported_commands": ["desktop.status", "screen.capture", "desktop.accessibility", "files.list", "files.read", "input.pointer.click", "input.keyboard.type", "input.keyboard.shortcut", "browser.open", "browser.snapshot", "browser.click", "browser.type"],
+                "execution_enabled": policy.lock().map(|p| policy_active(&p)).unwrap_or(false),
+                "automation_policy": policy.lock().map(|p| policy_json(&p)).unwrap_or_else(|_| serde_json::json!({"mode":"manual","paused":true})),
                 "permissions": {
                     "screen.capture": screen_consent.load(Ordering::Relaxed),
                     "screen.accessibility": accessibility_consent.load(Ordering::Relaxed),
