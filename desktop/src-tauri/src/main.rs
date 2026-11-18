@@ -433,7 +433,7 @@ async fn deny_pending_action(pending: tauri::State<'_, PendingAction>) -> Result
     submission?;
     Ok("Action denied. Nothing was executed.".to_string())
 }
-async fn poll_relay_once(connected: &Arc<AtomicBool>, screen_consent: &Arc<AtomicBool>, accessibility_consent: &Arc<AtomicBool>, approved_folders: &Arc<Mutex<Vec<PathBuf>>>, pending_action: &Arc<Mutex<Option<RelayCommand>>>, app: &tauri::AppHandle) {
+async fn poll_relay_once(connected: &Arc<AtomicBool>, screen_consent: &Arc<AtomicBool>, accessibility_consent: &Arc<AtomicBool>, browser_consent: &Arc<AtomicBool>, approved_folders: &Arc<Mutex<Vec<PathBuf>>>, pending_action: &Arc<Mutex<Option<RelayCommand>>>, bridge: &BrowserBridge, app: &tauri::AppHandle) {
     let Some(token) = stored_token() else { return };
     let Some(api_key) = SUPABASE_ANON_KEY else { return };
     if api_key.is_empty() { return; }
@@ -454,7 +454,11 @@ async fn poll_relay_once(connected: &Arc<AtomicBool>, screen_consent: &Arc<Atomi
     let Ok(envelope) = response.json::<RelayPollResponse>().await else { return };
     let Some(command) = envelope.command else { return };
 
-    if command.command == "input.pointer.click" || command.command == "input.keyboard.type" {
+    if command.command == "input.pointer.click" || command.command == "input.keyboard.type" || command.command == "browser.open" || command.command == "browser.click" || command.command == "browser.type" {
+        if command.command.starts_with("browser.") && !browser_consent.load(Ordering::Relaxed) {
+            let _ = submit_relay_result(&command.id, serde_json::json!({}), Some("Isolated browser consent is switched off on this Windows computer.".to_string())).await;
+            return;
+        }
         let mut pending = pending_action.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         if pending.is_none() {
             *pending = Some(command);
@@ -476,14 +480,14 @@ async fn poll_relay_once(connected: &Arc<AtomicBool>, screen_consent: &Arc<Atomi
                 "connected": connected.load(Ordering::Relaxed),
                 "device_id": device_id,
                 "agent_version": env!("CARGO_PKG_VERSION"),
-                "supported_commands": ["desktop.status", "screen.capture", "desktop.accessibility", "files.list", "files.read", "input.pointer.click", "input.keyboard.type"],
+                "supported_commands": ["desktop.status", "screen.capture", "desktop.accessibility", "files.list", "files.read", "input.pointer.click", "input.keyboard.type", "browser.open", "browser.snapshot", "browser.click", "browser.type"],
                 "execution_enabled": false,
                 "permissions": {
                     "screen.capture": screen_consent.load(Ordering::Relaxed),
                     "screen.accessibility": accessibility_consent.load(Ordering::Relaxed),
                     "input.pointer": true,
                     "input.keyboard": true,
-                    "browser.control": false,
+                    "browser.control": browser_consent.load(Ordering::Relaxed),
                     "files.read": false,
                     "files.write": false,
                     "apps.launch": false
@@ -515,6 +519,13 @@ async fn poll_relay_once(connected: &Arc<AtomicBool>, screen_consent: &Arc<Atomi
             }
         },
         "files.list" | "files.read" => execute_files_command(&command, approved_folders),
+        "browser.snapshot" => {
+            if !browser_consent.load(Ordering::Relaxed) {
+                (serde_json::json!({}), Some("Isolated browser consent is switched off on this Windows computer.".to_string()))
+            } else {
+                match get_browser_snapshot(app, bridge) { Ok(snapshot) => (snapshot, None), Err(message) => (serde_json::json!({}), Some(message)) }
+            }
+        },
         _ => (serde_json::json!({}), Some("Unsupported desktop command.".to_string())),
     };
 
