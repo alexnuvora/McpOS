@@ -67,12 +67,36 @@ Restart Claude Desktop after saving the configuration. Never commit this file or
 
 The Windows companion polls the authenticated Supabase command queue over outbound HTTPS every 10 seconds. No inbound port or router configuration is needed. This is a polling relay, not a low-latency streaming session. Arbitrary shell commands, app launch, file writes/deletes, clipboard access and continuous screen recording are not exposed.
 
-## ChatGPT
+## ChatGPT Enterprise
 
-ChatGPT custom MCP apps are plan- and workspace-dependent. OpenAI currently documents custom MCP connections on the web for Business and Enterprise/Edu, with Pro support limited to read/fetch use cases. Free accounts do not currently have the documented custom MCP connector capability. See the current [OpenAI connection guide](https://help.openai.com/en/articles/12584461-connecting-custom-mcp-servers-in-chatgpt).
+McpOS supports the ChatGPT Enterprise custom MCP connector flow using OAuth 2.1 authorization code + PKCE, dynamic client registration, one-hour access tokens, rotating 30-day refresh tokens, explicit McpOS user consent and session revocation. ChatGPT does not need a manually copied bearer key.
 
-When the account and workspace support custom MCP apps, create a custom MCP server connection using the endpoint above and configure bearer/API-key authentication with the client token. ChatGPT's UI and authentication options may vary by workspace. Do not publish write-capable tools without explicit local approval.
+**MCP endpoint:** `https://mcpos-dashboard.netlify.app/api/mcp`
 
+**OAuth discovery:**
+- Protected resource: `https://mcpos-dashboard.netlify.app/.well-known/oauth-protected-resource`
+- Authorization server: `https://mcpos-dashboard.netlify.app/.well-known/oauth-authorization-server`
+
+To connect:
+1. Use ChatGPT on the web. An Enterprise workspace admin must allow **Create plugins with MCPs** / custom MCP connector creation under Workspace Settings → Permissions & Roles → Connected Data. If you are not an admin, ask the admin to grant your account the relevant developer permission.
+2. Open Settings → Apps → Advanced Settings and enable Developer mode if your workspace uses that flow. Alternatively, admins/owners can create the connector from Workspace Settings → Apps → Create. In the current Plugins experience, open Plugins → + → Add custom MCP server.
+3. Add the endpoint above, name it **McpOS Desktop**, and select **OAuth** authentication. Do not choose a static API key or paste a Claude bearer token.
+4. Scan the tools and create the app. When ChatGPT starts the OAuth flow, sign in to the McpOS dashboard using an authorised McpOS email address.
+5. Review the requested permissions on the McpOS consent screen and approve only the scopes you want to grant.
+6. Return to ChatGPT, install/enable the draft app and test it in a new web chat by selecting the app (or using `@` to mention it).
+
+The OAuth flow uses DCR with public-client PKCE (S256); no client secret is issued. Access tokens are audience-bound to the McpOS MCP endpoint, stored only as SHA-256 hashes, expire after one hour and refresh tokens rotate. Revoking the ChatGPT session from McpOS → AI connections invalidates the access and refresh session.
+
+Recommended first tests:
+- `mcpos_profile` — confirms which McpOS workspace is connected.
+- `mcpos_status` and `mcpos_capabilities` — confirms the MCP endpoint and feature list.
+- `mcpos_list_devices` — checks the paired Windows companion.
+- `mcpos_request_desktop_status` then `mcpos_get_command_status` — tests the outbound desktop relay.
+- `mcpos_get_audit_history` — confirms audit visibility.
+
+Screen, accessibility, folder, browser and input tools also require their separate AI-client scopes and local Windows consent. Mouse, keyboard and browser actions still require an explicit one-time approval on the PC. ChatGPT's tool annotations identify read-only versus state-changing operations; the Windows local approval remains the final execution gate.
+
+After changing MCP tool names, descriptions, schemas or annotations, refresh the app's tool list in Workspace Settings → Apps. ChatGPT keeps a frozen snapshot of the approved tool definitions until an admin refreshes it.
 ## Revocation and audit
 
 From **AI connections**, revoke one client or use **Revoke all sessions** to invalidate every active AI client key. You can also revoke a Windows device from the Devices section of the main dashboard. The **Audit history** page paginates recorded pairing, request, command-outcome and revocation events.
