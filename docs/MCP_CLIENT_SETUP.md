@@ -27,7 +27,7 @@ Optional scopes:
 - `input.keyboard` — request text entry up to 200 printable characters; the exact text requires local approval every time.
 - `browser.control` — isolated browser navigation, page snapshot, selector click and text entry. The local browser switch must be ON; open/click/type each require local approval.
 
-The Windows local switches reset to OFF when the companion restarts. Folder approvals also reset to an empty list on restart. The isolated browser uses a separate WebView2 profile; it permits public HTTPS URLs only, denies pop-up windows and blocks literal private/loopback IP addresses. File tools are read-only and restricted to a small text-file allowlist.
+The Windows local switches reset to OFF when the companion restarts. Folder approvals also reset to an empty list on restart. The isolated browser uses a separate WebView2 profile; it permits public HTTPS URLs only, denies pop-up windows and downloads, and blocks literal private/loopback IP addresses. File tools are read-only and restricted to a small text-file allowlist. Sensitive command results (screenshots, page snapshots and file text) are cleared from the command row after their first successful MCP retrieval; revoking a client also clears its completed results.
 
 ## Claude Desktop
 
