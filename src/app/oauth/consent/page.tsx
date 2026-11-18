@@ -22,16 +22,19 @@ export default function OAuthConsentPage() {
   const [error, setError] = useState("");
 
   useEffect(() => {
-    const encoded = new URLSearchParams(window.location.search).get("request") || "";
-    setRequest(encoded);
-    try {
-      const normalized = encoded.replace(/-/g, "+").replace(/_/g, "/");
-      const parsed = JSON.parse(atob(normalized)) as Grant;
-      if (!parsed.clientName || !Array.isArray(parsed.scopes)) throw new Error("Invalid request");
-      setGrant(parsed);
-    } catch {
-      setError("This authorisation request is invalid or has expired. Return to ChatGPT and reconnect McpOS.");
-    }
+    const timer = window.setTimeout(() => {
+      const encoded = new URLSearchParams(window.location.search).get("request") || "";
+      setRequest(encoded);
+      try {
+        const normalized = encoded.replace(/-/g, "+").replace(/_/g, "/");
+        const parsed = JSON.parse(atob(normalized)) as Grant;
+        if (!parsed.clientName || !Array.isArray(parsed.scopes)) throw new Error("Invalid request");
+        setGrant(parsed);
+      } catch {
+        setError("This authorisation request is invalid or has expired. Return to ChatGPT and reconnect McpOS.");
+      }
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, []);
 
   async function approve() {
