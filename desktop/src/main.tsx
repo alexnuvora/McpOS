@@ -10,10 +10,14 @@ function App() {
   const [status, setStatus] = useState<DeviceStatus>({ paired: false, connected: false, device_id: null });
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const [screenConsent, setScreenConsent] = useState(false);
   const [error, setError] = useState("");
 
   async function refreshStatus() {
-    try { setStatus(await invoke<DeviceStatus>("get_device_status")); }
+    try {
+      setStatus(await invoke<DeviceStatus>("get_device_status"));
+      setScreenConsent(await invoke<boolean>("get_screen_capture_consent"));
+    }
     catch { setError("Could not read the local device credential."); }
   }
 
@@ -22,6 +26,17 @@ function App() {
     const timer = window.setInterval(() => void refreshStatus(), 15000);
     return () => { window.clearTimeout(initial); window.clearInterval(timer); };
   }, []);
+
+  async function toggleScreenConsent(enabled: boolean) {
+    setError(""); setMessage("");
+    try {
+      const actual = await invoke<boolean>("set_screen_capture_consent", { enabled });
+      setScreenConsent(actual);
+      setMessage(actual ? "Screen capture is enabled locally. AI requests still require a separately scoped client key." : "Screen capture has been disabled on this computer.");
+    } catch {
+      setError("Could not update the local screen-capture consent setting.");
+    }
+  }
 
   async function pair() {
     setBusy(true); setError(""); setMessage("");
@@ -59,7 +74,7 @@ function App() {
       <div className="panel-heading"><div><strong>Device connection</strong><small>Device ID: {status.device_id ?? "Registered"}</small></div><span className="tag">PAIRED</span></div>
       <div className="capability"><span className="symbol">✓</span><div><strong>Device identity</strong><small>Credential stored securely on this Windows computer.</small></div><span className="enabled">Paired</span></div>
       <div className="capability"><span className="symbol">↻</span><div><strong>Connection heartbeat</strong><small>The desktop companion sends a heartbeat every 30 seconds.</small></div><span className={status.connected ? "enabled" : "disabled"}>{status.connected ? "Connected" : "Offline"}</span></div>
-      <div className="capability"><span className="symbol">▧</span><div><strong>Screen observation</strong><small>Screen capture remains disabled until a separate consent workflow is implemented.</small></div><span className="disabled">Not enabled</span></div>
+      <div className="capability consent-capability"><span className="symbol">▧</span><div><strong>Screen capture consent</strong><small>This is a local Windows switch. It resets to off when McpOS restarts. Turn it off at any time to stop further captures.</small></div><button className={"consent-switch " + (screenConsent ? "is-on" : "")} role="switch" aria-checked={screenConsent} aria-label="Allow screen capture on this computer" onClick={() => void toggleScreenConsent(!screenConsent)}><span /></button></div>
       <div className="capability"><span className="symbol">⌖</span><div><strong>Windows accessibility</strong><small>Application controls are not being read or shared.</small></div><span className="disabled">Not enabled</span></div>
       <div className="capability"><span className="symbol">⌘</span><div><strong>Mouse & keyboard</strong><small>No remote input actions are enabled.</small></div><span className="disabled">Not enabled</span></div>
       {error && <div className="feedback error">{error}</div>}
