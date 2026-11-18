@@ -4,9 +4,10 @@ use base64::Engine;
 use enigo::{Button, Coordinate, Direction, Enigo, Keyboard, Mouse, Settings};
 use keyring::Entry;
 use serde::{Deserialize, Serialize};
-use std::{path::{Path, PathBuf}, sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}}, time::Duration};
+use std::{collections::HashMap, io::Read, path::{Path, PathBuf}, sync::{mpsc::{sync_channel, SyncSender}, Arc, Mutex, atomic::{AtomicBool, Ordering}}, time::Duration};
 use xcap::{image::{codecs::jpeg::JpegEncoder, DynamicImage}, Monitor};
 use uiautomation::UIAutomation;
+use tauri::{webview::WebviewWindowBuilder, WebviewUrl};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -60,6 +61,9 @@ struct ScreenCaptureConsent(Arc<AtomicBool>);
 struct AccessibilityConsent(Arc<AtomicBool>);
 struct ApprovedFolders(Arc<Mutex<Vec<PathBuf>>>);
 struct PendingAction(Arc<Mutex<Option<RelayCommand>>>);
+struct BrowserConsent(Arc<AtomicBool>);
+#[derive(Clone)]
+struct BrowserBridge { port: u16, pending: Arc<Mutex<HashMap<String, SyncSender<String>>>> }
 
 #[tauri::command]
 fn get_accessibility_consent(consent: tauri::State<'_, AccessibilityConsent>) -> bool {
@@ -246,6 +250,116 @@ struct RelayPollResponse {
     command: Option<RelayCommand>,
 }
 
+fn start_browser_bridge() -> Result<BrowserBridge, String> {
+    let server = tiny_http::Server::http(("127.0.0.1", 0)).map_err(|_| "Could not start the private browser bridge.".to_string())?;
+    let port = server.server_addr().to_ip().ok_or("Could not bind the private browser bridge.".to_string())?.port();
+    let pending = Arc::new(Mutex::new(HashMap::<String, SyncSender<String>>::new()));
+    let pending_server = pending.clone();
+    std::thread::spawn(move || {
+        for mut request in server.incoming_requests() {
+            let path = request.url().to_string();
+            let method = request.method().as_str().to_string();
+            let mut response = tiny_http::Response::empty(tiny_http::StatusCode(204));
+            let headers = [
+                ("Access-Control-Allow-Origin", "*"),
+                ("Access-Control-Allow-Methods", "POST, OPTIONS"),
+                ("Access-Control-Allow-Headers", "content-type"),
+                ("Access-Control-Allow-Private-Network", "true"),
+                ("Cache-Control", "no-store"),
+            ];
+            for (name, value) in headers { if let Ok(header) = tiny_http::Header::from_bytes(name, value) { response.add_header(header); } }
+            if method == "OPTIONS" { let _ = request.respond(response); continue; }
+            if method != "POST" || !path.starts_with("/snapshot/") {
+                let _ = request.respond(tiny_http::Response::empty(tiny_http::StatusCode(404)));
+                continue;
+            }
+            let nonce = path.trim_start_matches("/snapshot/").to_string();
+            let mut body = String::new();
+            if request.as_reader().take(20_000).read_to_string(&mut body).is_err() {
+                let _ = request.respond(tiny_http::Response::empty(tiny_http::StatusCode(400)));
+                continue;
+            }
+            let sender = pending_server.lock().ok().and_then(|mut map| map.remove(&nonce));
+            if let Some(sender) = sender { let _ = sender.send(body); }
+            else { response = tiny_http::Response::empty(tiny_http::StatusCode(404)); }
+            let _ = request.respond(response);
+        }
+    });
+    Ok(BrowserBridge { port, pending })
+}
+
+fn open_isolated_browser(app: &tauri::AppHandle, raw_url: &str) -> Result<String, String> {
+    let url = url::Url::parse(raw_url).map_err(|_| "The browser URL is invalid.".to_string())?;
+    if url.scheme() != "https" || url.host_str().is_none() || !url.username().is_empty() || url.password().is_some() {
+        return Err("The isolated browser only opens HTTPS URLs without embedded credentials.".to_string());
+    }
+    if let Some(host) = url.host_str() {
+        if host.eq_ignore_ascii_case("localhost") || host.ends_with(".local") { return Err("Local and .local network hosts are blocked in the isolated browser.".to_string()); }
+        if let Ok(address) = host.parse::<std::net::IpAddr>() {
+            if address.is_loopback() || address.is_private_or_unique_local() { return Err("Private and loopback IP addresses are blocked in the isolated browser.".to_string()); }
+        }
+    }
+    if let Some(window) = app.get_webview_window("mcpos-isolated-browser") {
+        window.navigate(url.clone()).map_err(|_| "Could not navigate the isolated browser.".to_string())?;
+        let _ = window.show();
+        let _ = window.set_focus();
+        return Ok("Opened the URL in the separate McpOS browser profile.".to_string());
+    }
+    let mut profile = app.path().app_local_data_dir().map_err(|_| "Could not resolve the isolated browser profile directory.".to_string())?;
+    profile.push("isolated-browser-profile");
+    std::fs::create_dir_all(&profile).map_err(|_| "Could not create the isolated browser profile.".to_string())?;
+    WebviewWindowBuilder::new(app, "mcpos-isolated-browser", WebviewUrl::External(url))
+        .title("McpOS Isolated Browser")
+        .data_directory(profile)
+        .on_navigation(|next_url| next_url.scheme() == "https")
+        .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny)
+        .build().map_err(|_| "Could not create the isolated browser window.".to_string())?;
+    Ok("Opened the URL in a separate browser profile with isolated cookies and storage.".to_string())
+}
+
+fn browser_eval_and_collect(app: &tauri::AppHandle, bridge: &BrowserBridge, expression: &str) -> Result<serde_json::Value, String> {
+    let window = app.get_webview_window("mcpos-isolated-browser").ok_or("Open a page in the isolated browser first.")?;
+    let nonce = format!("{}-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos(), std::process::id());
+    let (sender, receiver) = sync_channel(1);
+    bridge.pending.lock().map_err(|_| "Browser bridge is unavailable.".to_string())?.insert(nonce.clone(), sender);
+    let nonce_js = serde_json::to_string(&nonce).map_err(|_| "Could not prepare browser result collection.".to_string())?;
+    let script = format!("(() => {{ try {{ const result = ({expression}); const body = JSON.stringify(result); fetch('http://127.0.0.1:{}/snapshot/' + {nonce_js}, {{ method: 'POST', mode: 'cors', headers: {{ 'Content-Type': 'text/plain' }}, body }}).catch(() => {{}}); }} catch (error) {{ const body = JSON.stringify({{ ok: false, error: String(error).slice(0, 200) }}); fetch('http://127.0.0.1:{}/snapshot/' + {nonce_js}, {{ method: 'POST', mode: 'cors', headers: {{ 'Content-Type': 'text/plain' }}, body }}).catch(() => {{}}); }} }})();", bridge.port, bridge.port);
+    if window.eval(&script).is_err() {
+        bridge.pending.lock().ok().map(|mut map| map.remove(&nonce));
+        return Err("Could not execute the browser operation.".to_string());
+    }
+    let body = receiver.recv_timeout(Duration::from_secs(5)).map_err(|_| "The isolated browser did not return a result. The page may block local bridge requests.".to_string())?;
+    serde_json::from_str(&body).map_err(|_| "The isolated browser returned an invalid result.".to_string())
+}
+
+fn get_browser_snapshot(app: &tauri::AppHandle, bridge: &BrowserBridge) -> Result<serde_json::Value, String> {
+    browser_eval_and_collect(app, bridge, "({ ok: true, url: location.href, title: document.title, text: (document.body?.innerText || '').slice(0, 12000) })")
+}
+
+fn execute_browser_action(command: &RelayCommand, app: &tauri::AppHandle, bridge: &BrowserBridge) -> Result<serde_json::Value, String> {
+    match command.command.as_str() {
+        "browser.open" => {
+            let raw_url = command.payload.get("url").and_then(|value| value.as_str()).ok_or("A URL is required.")?;
+            let message = open_isolated_browser(app, raw_url)?;
+            Ok(serde_json::json!({ "action": "open", "message": message }))
+        },
+        "browser.click" => {
+            let selector = command.payload.get("selector").and_then(|value| value.as_str()).ok_or("A CSS selector is required.")?;
+            if selector.is_empty() || selector.len() > 256 { return Err("CSS selector must be 1–256 characters.".to_string()); }
+            let selector_js = serde_json::to_string(selector).map_err(|_| "Invalid CSS selector.".to_string())?;
+            browser_eval_and_collect(app, bridge, &format!("(() => {{ const selector = {selector_js}; const element = document.querySelector(selector); if (!element) return {{ ok: false, error: 'No element matched the selector', selector }}; element.click(); return {{ ok: true, action: 'click', selector, element: (element.innerText || element.getAttribute('aria-label') || element.tagName).slice(0, 160) }}; }})()"))
+        },
+        "browser.type" => {
+            let selector = command.payload.get("selector").and_then(|value| value.as_str()).ok_or("A CSS selector is required.")?;
+            let text = command.payload.get("text").and_then(|value| value.as_str()).ok_or("Text is required.")?;
+            if selector.is_empty() || selector.len() > 256 || text.is_empty() || text.chars().count() > 200 || text.chars().any(|character| character.is_control()) { return Err("Selector or text is outside the allowed limits.".to_string()); }
+            let selector_js = serde_json::to_string(selector).map_err(|_| "Invalid CSS selector.".to_string())?;
+            let text_js = serde_json::to_string(text).map_err(|_| "Invalid text.".to_string())?;
+            browser_eval_and_collect(app, bridge, &format!("(() => {{ const selector = {selector_js}; const element = document.querySelector(selector); if (!element) return {{ ok: false, error: 'No element matched the selector', selector }}; if (!(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element.isContentEditable)) return {{ ok: false, error: 'Target is not an editable field', selector }}; element.focus(); if ('value' in element) {{ const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element), 'value')?.set; if (setter) setter.call(element, {text_js}); else element.value = {text_js}; }} else element.textContent = {text_js}; element.dispatchEvent(new InputEvent('input', {{ bubbles: true, inputType: 'insertText', data: {text_js} }})); element.dispatchEvent(new Event('change', {{ bubbles: true }})); return {{ ok: true, action: 'type', selector, characters: {text_js}.length }}; }})()"))
+        },
+        _ => Err("Unsupported browser action.".to_string()),
+    }
+}
 fn execute_input_action(command: &RelayCommand) -> Result<serde_json::Value, String> {
     let mut enigo = Enigo::new(&Settings::default()).map_err(|_| "Windows input simulation could not start.".to_string())?;
     match command.command.as_str() {
