@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { ArrowLeft, RefreshCw, ShieldCheck } from "lucide-react";
 
-type AuditEvent = { id: string; device_id: string | null; event_type: string; outcome: "success" | "denied" | "failure"; metadata: Record<string, unknown>; created_at: string };
+type AuditEvent = { id: number; device_id: string | null; event_type: string; outcome: "success" | "denied" | "failure"; metadata: Record<string, unknown>; created_at: string };
 
 export default function AuditPage() {
   const [events, setEvents] = useState<AuditEvent[]>([]);
