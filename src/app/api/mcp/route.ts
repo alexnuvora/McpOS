@@ -161,7 +161,7 @@ function makeServer(client: McpClient) {
     "mcpos_capture_screen",
     {
       title: "Capture Windows screen",
-      description: "Request one JPEG screenshot from the paired Windows computer. Requires the screen.capture scope on this AI client and the visible local screen-capture consent switch to be ON. Captures one primary display only; no continuous recording.",
+      description: "Request one JPEG screenshot from the paired Windows computer. Requires the screen.capture scope and either the visible local screen-capture consent switch or an active Windows automation session that explicitly allows captures. Captures one primary display only; no continuous recording.",
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       _meta: { securitySchemes: [{ type: "oauth2", scopes: ["screen.capture"] }] },
       inputSchema: z.object({ deviceId: z.string().uuid().optional() }),
@@ -280,7 +280,7 @@ function makeServer(client: McpClient) {
     "mcpos_browser_automation",
     {
       title: "Automate the isolated browser",
-      description: "Open an HTTPS website, read a bounded page snapshot, click a CSS selector, or enter text into a selected field in the separate McpOS browser profile. Requires browser.control scope and the local browser consent switch. Open, click and type actions each wait for a separate approval on the Windows computer.",
+      description: "Open an HTTPS website, read a bounded page snapshot, click a CSS selector, or enter text into a selected field in the separate McpOS browser profile. Requires browser.control scope and the local browser consent switch. The Windows computer enforces its local Manual, Selected or Auto-approve-all policy. Browser automation always retains its separate local consent switch.",
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
       _meta: { securitySchemes: [{ type: "oauth2", scopes: ["browser.control"] }] },
       inputSchema: z.object({ action: z.enum(["open", "snapshot", "click", "type"]), url: z.string().max(2048).optional(), selector: z.string().max(256).optional(), text: z.string().max(200).optional() }),
