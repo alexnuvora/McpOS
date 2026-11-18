@@ -137,7 +137,10 @@ async fn pause_automation(policy: tauri::State<'_, AutomationPolicyState>, pendi
         let mut p = policy.0.lock().map_err(|_| "Automation policy unavailable.".to_string())?;
         p.paused = true;
     }
-    if let Some(command) = pending.0.lock().map_err(|_| "Pending action state unavailable.".to_string())?.take() {
+    let command = {
+        pending.0.lock().map_err(|_| "Pending action state unavailable.".to_string())?.take()
+    };
+    if let Some(command) = command {
         let _ = submit_relay_result(&command.id, serde_json::json!({}), Some("Automation paused locally before execution.".into())).await;
     }
     let p = policy.0.lock().map_err(|_| "Automation policy unavailable.".to_string())?;
