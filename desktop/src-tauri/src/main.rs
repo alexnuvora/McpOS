@@ -546,10 +546,10 @@ async fn poll_relay_once(connected: &Arc<AtomicBool>, screen_consent: &Arc<Atomi
         .await;
 }
 
-fn start_relay_polling(connected: Arc<AtomicBool>, screen_consent: Arc<AtomicBool>, accessibility_consent: Arc<AtomicBool>, approved_folders: Arc<Mutex<Vec<PathBuf>>>, pending_action: Arc<Mutex<Option<RelayCommand>>>, app: tauri::AppHandle) {
+fn start_relay_polling(connected: Arc<AtomicBool>, screen_consent: Arc<AtomicBool>, accessibility_consent: Arc<AtomicBool>, browser_consent: Arc<AtomicBool>, approved_folders: Arc<Mutex<Vec<PathBuf>>>, pending_action: Arc<Mutex<Option<RelayCommand>>>, bridge: BrowserBridge, app: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         loop {
-            poll_relay_once(&connected, &screen_consent, &accessibility_consent, &approved_folders, &pending_action, &app).await;
+            poll_relay_once(&connected, &screen_consent, &accessibility_consent, &browser_consent, &approved_folders, &pending_action, &bridge, &app).await;
             tokio::time::sleep(Duration::from_secs(10)).await;
         }
     });
@@ -579,7 +579,7 @@ fn start_heartbeat(app: tauri::AppHandle, connected: Arc<AtomicBool>) {
 
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![pair_device, get_device_status, get_screen_capture_consent, set_screen_capture_consent, get_accessibility_consent, set_accessibility_consent, get_approved_folders, pick_approved_folder, remove_approved_folder, get_pending_action, approve_pending_action, deny_pending_action])
+        .invoke_handler(tauri::generate_handler![pair_device, get_device_status, get_screen_capture_consent, set_screen_capture_consent, get_accessibility_consent, set_accessibility_consent, get_approved_folders, pick_approved_folder, remove_approved_folder, get_pending_action, approve_pending_action, deny_pending_action, get_browser_consent, set_browser_consent])
         .setup(|app| {
             let open = MenuItem::with_id(app, "open", "Open McpOS", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit McpOS", true, None::<&str>)?;
@@ -616,8 +616,12 @@ fn main() {
             app.manage(ApprovedFolders(approved_folders.clone()));
             let pending_action = Arc::new(Mutex::new(None));
             app.manage(PendingAction(pending_action.clone()));
+            let browser_consent = Arc::new(AtomicBool::new(false));
+            app.manage(BrowserConsent(browser_consent.clone()));
+            let browser_bridge = start_browser_bridge().expect("McpOS private browser bridge must start");
+            app.manage(browser_bridge.clone());
             start_heartbeat(app.handle().clone(), connection_state.clone());
-            start_relay_polling(connection_state, screen_consent, accessibility_consent, approved_folders, pending_action, app.handle().clone());
+            start_relay_polling(connection_state, screen_consent, accessibility_consent, browser_consent, approved_folders, pending_action, browser_bridge, app.handle().clone());
             Ok(())
         })
         .on_window_event(|window, event| {
