@@ -36,6 +36,7 @@ function makeServer(client: McpClient) {
     {
       title: "McpOS status",
       description: "Get the non-sensitive status of the authenticated McpOS workspace and the connected AI client.",
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       inputSchema: z.object({}),
     },
     async () => ({
@@ -55,6 +56,7 @@ function makeServer(client: McpClient) {
     {
       title: "McpOS capabilities",
       description: "List currently implemented and planned workspace capabilities. This tool does not perform changes.",
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       inputSchema: z.object({ includePlanned: z.boolean().optional() }),
     },
     async ({ includePlanned }) => ({
@@ -77,6 +79,7 @@ function makeServer(client: McpClient) {
     {
       title: "List paired devices",
       description: "List the authenticated user's paired McpOS devices. Returns device names and connection timestamps only; never returns device credentials.",
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       inputSchema: z.object({}),
     },
     async () => {
@@ -95,6 +98,7 @@ function makeServer(client: McpClient) {
     {
       title: "Request desktop status",
       description: "Ask one online, paired Windows companion for a non-sensitive status snapshot. This is read-only. The device must have desktop.status enabled. Returns a command ID; call mcpos_get_command_status to retrieve the result.",
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       inputSchema: z.object({ deviceId: z.string().uuid().optional() }),
     },
     async ({ deviceId }) => {
@@ -143,6 +147,7 @@ function makeServer(client: McpClient) {
     {
       title: "Capture Windows screen",
       description: "Request one JPEG screenshot from the paired Windows computer. Requires the screen.capture scope on this AI client and the visible local screen-capture consent switch to be ON. Captures one primary display only; no continuous recording.",
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       inputSchema: z.object({ deviceId: z.string().uuid().optional() }),
     },
     async ({ deviceId }) => {
@@ -172,6 +177,7 @@ function makeServer(client: McpClient) {
     {
       title: "Understand open Windows applications",
       description: "Read a bounded Windows UI Automation snapshot of top-level application windows. Requires the screen.accessibility scope on this AI client and the visible local application-understanding switch to be ON. Does not read control contents or send input.",
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       inputSchema: z.object({ deviceId: z.string().uuid().optional() }),
     },
     async ({ deviceId }) => {
@@ -201,6 +207,7 @@ function makeServer(client: McpClient) {
     {
       title: "Access locally approved files",
       description: "List locally approved folders, list a folder, or read a small UTF-8 text file. Requires files.read scope. The Windows companion rejects paths outside folders explicitly selected in its local UI. No file writes, deletes, or uploads are supported.",
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       inputSchema: z.object({ operation: z.enum(["list_folders", "list", "read"]), path: z.string().max(2048).optional() }),
     },
     async ({ operation, path }) => {
@@ -226,6 +233,7 @@ function makeServer(client: McpClient) {
     {
       title: "Request an approved mouse or keyboard action",
       description: "Queue one tightly bounded pointer click or text-entry action. The Windows computer displays the exact action and does nothing until the user approves it locally. Every action requires a fresh local approval.",
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
       inputSchema: z.object({ action: z.enum(["pointer_click", "keyboard_type"]), x: z.number().int().min(0).max(32767).optional(), y: z.number().int().min(0).max(32767).optional(), button: z.enum(["left", "right"]).optional(), text: z.string().max(200).optional() }),
     },
     async ({ action, x, y, button, text }) => {
@@ -253,6 +261,7 @@ function makeServer(client: McpClient) {
     {
       title: "Automate the isolated browser",
       description: "Open an HTTPS website, read a bounded page snapshot, click a CSS selector, or enter text into a selected field in the separate McpOS browser profile. Requires browser.control scope and the local browser consent switch. Open, click and type actions each wait for a separate approval on the Windows computer.",
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
       inputSchema: z.object({ action: z.enum(["open", "snapshot", "click", "type"]), url: z.string().max(2048).optional(), selector: z.string().max(256).optional(), text: z.string().max(200).optional() }),
     },
     async ({ action, url, selector, text }) => {
@@ -283,7 +292,8 @@ function makeServer(client: McpClient) {
     "mcpos_get_command_status",
     {
       title: "Get desktop command status",
-      description: "Retrieve the result of a previously queued read-only desktop status request. Only commands belonging to the authenticated workspace are visible.",
+      description: "Retrieve the result of a previously queued desktop request (status, screenshot, accessibility, approved files, approved input or isolated-browser result). Only commands belonging to this authenticated AI client are visible.",
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       inputSchema: z.object({ commandId: z.string().uuid() }),
     },
     async ({ commandId }) => {
