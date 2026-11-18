@@ -14,6 +14,7 @@ export default function IntegrationsPage() {
   const [allowFilesRead, setAllowFilesRead] = useState(false);
   const [allowPointer, setAllowPointer] = useState(false);
   const [allowKeyboard, setAllowKeyboard] = useState(false);
+  const [allowBrowser, setAllowBrowser] = useState(false);
   const [token, setToken] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -39,7 +40,7 @@ export default function IntegrationsPage() {
       const response = await fetch("/api/mcp/clients", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ client_name: name, scopes: [...(allowScreenCapture ? ["screen.capture"] : []), ...(allowAccessibility ? ["screen.accessibility"] : []), ...(allowFilesRead ? ["files.read"] : []), ...(allowPointer ? ["input.pointer"] : []), ...(allowKeyboard ? ["input.keyboard"] : [])] }),
+        body: JSON.stringify({ client_name: name, scopes: [...(allowScreenCapture ? ["screen.capture"] : []), ...(allowAccessibility ? ["screen.accessibility"] : []), ...(allowFilesRead ? ["files.read"] : []), ...(allowPointer ? ["input.pointer"] : []), ...(allowKeyboard ? ["input.keyboard"] : []), ...(allowBrowser ? ["browser.control"] : [])] }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error ?? "Could not create MCP client.");
@@ -100,7 +101,7 @@ export default function IntegrationsPage() {
         <p className="text-sm leading-6 text-slate-400">Every key can read paired-device status. Screen capture is an optional additional scope and still requires the visible local consent switch to be ON in the Windows companion. Mouse, keyboard, browser and file capabilities remain unavailable until their separate approval workflows are implemented.</p>
         <div className="mt-4 grid gap-2 text-xs text-slate-400 sm:grid-cols-2">
           <div className="rounded-lg bg-[#0c121c] p-3">Default: workspace.read, desktop.status</div>
-          <div className="rounded-lg bg-[#0c121c] p-3">Optional: screen.capture / screen.accessibility / files.read / input.pointer / input.keyboard</div>
+          <div className="rounded-lg bg-[#0c121c] p-3">Optional: screen.capture / screen.accessibility / files.read / input.pointer / input.keyboard / browser.control</div>
         </div>
       </section>
 
@@ -114,6 +115,7 @@ export default function IntegrationsPage() {
           <label className="flex items-center gap-2 rounded-lg border border-[#30394a] px-3 py-2 text-xs text-slate-300"><input type="checkbox" checked={allowFilesRead} onChange={event=>setAllowFilesRead(event.target.checked)} className="accent-indigo-500"/> Allow read-only access to locally approved folders</label>
           <label className="flex items-center gap-2 rounded-lg border border-[#30394a] px-3 py-2 text-xs text-slate-300"><input type="checkbox" checked={allowPointer} onChange={event=>setAllowPointer(event.target.checked)} className="accent-indigo-500"/> Allow pointer clicks (local approval every time)</label>
           <label className="flex items-center gap-2 rounded-lg border border-[#30394a] px-3 py-2 text-xs text-slate-300"><input type="checkbox" checked={allowKeyboard} onChange={event=>setAllowKeyboard(event.target.checked)} className="accent-indigo-500"/> Allow text entry (local approval every time)</label>
+          <label className="flex items-center gap-2 rounded-lg border border-[#30394a] px-3 py-2 text-xs text-slate-300"><input type="checkbox" checked={allowBrowser} onChange={event=>setAllowBrowser(event.target.checked)} className="accent-indigo-500"/> Allow isolated browser automation (local approval every action)</label>
           <button disabled={busy||!name.trim()} onClick={()=>void createClient()} className="inline-flex items-center justify-center gap-2 rounded-lg bg-indigo-500 px-4 py-2.5 text-sm font-semibold text-white hover:bg-indigo-400 disabled:opacity-50"><Plus size={15}/> Generate key</button>
         </div>
         {token&&<div className="mt-4 rounded-xl border border-emerald-400/30 bg-emerald-400/5 p-4">
