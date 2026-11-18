@@ -16,6 +16,7 @@ export async function POST(request: NextRequest) {
   });
   if (!refresh.ok) return oauthError("server_error", "Could not revoke the token.", 503);
   const revoked = await refresh.json();
+  let userId: string | null = revoked[0]?.user_id ?? null;
   if (revoked.length) {
     await supabaseRest(`mcpos_mcp_clients?id=eq.${revoked[0].mcp_client_id}`, {
       method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ revoked_at: new Date().toISOString() }),
@@ -27,10 +28,17 @@ export async function POST(request: NextRequest) {
     if (!access.ok) return oauthError("server_error", "Could not revoke the token.", 503);
     const rows = await access.json();
     if (rows.length) {
+      userId = rows[0].user_id;
       await supabaseRest(`mcpos_oauth_refresh_tokens?mcp_client_id=eq.${rows[0].id}&revoked_at=is.null`, {
         method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ revoked_at: new Date().toISOString() }),
       });
     }
+  }
+  if (userId) {
+    await supabaseRest("mcpos_device_audit", {
+      method: "POST", headers: { Prefer: "return=minimal" },
+      body: JSON.stringify({ user_id: userId, event_type: "mcp.oauth.revoked", outcome: "success", metadata: { client_id: clientId } }),
+    });
   }
   return new Response(null, { status: 200, headers: { "Cache-Control": "no-store", Pragma: "no-cache" } });
 }
