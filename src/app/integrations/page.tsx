@@ -93,7 +93,7 @@ export default function IntegrationsPage() {
       <Link href="/" className="mb-7 inline-flex items-center gap-2 text-sm text-slate-400 hover:text-white"><ArrowLeft size={15}/> Back to dashboard</Link>
       <div className="mb-8 flex items-start gap-3">
         <div className="rounded-xl bg-indigo-500/15 p-3 text-indigo-300"><KeyRound size={22}/></div>
-        <div><div className="text-xs font-semibold uppercase tracking-widest text-indigo-300">Integrations</div><h1 className="mt-1 text-3xl font-semibold">AI client connections</h1><p className="mt-2 max-w-2xl text-sm leading-6 text-slate-400">Create separate, revocable credentials for Claude and other compatible MCP clients. Credentials are shown only once and stored as hashes.</p></div>
+        <div><div className="text-xs font-semibold uppercase tracking-widest text-indigo-300">Integrations</div><h1 className="mt-1 text-3xl font-semibold">AI client connections</h1><p className="mt-2 max-w-2xl text-sm leading-6 text-slate-400">Connect ChatGPT Enterprise through OAuth 2.1, or create separate revocable bearer keys for Claude Desktop and other compatible MCP clients.</p></div>
       </div>
 
       <section className="mb-6 rounded-2xl border border-[#293345] bg-[#111824] p-5">
@@ -105,9 +105,27 @@ export default function IntegrationsPage() {
         </div>
       </section>
 
+      <section className="mb-6 rounded-2xl border border-indigo-400/30 bg-[#111824] p-5">
+        <div className="mb-2 flex items-center gap-2 text-sm font-semibold"><ShieldCheck size={17} className="text-indigo-300"/> ChatGPT Enterprise connection</div>
+        <p className="text-sm leading-6 text-slate-400">ChatGPT connects using OAuth 2.1 + PKCE. It registers itself automatically, then asks you to sign in to McpOS and approve the requested permissions. You do not need to generate or paste a bearer key for ChatGPT.</p>
+        <div className="mt-4 rounded-lg bg-[#0c121c] p-3">
+          <div className="text-[11px] uppercase tracking-wider text-slate-500">Remote MCP endpoint</div>
+          <code className="mt-1 block break-all text-xs text-indigo-200">https://mcpos-dashboard.netlify.app/api/mcp</code>
+        </div>
+        <ol className="mt-4 list-decimal space-y-2 pl-5 text-xs leading-5 text-slate-400">
+          <li>In your Enterprise workspace, make sure your account has permission to create custom MCP connectors.</li>
+          <li>In ChatGPT on the web, open Plugins → + → Add custom MCP server (or Workspace Settings → Apps → Create).</li>
+          <li>Enter the endpoint above, name it McpOS Desktop, and select OAuth authentication.</li>
+          <li>Scan tools, create the app, then sign in to McpOS when ChatGPT opens the authorisation page.</li>
+          <li>Review the permissions and approve. Test the app in a new chat.</li>
+        </ol>
+        <p className="mt-3 text-xs text-slate-500">OAuth discovery is published at /.well-known/oauth-protected-resource and /.well-known/oauth-authorization-server. Access tokens expire after one hour and refresh tokens rotate. Revoke the session below at any time.</p>
+        <a href="https://help.openai.com/en/articles/12584461-connecting-custom-mcp-servers-in-chatgpt" target="_blank" rel="noreferrer" className="mt-3 inline-flex text-xs font-medium text-indigo-300 hover:text-indigo-200">Open ChatGPT connection instructions ↗</a>
+      </section>
+
       <section className="mb-6 rounded-2xl border border-[#293345] bg-[#111824] p-5">
-        <h2 className="text-base font-semibold">Create an AI client key</h2>
-        <p className="mt-1 text-xs text-slate-500">Use one key per AI client so you can revoke access independently.</p>
+        <h2 className="text-base font-semibold">Create a bearer key (Claude Desktop / other MCP clients)</h2>
+        <p className="mt-1 text-xs text-slate-500">Use one key per client so you can revoke access independently. ChatGPT Enterprise uses the OAuth connection below and does not need a copied key.</p>
         <div className="mt-4 flex flex-col gap-3 sm:flex-row">
           <input value={name} onChange={event=>setName(event.target.value)} maxLength={80} placeholder="Client name" className="min-w-0 flex-1 rounded-lg border border-[#30394a] bg-[#0c121c] px-3 py-2.5 text-sm outline-none focus:border-indigo-400"/>
           <label className="flex items-center gap-2 rounded-lg border border-[#30394a] px-3 py-2 text-xs text-slate-300"><input type="checkbox" checked={allowScreenCapture} onChange={event=>setAllowScreenCapture(event.target.checked)} className="accent-indigo-500"/> Allow screen capture for this key</label>
@@ -134,7 +152,7 @@ export default function IntegrationsPage() {
       <section className="mt-6 rounded-2xl border border-[#293345] bg-[#111824] p-5">
         <h2 className="font-semibold">MCP server address</h2>
         <code className="mt-3 block break-all rounded-lg bg-[#080d14] p-3 text-sm text-indigo-200">https://mcpos-dashboard.netlify.app/api/mcp</code>
-        <p className="mt-2 text-xs leading-5 text-slate-500">Use this URL with a compatible remote MCP client and the generated bearer token. Claude Desktop instructions will be provided once this release passes CI and is deployed.</p>
+        <p className="mt-2 text-xs leading-5 text-slate-500">Use OAuth from ChatGPT Enterprise. For Claude Desktop, generate a separate bearer key above and follow the setup guide.</p>
       </section>
     </div>
   </main>;
