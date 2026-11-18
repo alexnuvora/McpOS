@@ -66,6 +66,19 @@ export default function IntegrationsPage() {
     } finally { setBusy(false); }
   }
 
+  async function revokeAllClients() {
+    if (!window.confirm("Revoke every active AI client key? All connected AI clients will immediately lose McpOS access.")) return;
+    setBusy(true); setError(""); setMessage("");
+    try {
+      const response = await fetch("/api/mcp/clients", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ revoke_all: true }) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error ?? "Could not revoke AI sessions.");
+      setMessage("All active AI client keys have been revoked.");
+      await load();
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not revoke AI sessions."); }
+    finally { setBusy(false); }
+  }
+
   async function copyToken() {
     try { await navigator.clipboard.writeText(token); setMessage("Token copied. Store it securely in your AI client."); }
     catch { setMessage("Select and copy the token manually."); }
@@ -107,7 +120,7 @@ export default function IntegrationsPage() {
       </section>
 
       <section className="rounded-2xl border border-[#293345] bg-[#111824] p-5">
-        <div className="mb-4 flex items-center justify-between gap-3"><div><h2 className="text-base font-semibold">Registered AI clients</h2><p className="mt-1 text-xs text-slate-500">Revoked keys cannot be used again.</p></div><button onClick={()=>void load()} disabled={busy} aria-label="Refresh" className="rounded-lg border border-[#30394a] p-2 text-slate-400 hover:text-white"><RefreshCw size={15}/></button></div>
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-base font-semibold">Registered AI clients</h2><p className="mt-1 text-xs text-slate-500">Revoke one key or all active AI sessions instantly.</p></div><div className="flex items-center gap-2"><button onClick={()=>void revokeAllClients()} disabled={busy||!clients.some(client=>!client.revoked_at)} className="rounded-lg border border-rose-400/30 px-3 py-2 text-xs text-rose-300 hover:bg-rose-400/10 disabled:opacity-40">Revoke all sessions</button><button onClick={()=>void load()} disabled={busy} aria-label="Refresh" className="rounded-lg border border-[#30394a] p-2 text-slate-400 hover:text-white"><RefreshCw size={15}/></button></div></div>
         {clients.length===0?<p className="rounded-lg border border-dashed border-[#30394a] p-5 text-center text-sm text-slate-500">No AI clients created yet.</p>:<div className="space-y-2">{clients.map(client=><div key={client.id} className="flex flex-col justify-between gap-3 rounded-xl border border-[#252d3a] bg-[#0c121c] p-4 sm:flex-row sm:items-center"><div className="min-w-0"><div className="font-medium">{client.client_name}</div><div className="mt-1 text-xs text-slate-500">Created {new Date(client.created_at).toLocaleString()} · {client.scopes.join(", ")}</div><div className="mt-1 text-xs text-slate-500">{client.revoked_at?"Revoked":client.last_used_at?"Last used "+new Date(client.last_used_at).toLocaleString():"Never used"}</div></div>{!client.revoked_at&&<button disabled={busy} onClick={()=>void revokeClient(client.id)} className="inline-flex items-center justify-center gap-2 self-start rounded-lg border border-rose-400/20 px-3 py-2 text-xs text-rose-300 hover:bg-rose-400/10 disabled:opacity-50"><Trash2 size={13}/> Revoke</button>}</div>)}</div>}
       </section>
       <section className="mt-6 rounded-2xl border border-[#293345] bg-[#111824] p-5">
