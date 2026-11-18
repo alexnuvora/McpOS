@@ -106,7 +106,9 @@ export default function Home() {
   }
 
   const onlineDevices = devices.filter(device => device.status === "online").length;
-  const activeDevices = devices.filter(device => device.status !== "revoked").length;\n\n  async function signOut() {\n    await fetch("/api/auth/signout", { method: "POST" });\n    setAuth({ authenticated: false, user: null });\n    setDevices([]);\n    setPairing(null);\n  }
+  const activeDevices = devices.filter(device => device.status !== "revoked").length;
+
+  async function signOut() {\n    await fetch("/api/auth/signout", { method: "POST" });\n    setAuth({ authenticated: false, user: null });\n    setDevices([]);\n    setPairing(null);\n  }
 
   return <div className="workspace-grid">
     <aside className="sidebar flex flex-col p-4">
