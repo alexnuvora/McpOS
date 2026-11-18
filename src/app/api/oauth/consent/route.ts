@@ -19,6 +19,7 @@ export async function POST(request: NextRequest) {
   catch { return NextResponse.json({ error: "Invalid consent request." }, { status: 400 }); }
   if (!grant || typeof grant.clientId !== "string" || typeof grant.redirectUri !== "string" ||
       typeof grant.challenge !== "string" || !/^[-_A-Za-z0-9]{43,128}$/.test(grant.challenge) ||
+      typeof grant.clientName !== "string" ||
       grant.resource !== MCP_RESOURCE_URL || !Array.isArray(grant.scopes) ||
       grant.scopes.some(scope => !MCP_SCOPES.includes(scope as typeof MCP_SCOPES[number]))) {
     return NextResponse.json({ error: "The requested permissions or resource are invalid." }, { status: 400 });
@@ -27,7 +28,7 @@ export async function POST(request: NextRequest) {
   const clientResponse = await supabaseRest(`mcpos_oauth_clients?select=client_id,client_name,redirect_uris&client_id=eq.${encodeURIComponent(grant.clientId)}&limit=1`);
   if (!clientResponse.ok) return NextResponse.json({ error: "OAuth service is temporarily unavailable." }, { status: 503 });
   const [client] = await clientResponse.json();
-  if (!client || !Array.isArray(client.redirect_uris) || !client.redirect_uris.includes(grant.redirectUri)) {
+  if (!client || client.client_name !== grant.clientName || !Array.isArray(client.redirect_uris) || !client.redirect_uris.includes(grant.redirectUri)) {
     return NextResponse.json({ error: "The OAuth client or redirect URI is no longer valid." }, { status: 400 });
   }
 
