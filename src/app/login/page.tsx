@@ -23,7 +23,11 @@ export default function LoginPage() {
         email: email.trim(),
         options: {
           shouldCreateUser: true,
-          emailRedirectTo: window.location.origin + "/auth/callback?next=/",
+          emailRedirectTo: (() => {
+          const requested = new URLSearchParams(window.location.search).get("next") || "/";
+          const safeNext = requested.startsWith("/") && !requested.startsWith("//") ? requested : "/";
+          return window.location.origin + "/auth/callback?next=" + encodeURIComponent(safeNext);
+        })(),
         },
       });
       if (authError) throw authError;
