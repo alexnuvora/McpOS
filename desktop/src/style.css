@@ -15,3 +15,5 @@
 .feedback.success{background:#064e3b33;border:1px solid #065f46;color:#6ee7b7}
 
 .status i.online{background:#34d399}
+
+.consent-capability>div{min-width:0;flex:1}.consent-switch{flex:0 0 auto;width:46px;height:26px;padding:3px;border:1px solid #48546a;border-radius:999px;background:#273244;cursor:pointer;transition:background .15s,border-color .15s}.consent-switch span{display:block;width:18px;height:18px;border-radius:50%;background:#e2e8f0;transition:transform .15s}.consent-switch.is-on{background:#047857;border-color:#10b981}.consent-switch.is-on span{transform:translateX(20px)}.consent-switch:focus-visible{outline:2px solid #a5b4fc;outline-offset:3px}
