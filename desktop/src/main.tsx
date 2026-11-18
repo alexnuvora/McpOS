@@ -11,12 +11,14 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [screenConsent, setScreenConsent] = useState(false);
+  const [accessibilityConsent, setAccessibilityConsent] = useState(false);
   const [error, setError] = useState("");
 
   async function refreshStatus() {
     try {
       setStatus(await invoke<DeviceStatus>("get_device_status"));
       setScreenConsent(await invoke<boolean>("get_screen_capture_consent"));
+      setAccessibilityConsent(await invoke<boolean>("get_accessibility_consent"));
     }
     catch { setError("Could not read the local device credential."); }
   }
@@ -35,6 +37,17 @@ function App() {
       setMessage(actual ? "Screen capture is enabled locally. AI requests still require a separately scoped client key." : "Screen capture has been disabled on this computer.");
     } catch {
       setError("Could not update the local screen-capture consent setting.");
+    }
+  }
+
+  async function toggleAccessibilityConsent(enabled: boolean) {
+    setError(""); setMessage("");
+    try {
+      const actual = await invoke<boolean>("set_accessibility_consent", { enabled });
+      setAccessibilityConsent(actual);
+      setMessage(actual ? "Windows accessibility understanding is enabled locally. Only a bounded list of top-level app windows is exposed." : "Windows accessibility understanding has been disabled on this computer.");
+    } catch {
+      setError("Could not update the local Windows accessibility setting.");
     }
   }
 
@@ -75,7 +88,7 @@ function App() {
       <div className="capability"><span className="symbol">✓</span><div><strong>Device identity</strong><small>Credential stored securely on this Windows computer.</small></div><span className="enabled">Paired</span></div>
       <div className="capability"><span className="symbol">↻</span><div><strong>Connection heartbeat</strong><small>The desktop companion sends a heartbeat every 30 seconds.</small></div><span className={status.connected ? "enabled" : "disabled"}>{status.connected ? "Connected" : "Offline"}</span></div>
       <div className="capability consent-capability"><span className="symbol">▧</span><div><strong>Screen capture consent</strong><small>This is a local Windows switch. It resets to off when McpOS restarts. Turn it off at any time to stop further captures.</small></div><button className={"consent-switch " + (screenConsent ? "is-on" : "")} role="switch" aria-checked={screenConsent} aria-label="Allow screen capture on this computer" onClick={() => void toggleScreenConsent(!screenConsent)}><span /></button></div>
-      <div className="capability"><span className="symbol">⌖</span><div><strong>Windows accessibility</strong><small>Application controls are not being read or shared.</small></div><span className="disabled">Not enabled</span></div>
+      <div className="capability consent-capability"><span className="symbol">⌖</span><div><strong>Application understanding</strong><small>Read-only Windows UI Automation. Shares a limited list of top-level window names and process IDs, not control text or keystrokes. Local consent resets to off on restart.</small></div><button className={"consent-switch " + (accessibilityConsent ? "is-on" : "")} role="switch" aria-checked={accessibilityConsent} aria-label="Allow Windows accessibility inspection" onClick={() => void toggleAccessibilityConsent(!accessibilityConsent)}><span /></button></div>
       <div className="capability"><span className="symbol">⌘</span><div><strong>Mouse & keyboard</strong><small>No remote input actions are enabled.</small></div><span className="disabled">Not enabled</span></div>
       {error && <div className="feedback error">{error}</div>}
       {message && <div className="feedback success">{message}</div>}
