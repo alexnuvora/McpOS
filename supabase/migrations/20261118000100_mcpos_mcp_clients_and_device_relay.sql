@@ -156,7 +156,7 @@ begin
   from pg_catalog.unnest(array[
     'desktop.status','screen.capture','screen.accessibility','input.pointer','input.keyboard',
     'browser.control','files.read','files.write','apps.launch'
-  ]::text[]) as capability;
+  ]::text[]) as caps(capability);
   insert into public.mcpos_device_audit (user_id, device_id, event_type, outcome, metadata)
   values (v_code.user_id, v_device_id, 'device.paired', 'success', pg_catalog.jsonb_build_object('platform','windows'));
   return pg_catalog.jsonb_build_object('device_id',v_device_id,'device_name',v_code.device_name);
