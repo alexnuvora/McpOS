@@ -21,8 +21,10 @@ function App() {
   const [error, setError] = useState("");
   const [automation, setAutomation] = useState<AutomationPolicy>({ mode: "manual", paused: false, expires_at: null, auto_pointer: false, auto_keyboard: false, auto_browser: false, auto_screen: false });
   const [expiryMinutes, setExpiryMinutes] = useState(60);
+  const [now, setNow] = useState(0);
 
   async function refreshStatus() {
+    setNow(Date.now());
     try {
       setStatus(await invoke<DeviceStatus>("get_device_status"));
       setScreenConsent(await invoke<boolean>("get_screen_capture_consent"));
@@ -160,7 +162,7 @@ function App() {
   return <main className="shell">
     <header className="topbar">
       <div className="brand"><span className="brand-mark">M</span><div><strong>McpOS</strong><small>Windows desktop companion</small></div></div>
-      <div className="topbar-right">{automation.mode === "all" && !automation.paused && automation.expires_at !== null && automation.expires_at * 1000 > Date.now() && <span className="auto-indicator"><i /> AUTO</span>}<span className="status"><i className={status.connected ? "online" : "offline"} /> {!status.paired ? "Not paired" : status.connected ? "Connected" : "Paired · Offline"}</span></div>
+      <div className="topbar-right">{automation.mode === "all" && !automation.paused && automation.expires_at !== null && automation.expires_at * 1000 > now && <span className="auto-indicator"><i /> AUTO</span>}<span className="status"><i className={status.connected ? "online" : "offline"} /> {!status.paired ? "Not paired" : status.connected ? "Connected" : "Paired · Offline"}</span></div>
     </header>
     <section className="hero">
       <div className="eyebrow">WINDOWS COMPANION · LOCAL SESSION</div>
@@ -189,7 +191,7 @@ function App() {
         <div className="mode-row">
           <button className={automation.mode === "manual" ? "mode-choice selected" : "mode-choice"} onClick={() => void setAutomationMode("manual")}>Manual approval</button>
           <button className={automation.mode === "selected" ? "mode-choice selected" : "mode-choice"} onClick={() => void setAutomationMode("selected")}>Selected actions</button>
-          <button className={automation.mode === "all" && !automation.paused && automation.expires_at !== null && automation.expires_at * 1000 > Date.now() ? "mode-choice selected auto-choice" : "mode-choice"} onClick={() => void setAutomationMode("all")}>Auto-approve all</button>
+          <button className={automation.mode === "all" && !automation.paused && automation.expires_at !== null && automation.expires_at * 1000 > now ? "mode-choice selected auto-choice" : "mode-choice"} onClick={() => void setAutomationMode("all")}>Auto-approve all</button>
         </div>
         <div className="expiry-row"><label htmlFor="session-expiry">Session expiry</label><select id="session-expiry" value={expiryMinutes} onChange={event => setExpiryMinutes(Number(event.target.value))}><option value={15}>15 minutes</option><option value={60}>1 hour</option><option value={240}>4 hours</option><option value={480}>8 hours</option></select></div>
         {automation.mode === "selected" && <div className="permission-list">
@@ -201,7 +203,7 @@ function App() {
         <div className="automation-warning">Auto mode only covers currently supported, non-destructive actions. File deletion, overwriting, terminal commands and application installation are not granted by this setting. Browser automation still requires its separate local switch.</div>
         <div className="automation-controls"><button className="pause-button" onClick={() => void pauseAutomation()}>Pause automation now</button><span>{automation.expires_at && !automation.paused ? "Expires " + new Date(automation.expires_at * 1000).toLocaleString() : "No active automation session"}</span></div>
       </section>
-      <div className="capability"><span className="symbol">⌘</span><div><strong>Mouse & keyboard</strong><small>Pointer clicks and text entry follow the local approval policy. Destructive file operations remain unavailable.</small></div><span className={automation.mode === "all" && !automation.paused && automation.expires_at !== null && automation.expires_at * 1000 > Date.now() ? "enabled" : "disabled"}>{automation.paused ? "Paused" : automation.mode === "all" ? "AUTO" : "Policy controlled"}</span></div>
+      <div className="capability"><span className="symbol">⌘</span><div><strong>Mouse & keyboard</strong><small>Pointer clicks and text entry follow the local approval policy. Destructive file operations remain unavailable.</small></div><span className={automation.mode === "all" && !automation.paused && automation.expires_at !== null && automation.expires_at * 1000 > now ? "enabled" : "disabled"}>{automation.paused ? "Paused" : automation.mode === "all" ? "AUTO" : "Policy controlled"}</span></div>
       {pendingAction && <section className="approval-card">
         <div className="approval-eyebrow">LOCAL APPROVAL REQUIRED</div>
         <strong>{pendingAction.command === "input.pointer.click" ? "AI wants to click your screen" : pendingAction.command === "input.keyboard.type" ? "AI wants to type on your computer" : pendingAction.command === "input.keyboard.shortcut" ? "AI wants to press a keyboard shortcut" : pendingAction.command === "browser.open" ? "AI wants to open a website in the isolated browser" : pendingAction.command === "browser.click" ? "AI wants to click a page element" : "AI wants to type into a page field"}</strong>
