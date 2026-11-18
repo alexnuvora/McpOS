@@ -381,6 +381,7 @@ fn get_browser_snapshot(app: &tauri::AppHandle, bridge: &BrowserBridge) -> Resul
 }
 
 fn execute_browser_action(command: &RelayCommand, app: &tauri::AppHandle, bridge: &BrowserBridge) -> Result<serde_json::Value, String> {
+    if bridge.port == 0 { return Err("The private browser automation bridge is unavailable.".to_string()); }
     match command.command.as_str() {
         "browser.open" => {
             let raw_url = command.payload.get("url").and_then(|value| value.as_str()).ok_or("A URL is required.")?;
