@@ -138,7 +138,7 @@ fn set_screen_capture_consent(enabled: bool, consent: tauri::State<'_, ScreenCap
 
 fn capture_screen_jpeg() -> Result<(String, u32, u32), String> {
     let monitors = Monitor::all().map_err(|_| "Windows could not enumerate the displays.".to_string())?;
-    let monitor = monitors.first().ok_or("No active display was found.".to_string())?;
+    let monitor = monitors.iter().find(|monitor| monitor.is_primary().unwrap_or(false)).or_else(|| monitors.first()).ok_or("No active display was found.".to_string())?;
     let image = monitor.capture_image().map_err(|_| "Windows screen capture failed.".to_string())?;
     let width = image.width();
     let height = image.height();
