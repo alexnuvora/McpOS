@@ -161,7 +161,7 @@ function makeServer(client: McpClient) {
     "mcpos_capture_screen",
     {
       title: "Capture Windows screen",
-      description: "Request one JPEG screenshot from the paired Windows computer. Requires the screen.capture scope on this AI client and the visible local screen-capture consent switch to be ON. Captures one primary display only; no continuous recording.",
+      description: "Request one JPEG screenshot from the paired Windows computer. Requires the screen.capture scope and either the visible local screen-capture consent switch or an active Windows automation session that explicitly allows captures. Captures one primary display only; no continuous recording.",
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       _meta: { securitySchemes: [{ type: "oauth2", scopes: ["screen.capture"] }] },
       inputSchema: z.object({ deviceId: z.string().uuid().optional() }),
@@ -250,23 +250,24 @@ function makeServer(client: McpClient) {
     "mcpos_request_input_action",
     {
       title: "Request an approved mouse or keyboard action",
-      description: "Queue one tightly bounded pointer click or text-entry action. The Windows computer displays the exact action and does nothing until the user approves it locally. Every action requires a fresh local approval.",
+      description: "Queue a bounded pointer click, text-entry action or allowlisted keyboard shortcut. The Windows computer enforces its local Manual, Selected or Auto-approve-all policy; Auto mode never grants destructive file operations.",
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
       _meta: { securitySchemes: [{ type: "oauth2", scopes: ["input.pointer","input.keyboard"] }] },
-      inputSchema: z.object({ action: z.enum(["pointer_click", "keyboard_type"]), x: z.number().int().min(0).max(32767).optional(), y: z.number().int().min(0).max(32767).optional(), button: z.enum(["left", "right"]).optional(), text: z.string().max(200).optional() }),
+      inputSchema: z.object({ action: z.enum(["pointer_click", "keyboard_type", "keyboard_shortcut"]), x: z.number().int().min(0).max(32767).optional(), y: z.number().int().min(0).max(32767).optional(), button: z.enum(["left", "right"]).optional(), text: z.string().max(200).optional(), keys: z.array(z.string().max(12)).min(2).max(4).optional() }),
     },
-    async ({ action, x, y, button, text }) => {
-      const command = action === "pointer_click" ? "input.pointer.click" : "input.keyboard.type";
+    async ({ action, x, y, button, text, keys }) => {
+      const command = action === "pointer_click" ? "input.pointer.click" : action === "keyboard_type" ? "input.keyboard.type" : "input.keyboard.shortcut";
       const requiredScope = action === "pointer_click" ? "input.pointer" : "input.keyboard";
       if (!client.scopes.includes(requiredScope)) return scopeError(requiredScope);
       if (action === "pointer_click" && (x === undefined || y === undefined)) return { content: [{ type: "text", text: "Both x and y coordinates are required for a click." }], isError: true };
       if (action === "keyboard_type" && (!text || !text.length || /[\\u0000-\\u001f\\u007f]/.test(text))) return { content: [{ type: "text", text: "Text must be 1–200 printable characters." }], isError: true };
+      if (action === "keyboard_shortcut" && (!keys || keys.length < 2 || keys.length > 4)) return { content: [{ type: "text", text: "A keyboard shortcut must contain 2–4 allowlisted keys." }], isError: true };
       const recentCutoff = new Date(Date.now() - 90_000).toISOString();
       const devicesResponse = await supabaseRest(`mcpos_devices?select=id,device_name&user_id=eq.${client.user_id}&status=eq.online&last_seen_at=gte.${recentCutoff}&order=last_seen_at.desc&limit=1`);
       if (!devicesResponse.ok) return { content: [{ type: "text", text: "Could not check device availability." }], isError: true };
       const [device] = await devicesResponse.json();
       if (!device) return { content: [{ type: "text", text: "No online Windows device is available." }], isError: true };
-      const payload = action === "pointer_click" ? { x, y, button: button ?? "left" } : { text };
+      const payload = action === "pointer_click" ? { x, y, button: button ?? "left" } : action === "keyboard_type" ? { text } : { keys };
       const expiresAt = new Date(Date.now() + 60_000).toISOString();
       const queued = await supabaseRest("mcpos_device_commands", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ user_id: client.user_id, mcp_client_id: client.id, device_id: device.id, command, payload, expires_at: expiresAt }) });
       if (!queued.ok) return { content: [{ type: "text", text: "Could not queue the action. The database migration may not yet be deployed." }], isError: true };
@@ -279,7 +280,7 @@ function makeServer(client: McpClient) {
     "mcpos_browser_automation",
     {
       title: "Automate the isolated browser",
-      description: "Open an HTTPS website, read a bounded page snapshot, click a CSS selector, or enter text into a selected field in the separate McpOS browser profile. Requires browser.control scope and the local browser consent switch. Open, click and type actions each wait for a separate approval on the Windows computer.",
+      description: "Open an HTTPS website, read a bounded page snapshot, click a CSS selector, or enter text into a selected field in the separate McpOS browser profile. Requires browser.control scope and the local browser consent switch. The Windows computer enforces its local Manual, Selected or Auto-approve-all policy. Browser automation always retains its separate local consent switch.",
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
       _meta: { securitySchemes: [{ type: "oauth2", scopes: ["browser.control"] }] },
       inputSchema: z.object({ action: z.enum(["open", "snapshot", "click", "type"]), url: z.string().max(2048).optional(), selector: z.string().max(256).optional(), text: z.string().max(200).optional() }),

@@ -1,10 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use base64::Engine;
-use enigo::{Button, Coordinate, Direction, Enigo, Keyboard, Mouse, Settings};
+use enigo::{Button, Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
 use keyring::Entry;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, io::Read, path::{Path, PathBuf}, sync::{mpsc::{sync_channel, SyncSender}, Arc, Mutex, atomic::{AtomicBool, Ordering}}, time::Duration};
+use std::{collections::HashMap, io::Read, path::{Path, PathBuf}, sync::{mpsc::{sync_channel, SyncSender}, Arc, Mutex, atomic::{AtomicBool, Ordering}}, time::{Duration, SystemTime, UNIX_EPOCH}};
 use xcap::{image::{codecs::jpeg::JpegEncoder, DynamicImage}, Monitor};
 use uiautomation::UIAutomation;
 use uuid::Uuid;
@@ -77,8 +77,75 @@ struct AccessibilityConsent(Arc<AtomicBool>);
 struct ApprovedFolders(Arc<Mutex<Vec<PathBuf>>>);
 struct PendingAction(Arc<Mutex<Option<RelayCommand>>>);
 struct BrowserConsent(Arc<AtomicBool>);
+#[derive(Clone, Serialize)]
+struct AutomationPolicy {
+    mode: String,
+    paused: bool,
+    expires_at: Option<u64>,
+    auto_pointer: bool,
+    auto_keyboard: bool,
+    auto_browser: bool,
+    auto_screen: bool,
+}
+struct AutomationPolicyState(Arc<Mutex<AutomationPolicy>>);
+fn now_epoch() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+}
+fn policy_active(policy: &AutomationPolicy) -> bool {
+    !policy.paused && policy.mode != "manual" && policy.expires_at.map(|expiry| expiry > now_epoch()).unwrap_or(false)
+}
+fn policy_auto_approves(policy: &AutomationPolicy, command: &str) -> bool {
+    if !policy_active(policy) { return false; }
+    if policy.mode == "all" {
+        return matches!(command, "input.pointer.click" | "input.keyboard.type" | "input.keyboard.shortcut" | "browser.open" | "browser.click" | "browser.type" | "screen.capture");
+    }
+    match command {
+        "input.pointer.click" => policy.auto_pointer,
+        "input.keyboard.type" | "input.keyboard.shortcut" => policy.auto_keyboard,
+        "browser.open" | "browser.click" | "browser.type" => policy.auto_browser,
+        "screen.capture" => policy.auto_screen,
+        _ => false,
+    }
+}
+fn policy_json(policy: &AutomationPolicy) -> serde_json::Value {
+    serde_json::to_value(policy).unwrap_or_else(|_| serde_json::json!({"mode":"manual","paused":true}))
+}
 #[derive(Clone)]
 struct BrowserBridge { port: u16, pending: Arc<Mutex<HashMap<String, SyncSender<String>>>> }
+
+#[tauri::command]
+fn get_automation_policy(policy: tauri::State<'_, AutomationPolicyState>) -> serde_json::Value {
+    policy.0.lock().map(|p| policy_json(&p)).unwrap_or_else(|_| serde_json::json!({"mode":"manual","paused":true}))
+}
+#[tauri::command]
+fn set_automation_policy(mode: String, expiry_minutes: u64, auto_pointer: bool, auto_keyboard: bool, auto_browser: bool, auto_screen: bool, policy: tauri::State<'_, AutomationPolicyState>) -> Result<serde_json::Value, String> {
+    if !matches!(mode.as_str(), "manual" | "selected" | "all") { return Err("Invalid automation mode.".into()); }
+    if !matches!(expiry_minutes, 15 | 60 | 240 | 480) { return Err("Choose a supported session expiry.".into()); }
+    let mut p = policy.0.lock().map_err(|_| "Automation policy unavailable.".to_string())?;
+    p.mode = mode.clone();
+    p.paused = false;
+    p.expires_at = if mode == "manual" { None } else { Some(now_epoch() + expiry_minutes * 60) };
+    p.auto_pointer = mode == "all" || (mode == "selected" && auto_pointer);
+    p.auto_keyboard = mode == "all" || (mode == "selected" && auto_keyboard);
+    p.auto_browser = mode == "all" || (mode == "selected" && auto_browser);
+    p.auto_screen = mode == "all" || (mode == "selected" && auto_screen);
+    Ok(policy_json(&p))
+}
+#[tauri::command]
+async fn pause_automation(policy: tauri::State<'_, AutomationPolicyState>, pending: tauri::State<'_, PendingAction>) -> Result<serde_json::Value, String> {
+    {
+        let mut p = policy.0.lock().map_err(|_| "Automation policy unavailable.".to_string())?;
+        p.paused = true;
+    }
+    let command = {
+        pending.0.lock().map_err(|_| "Pending action state unavailable.".to_string())?.take()
+    };
+    if let Some(command) = command {
+        let _ = submit_relay_result(&command.id, serde_json::json!({}), Some("Automation paused locally before execution.".into())).await;
+    }
+    let p = policy.0.lock().map_err(|_| "Automation policy unavailable.".to_string())?;
+    Ok(policy_json(&p))
+}
 
 #[tauri::command]
 fn get_browser_consent(consent: tauri::State<'_, BrowserConsent>) -> bool {
@@ -429,6 +496,38 @@ fn execute_input_action(command: &RelayCommand) -> Result<serde_json::Value, Str
             enigo.text(text).map_err(|_| "Windows could not enter the approved text.".to_string())?;
             Ok(serde_json::json!({ "action": "type_text", "characters": text.chars().count(), "approved_locally": true }))
         },
+        "input.keyboard.shortcut" => {
+            let names = command.payload.get("keys").and_then(|value| value.as_array()).ok_or("A shortcut key array is required.")?;
+            if names.len() < 2 || names.len() > 4 { return Err("A shortcut must contain 2–4 keys.".into()); }
+            let mut keys: Vec<Key> = Vec::new();
+            for name in names {
+                let value = name.as_str().ok_or("Shortcut keys must be strings.")?;
+                let key = match value.to_ascii_uppercase().as_str() {
+                    "CTRL" | "CONTROL" => Key::Control, "SHIFT" => Key::Shift, "ALT" => Key::Alt, "WIN" | "META" => Key::Meta,
+                    "ENTER" => Key::Return, "TAB" => Key::Tab, "ESC" | "ESCAPE" => Key::Escape, "SPACE" => Key::Space,
+                    "BACKSPACE" => Key::Backspace, "DELETE" => Key::Delete, "HOME" => Key::Home, "END" => Key::End,
+                    "PAGEUP" => Key::PageUp, "PAGEDOWN" => Key::PageDown, "UP" => Key::UpArrow, "DOWN" => Key::DownArrow,
+                    "LEFT" => Key::LeftArrow, "RIGHT" => Key::RightArrow,
+                    "F1" => Key::F1, "F2" => Key::F2, "F3" => Key::F3, "F4" => Key::F4, "F5" => Key::F5, "F6" => Key::F6,
+                    "F7" => Key::F7, "F8" => Key::F8, "F9" => Key::F9, "F10" => Key::F10, "F11" => Key::F11, "F12" => Key::F12,
+                    v if v.len() == 1 && v.as_bytes()[0].is_ascii_alphanumeric() => Key::Unicode(v.chars().next().unwrap().to_ascii_lowercase()),
+                    _ => return Err("Unsupported shortcut key. Use modifiers, letters, digits, F1–F12, navigation and editing keys.".into()),
+                };
+                keys.push(key);
+            }
+            let mut pressed: Vec<Key> = Vec::new();
+            for key in &keys {
+                if let Err(_) = enigo.key(*key, Direction::Press) {
+                    for held in pressed.iter().rev() { let _ = enigo.key(*held, Direction::Release); }
+                    return Err("Windows could not press the requested shortcut.".into());
+                }
+                pressed.push(*key);
+            }
+            for key in pressed.iter().rev() {
+                enigo.key(*key, Direction::Release).map_err(|_| "Windows could not release a shortcut key.".to_string())?;
+            }
+            Ok(serde_json::json!({ "action": "keyboard_shortcut", "keys": names, "approved_locally": true }))
+        },
         _ => Err("Unsupported input action.".to_string()),
     }
 }
@@ -451,11 +550,18 @@ fn get_pending_action(pending: tauri::State<'_, PendingAction>) -> Option<serde_
 }
 
 #[tauri::command]
-async fn approve_pending_action(pending: tauri::State<'_, PendingAction>, app: tauri::AppHandle, bridge: tauri::State<'_, BrowserBridge>, browser_consent: tauri::State<'_, BrowserConsent>) -> Result<String, String> {
+async fn approve_pending_action(pending: tauri::State<'_, PendingAction>, app: tauri::AppHandle, bridge: tauri::State<'_, BrowserBridge>, browser_consent: tauri::State<'_, BrowserConsent>, policy: tauri::State<'_, AutomationPolicyState>) -> Result<String, String> {
+    if policy.0.lock().map(|p| p.paused || p.expires_at.map(|e| e <= now_epoch()).unwrap_or(false)).unwrap_or(true) {
+        return Err("Automation is paused or the session has expired. Resume it locally first.".into());
+    }
     let command = pending.0.lock().map_err(|_| "Approval state is unavailable.".to_string())?.clone().ok_or("There is no pending action to approve.")?;
     if !heartbeat().await || !authorize_pending_command(&command.id).await {
         pending.0.lock().map_err(|_| "Approval state is unavailable.".to_string())?.take();
         return Err("McpOS could not verify that this device and AI session are still authorised. The action was not executed.".to_string());
+    }
+    if policy.0.lock().map(|p| p.paused || p.expires_at.map(|e| e <= now_epoch()).unwrap_or(false)).unwrap_or(true) {
+        pending.0.lock().map_err(|_| "Approval state is unavailable.".to_string())?.take();
+        return Err("Automation was paused or expired while authorisation was being checked. The action was not executed.".to_string());
     }
     let action_result = if command.command.starts_with("browser.") && !browser_consent.0.load(Ordering::Relaxed) {
         Err("Isolated browser consent was switched off before approval.".to_string())
@@ -464,7 +570,8 @@ async fn approve_pending_action(pending: tauri::State<'_, PendingAction>, app: t
     } else {
         execute_input_action(&command)
     };
-    let (result, error) = match action_result { Ok(result) => (result, None), Err(message) => (serde_json::json!({}), Some(message)) };
+    let (mut result, error) = match action_result { Ok(result) => (result, None), Err(message) => (serde_json::json!({}), Some(message)) };
+    if error.is_none() { result["approval_mode"] = serde_json::Value::String("manual".into()); }
     let submission = submit_relay_result(&command.id, result, error.clone()).await;
     pending.0.lock().map_err(|_| "Approval state is unavailable.".to_string())?.take();
     submission?;
@@ -479,7 +586,7 @@ async fn deny_pending_action(pending: tauri::State<'_, PendingAction>) -> Result
     submission?;
     Ok("Action denied. Nothing was executed.".to_string())
 }
-async fn poll_relay_once(connected: &Arc<AtomicBool>, screen_consent: &Arc<AtomicBool>, accessibility_consent: &Arc<AtomicBool>, browser_consent: &Arc<AtomicBool>, approved_folders: &Arc<Mutex<Vec<PathBuf>>>, pending_action: &Arc<Mutex<Option<RelayCommand>>>, bridge: &BrowserBridge, app: &tauri::AppHandle) {
+async fn poll_relay_once(connected: &Arc<AtomicBool>, screen_consent: &Arc<AtomicBool>, accessibility_consent: &Arc<AtomicBool>, browser_consent: &Arc<AtomicBool>, approved_folders: &Arc<Mutex<Vec<PathBuf>>>, pending_action: &Arc<Mutex<Option<RelayCommand>>>, policy: &Arc<Mutex<AutomationPolicy>>, bridge: &BrowserBridge, app: &tauri::AppHandle) {
     let Some(token) = stored_token() else { return };
     let Some(api_key) = SUPABASE_ANON_KEY else { return };
     if api_key.is_empty() { return; }
@@ -500,26 +607,37 @@ async fn poll_relay_once(connected: &Arc<AtomicBool>, screen_consent: &Arc<Atomi
     let Ok(envelope) = response.json::<RelayPollResponse>().await else { return };
     let Some(command) = envelope.command else { return };
 
-    if command.command == "input.pointer.click" || command.command == "input.keyboard.type" || command.command == "browser.open" || command.command == "browser.click" || command.command == "browser.type" {
+    if command.command == "input.pointer.click" || command.command == "input.keyboard.type" || command.command == "input.keyboard.shortcut" || command.command == "browser.open" || command.command == "browser.click" || command.command == "browser.type" {
         if command.command.starts_with("browser.") && !browser_consent.load(Ordering::Relaxed) {
             let _ = submit_relay_result(&command.id, serde_json::json!({}), Some("Isolated browser consent is switched off on this Windows computer.".to_string())).await;
+            return;
+        }
+        let auto = policy.lock().map(|p| policy_auto_approves(&p, &command.command)).unwrap_or(false);
+        if auto {
+            let authorised = heartbeat().await && authorize_pending_command(&command.id).await;
+            let still_allowed = policy.lock().map(|p| policy_auto_approves(&p, &command.command)).unwrap_or(false);
+            let action = if !authorised {
+                Err("Device or AI session is no longer authorised. Action blocked.".to_string())
+            } else if !still_allowed {
+                Err("Automation was paused or the session expired before execution. Action blocked.".to_string())
+            } else if command.command.starts_with("browser.") {
+                execute_browser_action(&command, app, bridge)
+            } else {
+                execute_input_action(&command)
+            };
+            let (mut result, error) = match action { Ok(v) => (v, None), Err(e) => (serde_json::json!({}), Some(e)) };
+            if error.is_none() { result["approval_mode"] = serde_json::Value::String("auto".into()); }
+            let _ = submit_relay_result(&command.id, result, error).await;
             return;
         }
         let command_id = command.id.clone();
         let already_pending = {
             let mut pending = pending_action.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            if pending.is_none() {
-                *pending = Some(command);
-                false
-            } else {
-                true
-            }
+            if pending.is_none() { *pending = Some(command); false } else { true }
         };
         if already_pending {
             let _ = submit_relay_result(&command_id, serde_json::json!({}), Some("Another local approval is already pending.".to_string())).await;
-        } else {
-            show_main_window(app);
-        }
+        } else { show_main_window(app); }
         return;
     }
 
@@ -547,12 +665,17 @@ async fn poll_relay_once(connected: &Arc<AtomicBool>, screen_consent: &Arc<Atomi
             None,
         ),
         "screen.capture" => {
-            if !screen_consent.load(Ordering::Relaxed) {
-                (serde_json::json!({}), Some("Screen capture consent is switched off on this Windows computer.".to_string()))
+            let (paused_or_expired, allowed_by_policy) = policy.lock().map(|p| {
+                (p.paused || p.expires_at.map(|e| e <= now_epoch()).unwrap_or(p.mode != "manual"), policy_auto_approves(&p, "screen.capture"))
+            }).unwrap_or((true, false));
+            if paused_or_expired {
+                (serde_json::json!({}), Some("Automation is paused or the local session has expired.".into()))
+            } else if !screen_consent.load(Ordering::Relaxed) && !allowed_by_policy {
+                (serde_json::json!({}), Some("Screen capture requires its local consent switch or an active session that explicitly allows captures.".into()))
             } else {
                 match capture_screen_jpeg() {
                     Ok((image_base64, width, height)) => (
-                        serde_json::json!({ "image_base64": image_base64, "mime_type": "image/jpeg", "width": width, "height": height }),
+                        serde_json::json!({ "image_base64": image_base64, "mime_type": "image/jpeg", "width": width, "height": height, "approval_mode": if allowed_by_policy { "auto" } else { "local_consent" } }),
                         None,
                     ),
                     Err(message) => (serde_json::json!({}), Some(message)),
@@ -597,10 +720,10 @@ async fn poll_relay_once(connected: &Arc<AtomicBool>, screen_consent: &Arc<Atomi
         .await;
 }
 
-fn start_relay_polling(connected: Arc<AtomicBool>, screen_consent: Arc<AtomicBool>, accessibility_consent: Arc<AtomicBool>, browser_consent: Arc<AtomicBool>, approved_folders: Arc<Mutex<Vec<PathBuf>>>, pending_action: Arc<Mutex<Option<RelayCommand>>>, bridge: BrowserBridge, app: tauri::AppHandle) {
+fn start_relay_polling(connected: Arc<AtomicBool>, screen_consent: Arc<AtomicBool>, accessibility_consent: Arc<AtomicBool>, browser_consent: Arc<AtomicBool>, approved_folders: Arc<Mutex<Vec<PathBuf>>>, pending_action: Arc<Mutex<Option<RelayCommand>>>, policy: Arc<Mutex<AutomationPolicy>>, bridge: BrowserBridge, app: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         loop {
-            poll_relay_once(&connected, &screen_consent, &accessibility_consent, &browser_consent, &approved_folders, &pending_action, &bridge, &app).await;
+            poll_relay_once(&connected, &screen_consent, &accessibility_consent, &browser_consent, &approved_folders, &pending_action, &policy, &bridge, &app).await;
             tokio::time::sleep(Duration::from_secs(10)).await;
         }
     });
@@ -630,7 +753,7 @@ fn start_heartbeat(app: tauri::AppHandle, connected: Arc<AtomicBool>) {
 
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![pair_device, get_device_status, get_screen_capture_consent, set_screen_capture_consent, get_accessibility_consent, set_accessibility_consent, get_approved_folders, pick_approved_folder, remove_approved_folder, get_pending_action, approve_pending_action, deny_pending_action, get_browser_consent, set_browser_consent])
+        .invoke_handler(tauri::generate_handler![pair_device, get_device_status, get_screen_capture_consent, set_screen_capture_consent, get_accessibility_consent, set_accessibility_consent, get_approved_folders, pick_approved_folder, remove_approved_folder, get_pending_action, approve_pending_action, deny_pending_action, get_browser_consent, set_browser_consent, get_automation_policy, set_automation_policy, pause_automation])
         .setup(|app| {
             let open = MenuItem::with_id(app, "open", "Open McpOS", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit McpOS", true, None::<&str>)?;
@@ -669,10 +792,12 @@ fn main() {
             app.manage(PendingAction(pending_action.clone()));
             let browser_consent = Arc::new(AtomicBool::new(false));
             app.manage(BrowserConsent(browser_consent.clone()));
+            let automation_policy = Arc::new(Mutex::new(AutomationPolicy { mode: "manual".into(), paused: false, expires_at: None, auto_pointer: false, auto_keyboard: false, auto_browser: false, auto_screen: false }));
+            app.manage(AutomationPolicyState(automation_policy.clone()));
             let browser_bridge = start_browser_bridge().unwrap_or_else(|_| BrowserBridge { port: 0, pending: Arc::new(Mutex::new(HashMap::new())) });
             app.manage(browser_bridge.clone());
             start_heartbeat(app.handle().clone(), connection_state.clone());
-            start_relay_polling(connection_state, screen_consent, accessibility_consent, browser_consent, approved_folders, pending_action, browser_bridge, app.handle().clone());
+            start_relay_polling(connection_state, screen_consent, accessibility_consent, browser_consent, approved_folders, pending_action, automation_policy, browser_bridge, app.handle().clone());
             Ok(())
         })
         .on_window_event(|window, event| {

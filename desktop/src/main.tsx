@@ -5,6 +5,7 @@ import "./style.css";
 
 type DeviceStatus = { paired: boolean; connected: boolean; device_id: string | null };
 type PendingAction = { id: string; command: string; payload: Record<string, unknown> };
+type AutomationPolicy = { mode: "manual" | "selected" | "all"; paused: boolean; expires_at: number | null; auto_pointer: boolean; auto_keyboard: boolean; auto_browser: boolean; auto_screen: boolean };
 
 function App() {
   const [code, setCode] = useState("");
@@ -18,14 +19,19 @@ function App() {
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
   const [approvalBusy, setApprovalBusy] = useState(false);
   const [error, setError] = useState("");
+  const [automation, setAutomation] = useState<AutomationPolicy>({ mode: "manual", paused: false, expires_at: null, auto_pointer: false, auto_keyboard: false, auto_browser: false, auto_screen: false });
+  const [expiryMinutes, setExpiryMinutes] = useState(60);
+  const [now, setNow] = useState(0);
 
   async function refreshStatus() {
+    setNow(Date.now());
     try {
       setStatus(await invoke<DeviceStatus>("get_device_status"));
       setScreenConsent(await invoke<boolean>("get_screen_capture_consent"));
       setAccessibilityConsent(await invoke<boolean>("get_accessibility_consent"));
       setBrowserConsent(await invoke<boolean>("get_browser_consent"));
       setApprovedFolders(await invoke<string[]>("get_approved_folders"));
+      setAutomation(await invoke<AutomationPolicy>("get_automation_policy"));
     }
     catch { setError("Could not read the local device credential."); }
   }
@@ -36,6 +42,46 @@ function App() {
     const approvalTimer = window.setInterval(() => { void invoke<PendingAction | null>("get_pending_action").then(setPendingAction).catch(() => undefined); }, 1200);
     return () => { window.clearTimeout(initial); window.clearInterval(timer); window.clearInterval(approvalTimer); };
   }, []);
+
+  async function setAutomationMode(mode: "manual" | "selected" | "all") {
+    setError(""); setMessage("");
+    try {
+      const policy = await invoke<AutomationPolicy>("set_automation_policy", {
+        mode, expiryMinutes,
+        autoPointer: mode === "all" || (mode === "selected" && automation.auto_pointer),
+        autoKeyboard: mode === "all" || (mode === "selected" && automation.auto_keyboard),
+        autoBrowser: mode === "all" || (mode === "selected" && automation.auto_browser),
+        autoScreen: mode === "all" || (mode === "selected" && automation.auto_screen)
+      });
+      setAutomation(policy);
+      setMessage(mode === "all" ? "AUTO mode enabled on this Windows computer. Destructive file actions remain blocked." : mode === "selected" ? "Selected-action automation enabled on this Windows computer." : "Manual approval mode enabled.");
+    } catch (reason) { setError(typeof reason === "string" ? reason : "Could not update automation policy."); }
+  }
+
+  async function pauseAutomation() {
+    setError(""); setMessage("");
+    try {
+      const policy = await invoke<AutomationPolicy>("pause_automation");
+      setAutomation(policy);
+      setPendingAction(null);
+      setMessage("Automation paused locally. New actions are blocked until you resume a mode.");
+    } catch (reason) { setError(typeof reason === "string" ? reason : "Could not pause automation."); }
+  }
+
+  async function toggleAutomationPermission(key: "auto_pointer" | "auto_keyboard" | "auto_browser" | "auto_screen", enabled: boolean) {
+    const next = { ...automation, [key]: enabled };
+    setAutomation(next);
+    if (automation.mode === "selected" && !automation.paused) {
+      try {
+        const policy = await invoke<AutomationPolicy>("set_automation_policy", {
+          mode: "selected", expiryMinutes,
+          autoPointer: next.auto_pointer, autoKeyboard: next.auto_keyboard,
+          autoBrowser: next.auto_browser, autoScreen: next.auto_screen
+        });
+        setAutomation(policy);
+      } catch (reason) { setError(typeof reason === "string" ? reason : "Could not update selected permissions."); }
+    }
+  }
 
   async function toggleScreenConsent(enabled: boolean) {
     setError(""); setMessage("");
@@ -116,7 +162,7 @@ function App() {
   return <main className="shell">
     <header className="topbar">
       <div className="brand"><span className="brand-mark">M</span><div><strong>McpOS</strong><small>Windows desktop companion</small></div></div>
-      <span className="status"><i className={status.connected ? "online" : "offline"} /> {!status.paired ? "Not paired" : status.connected ? "Connected" : "Paired · Offline"}</span>
+      <div className="topbar-right">{automation.mode === "all" && !automation.paused && automation.expires_at !== null && automation.expires_at * 1000 > now && <span className="auto-indicator"><i /> AUTO</span>}<span className="status"><i className={status.connected ? "online" : "offline"} /> {!status.paired ? "Not paired" : status.connected ? "Connected" : "Paired · Offline"}</span></div>
     </header>
     <section className="hero">
       <div className="eyebrow">WINDOWS COMPANION · LOCAL SESSION</div>
@@ -140,13 +186,30 @@ function App() {
       <div className="capability consent-capability"><span className="symbol">▧</span><div><strong>Screen capture consent</strong><small>This is a local Windows switch. It resets to off when McpOS restarts. Turn it off at any time to stop further captures.</small></div><button className={"consent-switch " + (screenConsent ? "is-on" : "")} role="switch" aria-checked={screenConsent} aria-label="Allow screen capture on this computer" onClick={() => void toggleScreenConsent(!screenConsent)}><span /></button></div>
       <div className="capability consent-capability"><span className="symbol">⌖</span><div><strong>Application understanding</strong><small>Read-only Windows UI Automation. Shares a limited list of top-level window names and process IDs, not control text or keystrokes. Local consent resets to off on restart.</small></div><button className={"consent-switch " + (accessibilityConsent ? "is-on" : "")} role="switch" aria-checked={accessibilityConsent} aria-label="Allow Windows accessibility inspection" onClick={() => void toggleAccessibilityConsent(!accessibilityConsent)}><span /></button></div>
       <div className="capability consent-capability"><span className="symbol">◎</span><div><strong>Isolated browser automation</strong><small>Uses a separate WebView2 profile with separate cookies and storage. Only HTTPS sites are allowed; every navigation, click and text-entry action requires local approval.</small></div><button className={"consent-switch " + (browserConsent ? "is-on" : "")} role="switch" aria-checked={browserConsent} aria-label="Allow isolated browser automation" onClick={() => void toggleBrowserConsent(!browserConsent)}><span /></button></div>
-      <div className="capability"><span className="symbol">⌘</span><div><strong>Mouse & keyboard</strong><small>Each pointer click and text-entry action is shown here and requires a separate approval.</small></div><span className="disabled">Approve each action</span></div>
+      <section className="automation-panel">
+        <div className="automation-title"><div><strong>Automation approval</strong><small>Choose how this Windows computer handles permitted AI actions. The setting is local and resets to Manual after restart.</small></div><span className={automation.mode === "all" && !automation.paused ? "auto-pill" : "manual-pill"}>{automation.paused ? "PAUSED" : automation.mode === "all" ? "AUTO" : automation.mode.toUpperCase()}</span></div>
+        <div className="mode-row">
+          <button className={automation.mode === "manual" ? "mode-choice selected" : "mode-choice"} onClick={() => void setAutomationMode("manual")}>Manual approval</button>
+          <button className={automation.mode === "selected" ? "mode-choice selected" : "mode-choice"} onClick={() => void setAutomationMode("selected")}>Selected actions</button>
+          <button className={automation.mode === "all" && !automation.paused && automation.expires_at !== null && automation.expires_at * 1000 > now ? "mode-choice selected auto-choice" : "mode-choice"} onClick={() => void setAutomationMode("all")}>Auto-approve all</button>
+        </div>
+        <div className="expiry-row"><label htmlFor="session-expiry">Session expiry</label><select id="session-expiry" value={expiryMinutes} onChange={event => setExpiryMinutes(Number(event.target.value))}><option value={15}>15 minutes</option><option value={60}>1 hour</option><option value={240}>4 hours</option><option value={480}>8 hours</option></select></div>
+        {automation.mode === "selected" && <div className="permission-list">
+          <label><input type="checkbox" checked={automation.auto_pointer} onChange={event => void toggleAutomationPermission("auto_pointer", event.target.checked)}/> Mouse clicks</label>
+          <label><input type="checkbox" checked={automation.auto_keyboard} onChange={event => void toggleAutomationPermission("auto_keyboard", event.target.checked)}/> Keyboard text entry</label>
+          <label><input type="checkbox" checked={automation.auto_browser} onChange={event => void toggleAutomationPermission("auto_browser", event.target.checked)}/> Browser navigation and interaction</label>
+          <label><input type="checkbox" checked={automation.auto_screen} onChange={event => void toggleAutomationPermission("auto_screen", event.target.checked)}/> Screen captures</label>
+        </div>}
+        <div className="automation-warning">Auto mode only covers currently supported, non-destructive actions. File deletion, overwriting, terminal commands and application installation are not granted by this setting. Browser automation still requires its separate local switch.</div>
+        <div className="automation-controls"><button className="pause-button" onClick={() => void pauseAutomation()}>Pause automation now</button><span>{automation.expires_at && !automation.paused ? "Expires " + new Date(automation.expires_at * 1000).toLocaleString() : "No active automation session"}</span></div>
+      </section>
+      <div className="capability"><span className="symbol">⌘</span><div><strong>Mouse & keyboard</strong><small>Pointer clicks and text entry follow the local approval policy. Destructive file operations remain unavailable.</small></div><span className={automation.mode === "all" && !automation.paused && automation.expires_at !== null && automation.expires_at * 1000 > now ? "enabled" : "disabled"}>{automation.paused ? "Paused" : automation.mode === "all" ? "AUTO" : "Policy controlled"}</span></div>
       {pendingAction && <section className="approval-card">
         <div className="approval-eyebrow">LOCAL APPROVAL REQUIRED</div>
-        <strong>{pendingAction.command === "input.pointer.click" ? "AI wants to click your screen" : pendingAction.command === "input.keyboard.type" ? "AI wants to type on your computer" : pendingAction.command === "browser.open" ? "AI wants to open a website in the isolated browser" : pendingAction.command === "browser.click" ? "AI wants to click a page element" : "AI wants to type into a page field"}</strong>
-        {pendingAction.command === "input.pointer.click" ? <p>Button: {String(pendingAction.payload.button ?? "left")} · Position: {String(pendingAction.payload.x)}, {String(pendingAction.payload.y)}</p> : pendingAction.command === "browser.open" ? <p className="approval-text">{String(pendingAction.payload.url ?? "")}</p> : pendingAction.command === "browser.click" ? <p className="approval-text">CSS selector: {String(pendingAction.payload.selector ?? "")}</p> : pendingAction.command === "browser.type" ? <p className="approval-text">Selector: {String(pendingAction.payload.selector ?? "")} · Text: “{String(pendingAction.payload.text ?? "")}”</p> : <p className="approval-text">Text to enter: “{String(pendingAction.payload.text ?? "")}”</p>}
+        <strong>{pendingAction.command === "input.pointer.click" ? "AI wants to click your screen" : pendingAction.command === "input.keyboard.type" ? "AI wants to type on your computer" : pendingAction.command === "input.keyboard.shortcut" ? "AI wants to press a keyboard shortcut" : pendingAction.command === "browser.open" ? "AI wants to open a website in the isolated browser" : pendingAction.command === "browser.click" ? "AI wants to click a page element" : "AI wants to type into a page field"}</strong>
+        {pendingAction.command === "input.pointer.click" ? <p>Button: {String(pendingAction.payload.button ?? "left")} · Position: {String(pendingAction.payload.x)}, {String(pendingAction.payload.y)}</p> : pendingAction.command === "input.keyboard.shortcut" ? <p className="approval-text">Keys: {Array.isArray(pendingAction.payload.keys) ? pendingAction.payload.keys.join(" + ") : ""}</p> : pendingAction.command === "browser.open" ? <p className="approval-text">{String(pendingAction.payload.url ?? "")}</p> : pendingAction.command === "browser.click" ? <p className="approval-text">CSS selector: {String(pendingAction.payload.selector ?? "")}</p> : pendingAction.command === "browser.type" ? <p className="approval-text">Selector: {String(pendingAction.payload.selector ?? "")} · Text: “{String(pendingAction.payload.text ?? "")}”</p> : <p className="approval-text">Text to enter: “{String(pendingAction.payload.text ?? "")}”</p>}
         <div className="approval-actions"><button className="deny" disabled={approvalBusy} onClick={() => void denyPendingAction()}>{approvalBusy ? "Working…" : "Deny"}</button><button className="approve" disabled={approvalBusy} onClick={() => void approvePendingAction()}>{approvalBusy ? "Working…" : "Approve once"}</button></div>
-        <small>Nothing happens unless you approve this exact action here. Each action requires a separate approval.</small>
+        <small>Nothing happens unless you approve this exact action here. This exact action requires approval unless a locally configured auto-approval rule applies.</small>
       </section>}
       <section className="approved-folders">
         <div className="folder-heading"><div><strong>Approved folders</strong><small>Only folders you select here are eligible for read-only AI access. This approval list resets when McpOS restarts.</small></div><button onClick={() => void addApprovedFolder()}>Choose folder</button></div>
