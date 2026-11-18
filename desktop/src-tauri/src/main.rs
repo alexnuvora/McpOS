@@ -5,6 +5,7 @@ use keyring::Entry;
 use serde::{Deserialize, Serialize};
 use std::{sync::{Arc, atomic::{AtomicBool, Ordering}}, time::Duration};
 use xcap::{image::{codecs::jpeg::JpegEncoder, DynamicImage}, Monitor};
+use uiautomation::UIAutomation;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -55,7 +56,39 @@ async fn heartbeat() -> bool {
 }
 
 struct ScreenCaptureConsent(Arc<AtomicBool>);
+struct AccessibilityConsent(Arc<AtomicBool>);
 
+#[tauri::command]
+fn get_accessibility_consent(consent: tauri::State<'_, AccessibilityConsent>) -> bool {
+    consent.0.load(Ordering::Relaxed)
+}
+
+#[tauri::command]
+fn set_accessibility_consent(enabled: bool, consent: tauri::State<'_, AccessibilityConsent>) -> bool {
+    consent.0.store(enabled, Ordering::Relaxed);
+    enabled
+}
+
+fn get_accessibility_snapshot() -> Result<serde_json::Value, String> {
+    let automation = UIAutomation::new().map_err(|_| "Windows UI Automation could not start.".to_string())?;
+    let root = automation.get_root_element().map_err(|_| "Windows desktop accessibility tree is unavailable.".to_string())?;
+    let walker = automation.get_control_view_walker().map_err(|_| "Windows accessibility control view is unavailable.".to_string())?;
+    let children = walker.get_children(&root).unwrap_or_default();
+    let mut windows = Vec::new();
+    for element in children.iter().take(40) {
+        let name = element.get_name().unwrap_or_default();
+        let class_name = element.get_classname().unwrap_or_default();
+        let control_type = element.get_localized_control_type().unwrap_or_default();
+        let process_id = element.get_process_id().unwrap_or_default();
+        windows.push(serde_json::json!({
+            "name": name.chars().take(160).collect::<String>(),
+            "class_name": class_name.chars().take(100).collect::<String>(),
+            "control_type": control_type.chars().take(60).collect::<String>(),
+            "process_id": process_id
+        }));
+    }
+    Ok(serde_json::json!({ "scope": "top_level_windows", "count": windows.len(), "windows": windows }))
+}
 #[tauri::command]
 fn get_screen_capture_consent(consent: tauri::State<'_, ScreenCaptureConsent>) -> bool {
     consent.0.load(Ordering::Relaxed)
@@ -140,7 +173,7 @@ struct RelayPollResponse {
     command: Option<RelayCommand>,
 }
 
-async fn poll_relay_once(connected: &Arc<AtomicBool>, screen_consent: &Arc<AtomicBool>) {
+async fn poll_relay_once(connected: &Arc<AtomicBool>, screen_consent: &Arc<AtomicBool>, accessibility_consent: &Arc<AtomicBool>) {
     let Some(token) = stored_token() else { return };
     let Some(api_key) = SUPABASE_ANON_KEY else { return };
     if api_key.is_empty() { return; }
@@ -169,11 +202,11 @@ async fn poll_relay_once(connected: &Arc<AtomicBool>, screen_consent: &Arc<Atomi
                 "connected": connected.load(Ordering::Relaxed),
                 "device_id": device_id,
                 "agent_version": env!("CARGO_PKG_VERSION"),
-                "supported_commands": ["desktop.status", "screen.capture"],
+                "supported_commands": ["desktop.status", "screen.capture", "desktop.accessibility"],
                 "execution_enabled": false,
                 "permissions": {
                     "screen.capture": screen_consent.load(Ordering::Relaxed),
-                    "screen.accessibility": false,
+                    "screen.accessibility": accessibility_consent.load(Ordering::Relaxed),
                     "input.pointer": false,
                     "input.keyboard": false,
                     "browser.control": false,
@@ -193,6 +226,16 @@ async fn poll_relay_once(connected: &Arc<AtomicBool>, screen_consent: &Arc<Atomi
                         serde_json::json!({ "image_base64": image_base64, "mime_type": "image/jpeg", "width": width, "height": height }),
                         None,
                     ),
+                    Err(message) => (serde_json::json!({}), Some(message)),
+                }
+            }
+        },
+        "desktop.accessibility" => {
+            if !accessibility_consent.load(Ordering::Relaxed) {
+                (serde_json::json!({}), Some("Windows accessibility consent is switched off on this computer.".to_string()))
+            } else {
+                match get_accessibility_snapshot() {
+                    Ok(snapshot) => (snapshot, None),
                     Err(message) => (serde_json::json!({}), Some(message)),
                 }
             }
@@ -217,10 +260,10 @@ async fn poll_relay_once(connected: &Arc<AtomicBool>, screen_consent: &Arc<Atomi
         .await;
 }
 
-fn start_relay_polling(connected: Arc<AtomicBool>, screen_consent: Arc<AtomicBool>) {
+fn start_relay_polling(connected: Arc<AtomicBool>, screen_consent: Arc<AtomicBool>, accessibility_consent: Arc<AtomicBool>) {
     tauri::async_runtime::spawn(async move {
         loop {
-            poll_relay_once(&connected, &screen_consent).await;
+            poll_relay_once(&connected, &screen_consent, &accessibility_consent).await;
             tokio::time::sleep(Duration::from_secs(10)).await;
         }
     });
@@ -250,7 +293,7 @@ fn start_heartbeat(app: tauri::AppHandle, connected: Arc<AtomicBool>) {
 
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![pair_device, get_device_status, get_screen_capture_consent, set_screen_capture_consent])
+        .invoke_handler(tauri::generate_handler![pair_device, get_device_status, get_screen_capture_consent, set_screen_capture_consent, get_accessibility_consent, set_accessibility_consent])
         .setup(|app| {
             let open = MenuItem::with_id(app, "open", "Open McpOS", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit McpOS", true, None::<&str>)?;
@@ -281,8 +324,10 @@ fn main() {
             app.manage(connection_state.clone());
             let screen_consent = Arc::new(AtomicBool::new(false));
             app.manage(ScreenCaptureConsent(screen_consent.clone()));
+            let accessibility_consent = Arc::new(AtomicBool::new(false));
+            app.manage(AccessibilityConsent(accessibility_consent.clone()));
             start_heartbeat(app.handle().clone(), connection_state.clone());
-            start_relay_polling(connection_state, screen_consent);
+            start_relay_polling(connection_state, screen_consent, accessibility_consent);
             Ok(())
         })
         .on_window_event(|window, event| {
