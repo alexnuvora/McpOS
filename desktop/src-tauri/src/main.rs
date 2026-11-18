@@ -305,7 +305,7 @@ fn start_browser_bridge() -> Result<BrowserBridge, String> {
             }
             let nonce = path.trim_start_matches("/snapshot/").to_string();
             let mut body = String::new();
-            if request.as_reader().take(20_000).read_to_string(&mut body).is_err() {
+            if request.as_reader().take(100_000).read_to_string(&mut body).is_err() {
                 let _ = request.respond(tiny_http::Response::empty(tiny_http::StatusCode(400)));
                 continue;
             }
