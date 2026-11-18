@@ -162,7 +162,7 @@ function makeServer(client: McpClient) {
 
 async function handle(request: NextRequest) {
   const origin = request.headers.get("origin");
-  const allowedOrigins = new Set(["https://chatgpt.com", "https://claude.ai"]);
+  const allowedOrigins = new Set(["https://chatgpt.com", "https://chat.openai.com", "https://claude.ai"]);
   if (origin && !allowedOrigins.has(origin)) {
     return NextResponse.json({ error: "Origin not allowed." }, { status: 403 });
   }
