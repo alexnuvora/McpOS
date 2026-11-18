@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, io::Read, path::{Path, PathBuf}, sync::{mpsc::{sync_channel, SyncSender}, Arc, Mutex, atomic::{AtomicBool, Ordering}}, time::Duration};
 use xcap::{image::{codecs::jpeg::JpegEncoder, DynamicImage}, Monitor};
 use uiautomation::UIAutomation;
-use tauri::{webview::WebviewWindowBuilder, WebviewUrl};
+use tauri::{webview::{DownloadEvent, WebviewWindowBuilder}, WebviewUrl};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -346,6 +346,7 @@ fn open_isolated_browser(app: &tauri::AppHandle, raw_url: &str) -> Result<String
         .title("McpOS Isolated Browser")
         .data_directory(profile)
         .on_navigation(browser_url_allowed)
+        .on_download(|_, event| !matches!(event, DownloadEvent::Requested { .. }))
         .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny)
         .build().map_err(|_| "Could not create the isolated browser window.".to_string())?;
     Ok("Opened the URL in a separate browser profile with isolated cookies and storage.".to_string())
