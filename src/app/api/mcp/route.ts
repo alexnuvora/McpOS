@@ -59,15 +59,13 @@ function makeServer(client: McpClient) {
     },
     async ({ includePlanned }) => ({
       content: [{ type: "text", text: JSON.stringify({
-        enabled: ["per-client bearer authentication", "workspace status", "capability discovery", "paired-device listing", "outbound command polling", "read-only desktop status request", "consent-gated single screen capture", "read-only Windows top-level application discovery"],
-        permissionGated: ["local consent for screen capture and Windows accessibility", "mouse control", "keyboard input", "browser control", "approved-folder file access"],
+        enabled: ["per-client bearer authentication", "workspace status", "capability discovery", "paired-device listing", "outbound command polling", "read-only desktop status request", "one-shot JPEG screen capture", "bounded read-only Windows application discovery", "read-only approved-folder text access", "one-shot pointer and text-entry actions with local approval", "isolated browser navigation and selector automation", "paginated audit history and session revocation"],
+        permissionGated: ["screen capture local switch", "Windows accessibility local switch", "native folder-picker grants", "fresh local approval for every input action", "isolated browser local switch and fresh approval for navigation/click/type"],
         planned: includePlanned === false ? [] : [
-          "consent and approval prompts",
-          "screen capture and image return",
-          "Windows UI Automation",
-          "bounded mouse and keyboard actions",
-          "isolated browser automation",
-          "approved-folder file operations",
+          "full accessibility-tree inspection",
+          "file writes and deletes",
+          "application launching",
+          "sandboxed terminal",
           "full OAuth authorization for compatible MCP clients",
         ],
       }, null, 2) }],
