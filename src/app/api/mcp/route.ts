@@ -35,7 +35,7 @@ function scopeError(scope: string) {
     isError: true,
     _meta: {
       "mcp/www_authenticate": [
-        'Bearer resource_metadata="https://mcpos-dashboard.netlify.app/.well-known/oauth-protected-resource", error="insufficient_scope", error_description="Additional McpOS permission required: ' + scope + '."
+        'Bearer resource_metadata="https://mcpos-dashboard.netlify.app/.well-known/oauth-protected-resource", error="insufficient_scope", error_description="Additional McpOS permission required: ' + scope + '."'
       ],
     },
   };
