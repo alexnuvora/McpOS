@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { supabaseRest } from "@/lib/device-auth";
 import { hashOAuthToken, MCP_RESOURCE_URL, newOAuthToken, oauthError } from "@/lib/mcp-oauth";
 
@@ -45,7 +45,7 @@ export async function POST(request: NextRequest) {
     const codeResponse = await supabaseRest(`mcpos_oauth_codes?select=code_hash,client_id,user_id,redirect_uri,code_challenge,resource,scopes,expires_at,consumed_at&code_hash=eq.${codeHash}&limit=1`);
     if (!codeResponse.ok) return oauthError("server_error", "Could not verify the authorization code.", 503);
     const [authCode] = await codeResponse.json();
-    const calculatedChallenge = Buffer.from(await crypto.subtle.digest("SHA-256", Buffer.from(verifier))).toString("base64url");
+    const calculatedChallenge = createHash("sha256").update(verifier).digest("base64url");
     if (!authCode || authCode.client_id !== clientId || authCode.redirect_uri !== redirectUri ||
         authCode.resource !== resource || authCode.consumed_at || new Date(authCode.expires_at).getTime() <= Date.now() ||
         !sameSecret(calculatedChallenge, authCode.code_challenge)) {
@@ -103,7 +103,7 @@ export async function POST(request: NextRequest) {
     return oauthError("invalid_grant", "The refresh token is invalid, expired, or revoked.");
   }
 
-  const ownerResponse = await supabaseRest(`mcpos_mcp_clients?select=id,revoked_at& id=eq.${stored.mcp_client_id}&limit=1`.replace("& id=", "&id="));
+  const ownerResponse = await supabaseRest(`mcpos_mcp_clients?select=id,revoked_at&id=eq.${stored.mcp_client_id}&limit=1`);
   if (!ownerResponse.ok) return oauthError("server_error", "Could not verify the McpOS session.", 503);
   const [owner] = await ownerResponse.json();
   if (!owner || owner.revoked_at) return oauthError("invalid_grant", "This McpOS session has been revoked.");
