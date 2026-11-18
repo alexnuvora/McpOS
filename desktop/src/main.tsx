@@ -16,6 +16,7 @@ function App() {
   const [browserConsent, setBrowserConsent] = useState(false);
   const [approvedFolders, setApprovedFolders] = useState<string[]>([]);
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
+  const [approvalBusy, setApprovalBusy] = useState(false);
   const [error, setError] = useState("");
 
   async function refreshStatus() {
@@ -59,15 +60,19 @@ function App() {
   }
 
   async function approvePendingAction() {
-    setError(""); setMessage("");
+    if (approvalBusy) return;
+    setApprovalBusy(true); setError(""); setMessage("");
     try { setMessage(await invoke<string>("approve_pending_action")); setPendingAction(null); }
     catch (reason) { setError(typeof reason === "string" ? reason : "Could not execute the approved action."); setPendingAction(null); }
+    finally { setApprovalBusy(false); }
   }
 
   async function denyPendingAction() {
-    setError(""); setMessage("");
+    if (approvalBusy) return;
+    setApprovalBusy(true); setError(""); setMessage("");
     try { setMessage(await invoke<string>("deny_pending_action")); setPendingAction(null); }
     catch (reason) { setError(typeof reason === "string" ? reason : "Could not deny the pending action."); }
+    finally { setApprovalBusy(false); }
   }
 
   async function toggleBrowserConsent(enabled: boolean) {
@@ -140,7 +145,7 @@ function App() {
         <div className="approval-eyebrow">LOCAL APPROVAL REQUIRED</div>
         <strong>{pendingAction.command === "input.pointer.click" ? "AI wants to click your screen" : pendingAction.command === "input.keyboard.type" ? "AI wants to type on your computer" : pendingAction.command === "browser.open" ? "AI wants to open a website in the isolated browser" : pendingAction.command === "browser.click" ? "AI wants to click a page element" : "AI wants to type into a page field"}</strong>
         {pendingAction.command === "input.pointer.click" ? <p>Button: {String(pendingAction.payload.button ?? "left")} · Position: {String(pendingAction.payload.x)}, {String(pendingAction.payload.y)}</p> : pendingAction.command === "browser.open" ? <p className="approval-text">{String(pendingAction.payload.url ?? "")}</p> : pendingAction.command === "browser.click" ? <p className="approval-text">CSS selector: {String(pendingAction.payload.selector ?? "")}</p> : pendingAction.command === "browser.type" ? <p className="approval-text">Selector: {String(pendingAction.payload.selector ?? "")} · Text: “{String(pendingAction.payload.text ?? "")}”</p> : <p className="approval-text">Text to enter: “{String(pendingAction.payload.text ?? "")}”</p>}
-        <div className="approval-actions"><button className="deny" onClick={() => void denyPendingAction()}>Deny</button><button className="approve" onClick={() => void approvePendingAction()}>Approve once</button></div>
+        <div className="approval-actions"><button className="deny" disabled={approvalBusy} onClick={() => void denyPendingAction()}>{approvalBusy ? "Working…" : "Deny"}</button><button className="approve" disabled={approvalBusy} onClick={() => void approvePendingAction()}>{approvalBusy ? "Working…" : "Approve once"}</button></div>
         <small>Nothing happens unless you approve this exact action here. Each action requires a separate approval.</small>
       </section>}
       <section className="approved-folders">
