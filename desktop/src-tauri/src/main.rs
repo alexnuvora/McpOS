@@ -505,15 +505,20 @@ async fn poll_relay_once(connected: &Arc<AtomicBool>, screen_consent: &Arc<Atomi
             let _ = submit_relay_result(&command.id, serde_json::json!({}), Some("Isolated browser consent is switched off on this Windows computer.".to_string())).await;
             return;
         }
-        let mut pending = pending_action.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        if pending.is_none() {
-            *pending = Some(command);
-            drop(pending);
-            show_main_window(app);
-        } else {
-            let command_id = command.id.clone();
-            drop(pending);
+        let command_id = command.id.clone();
+        let already_pending = {
+            let mut pending = pending_action.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            if pending.is_none() {
+                *pending = Some(command);
+                false
+            } else {
+                true
+            }
+        };
+        if already_pending {
             let _ = submit_relay_result(&command_id, serde_json::json!({}), Some("Another local approval is already pending.".to_string())).await;
+        } else {
+            show_main_window(app);
         }
         return;
     }
