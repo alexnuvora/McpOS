@@ -55,7 +55,7 @@ Restart Claude Desktop after saving the configuration. Never commit this file or
 - `mcpos_request_desktop_status` — queue a read-only status request to an online Windows companion.
 - `mcpos_get_command_status` — retrieve the result of that request.
 
-The desktop companion polls the authenticated Supabase command queue over outbound HTTPS. No inbound port or router configuration is needed. Only the typed `desktop.status` command is implemented in this first relay increment; arbitrary commands are not accepted.
+The desktop companion polls the authenticated Supabase command queue over outbound HTTPS every 10 seconds. No inbound port or router configuration is needed. This first release favours a low-cost polling baseline; it is not yet a low-latency streaming session. Only the typed `desktop.status` command is implemented in this first relay increment; arbitrary commands are not accepted.
 
 ## ChatGPT
 
