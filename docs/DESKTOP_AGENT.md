@@ -8,16 +8,16 @@ McpOS is a Windows-first desktop agent platform with three cooperating component
 2. **Gateway** — the web-hosted identity, MCP and relay service. It authenticates AI clients and paired devices, authorises individual tool calls, routes requests to the correct online device and records audit events.
 3. **Control Centre** — the Next.js web application for account management, device pairing, permissions, active sessions, audit history and integrations.
 
-The desktop companion makes an outbound authenticated connection to the gateway. No public inbound port or direct internet exposure of the user's PC is required.
+The desktop companion makes outbound authenticated HTTPS polling requests to the Supabase command queue and posts results back. No public inbound port or direct internet exposure of the user's PC is required. A persistent WebSocket relay is not yet implemented.
 
 ## Request flow
 
 1. The user installs the signed desktop companion and signs in or pairs it using a short-lived one-time code.
-2. The companion creates a device identity and establishes an outbound encrypted connection to the gateway.
-3. An AI client authenticates separately to the MCP gateway.
-4. The gateway verifies the user, client, device, capability grant and session state for every tool call.
-5. The companion validates the request again locally, checks consent and approval requirements, then performs the narrow native action.
-6. The companion returns a structured result. The gateway records the action metadata and returns the result to the MCP client.
+2. The companion creates a device identity and polls the authenticated command queue over outbound HTTPS.
+3. An AI client authenticates separately to the MCP gateway using an individually revocable, hashed client credential.
+4. The gateway verifies the user, client, device, capability grant and session state for every tool call, then queues a typed command.
+5. The companion claims the queued command using its device credential, validates the typed command locally, and returns a structured result. Only the read-only desktop.status command is implemented today.
+6. The gateway returns the result to the MCP client. Screen observation and computer-control commands remain disabled pending local consent and approval flows.
 
 The gateway is a broker, not a remote desktop host. Screen pixels and local files should not be retained by default.
 
@@ -56,15 +56,13 @@ The native API choices must be validated with a Windows prototype before broad c
 
 ## Gateway and MCP
 
-The current `/api/mcp` endpoint is a single-bearer-token, stateless, read-only discovery foundation. It is not the final multi-user device relay.
+The `/api/mcp` endpoint uses individually revocable MCP client credentials and exposes device listing plus a read-only `desktop.status` request over a Supabase-backed outbound polling queue. Persistent streaming relay, OAuth discovery, screen capture and input control remain outstanding.
 
-Before device control is exposed, replace the shared token with:
-- User and AI-client identities.
-- Individually paired device identities.
-- Short-lived, revocable credentials.
-- Per-device and per-tool authorisation.
-- Device-initiated authenticated relay connections.
-- Request correlation, expiry, replay protection and rate limiting.
+Before screen or input control is exposed, complete:
+- OAuth 2.1 / MCP protected-resource metadata for clients that require OAuth.
+- Per-device and per-tool authorisation, including local consent state.
+- A visible local approval surface and immediate pause control.
+- Request correlation, expiry, replay protection and rate limiting for every command type.
 - Append-only audit records with secret and sensitive-content redaction.
 
 MCP tools should have narrow schemas and explicit descriptions of side effects. The gateway must never forward an unvalidated arbitrary command string to the desktop.
