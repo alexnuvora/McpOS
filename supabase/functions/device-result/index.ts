@@ -27,8 +27,8 @@ Deno.serve(async request => {
   }
   const errorMessage = typeof body.error_message === "string" ? body.error_message.slice(0, 500) : null;
   const result = body.result && typeof body.result === "object" && !Array.isArray(body.result) ? body.result : {};
-  if (new TextEncoder().encode(JSON.stringify(result)).length > 64_000) {
-    return reply({ error: "Command result is too large." }, 413);
+  if (new TextEncoder().encode(JSON.stringify(result)).length > 6_000_000) {
+    return reply({ error: "Command result is too large (6 MB limit)." }, 413);
   }
   const url = Deno.env.get("SUPABASE_URL");
   const key = getServiceKey();
