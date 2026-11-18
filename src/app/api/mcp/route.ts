@@ -45,7 +45,7 @@ function makeServer(client: McpClient) {
         authenticatedClient: client.client_name,
         mode: "outbound-device-relay",
         executionEnabled: false,
-        availableTools: ["mcpos_status", "mcpos_capabilities", "mcpos_list_devices", "mcpos_request_desktop_status", "mcpos_capture_screen", "mcpos_get_accessibility_snapshot", "mcpos_access_approved_files", "mcpos_get_command_status"],
+        availableTools: ["mcpos_status", "mcpos_capabilities", "mcpos_list_devices", "mcpos_request_desktop_status", "mcpos_capture_screen", "mcpos_get_accessibility_snapshot", "mcpos_access_approved_files", "mcpos_request_input_action", "mcpos_get_command_status"],
       }, null, 2) }],
     }),
   );
@@ -220,6 +220,33 @@ function makeServer(client: McpClient) {
       const [row] = await queued.json();
       await supabaseRest("mcpos_device_audit", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ user_id: client.user_id, device_id: device.id, event_type: "files." + operation + ".requested", outcome: "success", metadata: { command_id: row.id, client_name: client.client_name } }) });
       return { content: [{ type: "text", text: JSON.stringify({ commandId: row.id, operation, path: path ?? null, status: "queued", localApproval: "The Windows computer must be online and the path must be inside a folder selected in its local McpOS UI.", nextStep: "Call mcpos_get_command_status with this commandId." }, null, 2) }] };
+    },
+  );
+  server.registerTool(
+    "mcpos_request_input_action",
+    {
+      title: "Request an approved mouse or keyboard action",
+      description: "Queue one tightly bounded pointer click or text-entry action. The Windows computer displays the exact action and does nothing until the user approves it locally. Every action requires a fresh local approval.",
+      inputSchema: z.object({ action: z.enum(["pointer_click", "keyboard_type"]), x: z.number().int().min(0).max(32767).optional(), y: z.number().int().min(0).max(32767).optional(), button: z.enum(["left", "right"]).optional(), text: z.string().max(200).optional() }),
+    },
+    async ({ action, x, y, button, text }) => {
+      const command = action === "pointer_click" ? "input.pointer.click" : "input.keyboard.type";
+      const requiredScope = action === "pointer_click" ? "input.pointer" : "input.keyboard";
+      if (!client.scopes.includes(requiredScope)) return { content: [{ type: "text", text: `This MCP client does not have ${requiredScope} permission.` }], isError: true };
+      if (action === "pointer_click" && (x === undefined || y === undefined)) return { content: [{ type: "text", text: "Both x and y coordinates are required for a click." }], isError: true };
+      if (action === "keyboard_type" && (!text || !text.length || /[\\u0000-\\u001f\\u007f]/.test(text))) return { content: [{ type: "text", text: "Text must be 1–200 printable characters." }], isError: true };
+      const recentCutoff = new Date(Date.now() - 90_000).toISOString();
+      const devicesResponse = await supabaseRest(`mcpos_devices?select=id,device_name&user_id=eq.${client.user_id}&status=eq.online&last_seen_at=gte.${recentCutoff}&order=last_seen_at.desc&limit=1`);
+      if (!devicesResponse.ok) return { content: [{ type: "text", text: "Could not check device availability." }], isError: true };
+      const [device] = await devicesResponse.json();
+      if (!device) return { content: [{ type: "text", text: "No online Windows device is available." }], isError: true };
+      const payload = action === "pointer_click" ? { x, y, button: button ?? "left" } : { text };
+      const expiresAt = new Date(Date.now() + 60_000).toISOString();
+      const queued = await supabaseRest("mcpos_device_commands", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ user_id: client.user_id, device_id: device.id, command, payload, expires_at: expiresAt }) });
+      if (!queued.ok) return { content: [{ type: "text", text: "Could not queue the action. The database migration may not yet be deployed." }], isError: true };
+      const [row] = await queued.json();
+      await supabaseRest("mcpos_device_audit", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ user_id: client.user_id, device_id: device.id, event_type: command + ".requested", outcome: "success", metadata: { command_id: row.id, client_name: client.client_name } }) });
+      return { content: [{ type: "text", text: JSON.stringify({ commandId: row.id, action, status: "awaiting_local_approval", device: device.device_name, approval: "The exact action will appear in the Windows companion. It will not run until the user presses Approve once.", nextStep: "Call mcpos_get_command_status after the user approves or denies." }, null, 2) }] };
     },
   );
   server.registerTool(
