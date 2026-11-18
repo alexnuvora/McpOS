@@ -415,9 +415,10 @@ fn get_pending_action(pending: tauri::State<'_, PendingAction>) -> Option<serde_
 }
 
 #[tauri::command]
-async fn approve_pending_action(pending: tauri::State<'_, PendingAction>) -> Result<String, String> {
+async fn approve_pending_action(pending: tauri::State<'_, PendingAction>, app: tauri::AppHandle, bridge: tauri::State<'_, BrowserBridge>) -> Result<String, String> {
     let command = pending.0.lock().map_err(|_| "Approval state is unavailable.".to_string())?.clone().ok_or("There is no pending action to approve.")?;
-    let (result, error) = match execute_input_action(&command) { Ok(result) => (result, None), Err(message) => (serde_json::json!({}), Some(message)) };
+    let action_result = if command.command.starts_with("browser.") { execute_browser_action(&command, &app, &bridge) } else { execute_input_action(&command) };
+    let (result, error) = match action_result { Ok(result) => (result, None), Err(message) => (serde_json::json!({}), Some(message)) };
     let submission = submit_relay_result(&command.id, result, error.clone()).await;
     pending.0.lock().map_err(|_| "Approval state is unavailable.".to_string())?.take();
     submission?;
