@@ -288,7 +288,7 @@ function makeServer(client: McpClient) {
     },
     async ({ commandId }) => {
       const response = await supabaseRest(
-        `mcpos_device_commands?select=id,command,status,result,error_message,created_at,expires_at,completed_at&user_id=eq.${client.user_id}&mcp_client_id=eq.${client.id}&id=eq.${commandId}&limit=1`,
+        `mcpos_device_commands?select=id,device_id,command,status,result,error_message,created_at,expires_at,completed_at&user_id=eq.${client.user_id}&mcp_client_id=eq.${client.id}&id=eq.${commandId}&limit=1`,
       );
       if (!response.ok) return { content: [{ type: "text", text: "Could not retrieve the command status." }], isError: true };
       const [command] = await response.json();
