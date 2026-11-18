@@ -308,6 +308,7 @@ function makeServer(client: McpClient) {
         await supabaseRest(`mcpos_device_commands?id=eq.${commandId}&user_id=eq.${client.user_id}&status=eq.completed`, {
           method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ result: { consumed: true } }),
         });
+        await supabaseRest("mcpos_device_audit", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ user_id: client.user_id, device_id: command.device_id, event_type: "mcp.command.result_consumed", outcome: "success", metadata: { command_id: command.id, client_name: client.client_name } }) });
         return { content };
       }
       return { content: [{ type: "text", text: JSON.stringify(command, null, 2) }] };
