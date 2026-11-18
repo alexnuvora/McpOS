@@ -45,7 +45,7 @@ function makeServer(client: McpClient) {
         authenticatedClient: client.client_name,
         mode: "outbound-device-relay",
         executionEnabled: false,
-        availableTools: ["mcpos_status", "mcpos_capabilities", "mcpos_list_devices", "mcpos_request_desktop_status", "mcpos_capture_screen", "mcpos_get_command_status"],
+        availableTools: ["mcpos_status", "mcpos_capabilities", "mcpos_list_devices", "mcpos_request_desktop_status", "mcpos_capture_screen", "mcpos_get_accessibility_snapshot", "mcpos_get_command_status"],
       }, null, 2) }],
     }),
   );
@@ -59,8 +59,8 @@ function makeServer(client: McpClient) {
     },
     async ({ includePlanned }) => ({
       content: [{ type: "text", text: JSON.stringify({
-        enabled: ["per-client bearer authentication", "workspace status", "capability discovery", "paired-device listing", "outbound command polling", "read-only desktop status request"],
-        permissionGated: ["screen capture", "Windows accessibility", "mouse control", "keyboard input", "browser control", "approved-folder file access"],
+        enabled: ["per-client bearer authentication", "workspace status", "capability discovery", "paired-device listing", "outbound command polling", "read-only desktop status request", "consent-gated single screen capture", "read-only Windows top-level application discovery"],
+        permissionGated: ["local consent for screen capture and Windows accessibility", "mouse control", "keyboard input", "browser control", "approved-folder file access"],
         planned: includePlanned === false ? [] : [
           "consent and approval prompts",
           "screen capture and image return",
@@ -166,6 +166,35 @@ function makeServer(client: McpClient) {
         body: JSON.stringify({ user_id: client.user_id, device_id: device.id, event_type: "screen.capture.requested", outcome: "success", metadata: { command_id: command.id, client_name: client.client_name } }),
       });
       return { content: [{ type: "text", text: JSON.stringify({ commandId: command.id, device: device.device_name, status: "queued", consentRequired: "The Windows local consent switch must be ON.", nextStep: "Call mcpos_get_command_status with this commandId to retrieve the screenshot." }, null, 2) }] };
+    },
+  );
+  server.registerTool(
+    "mcpos_get_accessibility_snapshot",
+    {
+      title: "Understand open Windows applications",
+      description: "Read a bounded Windows UI Automation snapshot of top-level application windows. Requires the screen.accessibility scope on this AI client and the visible local application-understanding switch to be ON. Does not read control contents or send input.",
+      inputSchema: z.object({ deviceId: z.string().uuid().optional() }),
+    },
+    async ({ deviceId }) => {
+      if (!client.scopes.includes("screen.accessibility")) return { content: [{ type: "text", text: "This MCP client does not have screen.accessibility permission." }], isError: true };
+      const filter = deviceId ? `&id=eq.${deviceId}` : "";
+      const recentCutoff = new Date(Date.now() - 90_000).toISOString();
+      const devicesResponse = await supabaseRest(`mcpos_devices?select=id,device_name,status,last_seen_at&user_id=eq.${client.user_id}&status=eq.online&last_seen_at=gte.${recentCutoff}${filter}&order=last_seen_at.desc&limit=1`);
+      if (!devicesResponse.ok) return { content: [{ type: "text", text: "Could not check device availability." }], isError: true };
+      const [device] = await devicesResponse.json();
+      if (!device) return { content: [{ type: "text", text: "No matching Windows device is currently online." }], isError: true };
+      const expiresAt = new Date(Date.now() + 45_000).toISOString();
+      const commandResponse = await supabaseRest("mcpos_device_commands", {
+        method: "POST", headers: { Prefer: "return=representation" },
+        body: JSON.stringify({ user_id: client.user_id, device_id: device.id, command: "desktop.accessibility", payload: { scope: "top_level_windows", max_items: 40 }, expires_at: expiresAt }),
+      });
+      if (!commandResponse.ok) return { content: [{ type: "text", text: "Could not queue the accessibility request. The database migration may not yet be deployed." }], isError: true };
+      const [command] = await commandResponse.json();
+      await supabaseRest("mcpos_device_audit", {
+        method: "POST", headers: { Prefer: "return=minimal" },
+        body: JSON.stringify({ user_id: client.user_id, device_id: device.id, event_type: "desktop.accessibility.requested", outcome: "success", metadata: { command_id: command.id, client_name: client.client_name } }),
+      });
+      return { content: [{ type: "text", text: JSON.stringify({ commandId: command.id, device: device.device_name, status: "queued", localConsentRequired: "The Windows application-understanding switch must be ON.", nextStep: "Call mcpos_get_command_status with this commandId to retrieve the snapshot." }, null, 2) }] };
     },
   );
   server.registerTool(
