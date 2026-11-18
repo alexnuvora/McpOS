@@ -275,6 +275,7 @@ fn execute_files_command(command: &RelayCommand, folders: &Arc<Mutex<Vec<PathBuf
     }
     (serde_json::json!({}), Some("Unsupported file operation.".to_string()))
 }
+#[derive(Deserialize)]
 struct RelayPollResponse {
     command: Option<RelayCommand>,
 }
