@@ -10,6 +10,7 @@ function App() {
   const [code, setCode] = useState("");
   const [status, setStatus] = useState<DeviceStatus>({ paired: false, connected: false, device_id: null });
   const [busy, setBusy] = useState(false);
+  const [resetBusy, setResetBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [screenConsent, setScreenConsent] = useState(false);
   const [accessibilityConsent, setAccessibilityConsent] = useState(false);
@@ -101,6 +102,23 @@ function App() {
     } catch { setError("Could not revoke folder access."); }
   }
 
+  async function resetPairing() {
+    if (resetBusy) return;
+    const confirmed = window.confirm("Reset this computer's local McpOS pairing? This removes its saved device credentials and turns off all local permissions. You will need to generate a fresh one-time pairing code in the dashboard.");
+    if (!confirmed) return;
+    setResetBusy(true); setError(""); setMessage("");
+    try {
+      await invoke("reset_device_pairing");
+      setStatus({ paired: false, connected: false, device_id: null });
+      setScreenConsent(false); setAccessibilityConsent(false); setBrowserConsent(false);
+      setApprovedFolders([]); setPendingAction(null);
+      setMessage("Local device identity cleared. Generate a fresh one-time code in the McpOS dashboard to pair this computer again.");
+    } catch (reason) {
+      setError(typeof reason === "string" ? reason : "Could not reset the local device pairing. Check Windows Credential Manager permissions and try again.");
+      await refreshStatus();
+    } finally { setResetBusy(false); }
+  }
+
   async function pair() {
     setBusy(true); setError(""); setMessage("");
     try {
@@ -137,6 +155,7 @@ function App() {
       <div className="panel-heading"><div><strong>Device connection</strong><small>Device ID: {status.device_id ?? "Registered"}</small></div><span className="tag">PAIRED</span></div>
       <div className="capability"><span className="symbol">✓</span><div><strong>Device identity</strong><small>Credential stored securely on this Windows computer.</small></div><span className="enabled">Paired</span></div>
       <div className="capability"><span className="symbol">↻</span><div><strong>Connection heartbeat</strong><small>The desktop companion sends a heartbeat every 30 seconds.</small></div><span className={status.connected ? "enabled" : "disabled"}>{status.connected ? "Connected" : "Offline"}</span></div>
+      <div className="pairing-recovery"><div><strong>Cannot reconnect this computer?</strong><small>If you revoked this device in the dashboard, clear its old local identity here and pair it again with a new one-time code. This also switches off local permissions and clears approved folders.</small></div><button className="reset-pairing" disabled={resetBusy} onClick={() => void resetPairing()}>{resetBusy ? "Resetting…" : "Reset pairing & re-pair"}</button></div>
       <div className="capability consent-capability"><span className="symbol">▧</span><div><strong>Screen capture consent</strong><small>This is a local Windows switch. It resets to off when McpOS restarts. Turn it off at any time to stop further captures.</small></div><button className={"consent-switch " + (screenConsent ? "is-on" : "")} role="switch" aria-checked={screenConsent} aria-label="Allow screen capture on this computer" onClick={() => void toggleScreenConsent(!screenConsent)}><span /></button></div>
       <div className="capability consent-capability"><span className="symbol">⌖</span><div><strong>Application understanding</strong><small>Read-only Windows UI Automation. Shares a limited list of top-level window names and process IDs, not control text or keystrokes. Local consent resets to off on restart.</small></div><button className={"consent-switch " + (accessibilityConsent ? "is-on" : "")} role="switch" aria-checked={accessibilityConsent} aria-label="Allow Windows accessibility inspection" onClick={() => void toggleAccessibilityConsent(!accessibilityConsent)}><span /></button></div>
       <div className="capability consent-capability"><span className="symbol">◎</span><div><strong>Isolated browser automation</strong><small>Uses a separate WebView2 profile with separate cookies and storage. Only HTTPS sites are allowed; every navigation, click and text-entry action requires local approval.</small></div><button className={"consent-switch " + (browserConsent ? "is-on" : "")} role="switch" aria-checked={browserConsent} aria-label="Allow isolated browser automation" onClick={() => void toggleBrowserConsent(!browserConsent)}><span /></button></div>
