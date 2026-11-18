@@ -293,12 +293,21 @@ function makeServer(client: McpClient) {
       if (!response.ok) return { content: [{ type: "text", text: "Could not retrieve the command status." }], isError: true };
       const [command] = await response.json();
       if (!command) return { content: [{ type: "text", text: "Command not found for this workspace." }], isError: true };
-      if (command.command === "screen.capture" && command.status === "completed" && typeof command.result?.image_base64 === "string") {
-        const { image_base64, ...metadata } = command.result;
-        return { content: [
-          { type: "text", text: JSON.stringify({ id: command.id, status: command.status, ...metadata }, null, 2) },
-          { type: "image", data: image_base64, mimeType: "image/jpeg" },
-        ] };
+      if (command.status === "completed" && command.result && command.result.consumed !== true) {
+        const result = command.result;
+        const content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [];
+        const { result: _discarded, ...metadata } = command;
+        if (command.command === "screen.capture" && typeof result.image_base64 === "string") {
+          const { image_base64, ...imageMetadata } = result;
+          content.push({ type: "text", text: JSON.stringify({ ...metadata, result: imageMetadata }, null, 2) });
+          content.push({ type: "image", data: image_base64, mimeType: "image/jpeg" });
+        } else {
+          content.push({ type: "text", text: JSON.stringify(command, null, 2) });
+        }
+        await supabaseRest(`mcpos_device_commands?id=eq.${commandId}&user_id=eq.${client.user_id}&status=eq.completed`, {
+          method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ result: { consumed: true } }),
+        });
+        return { content };
       }
       return { content: [{ type: "text", text: JSON.stringify(command, null, 2) }] };
     },
