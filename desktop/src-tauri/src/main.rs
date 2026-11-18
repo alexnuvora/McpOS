@@ -556,6 +556,10 @@ async fn approve_pending_action(pending: tauri::State<'_, PendingAction>, app: t
         pending.0.lock().map_err(|_| "Approval state is unavailable.".to_string())?.take();
         return Err("McpOS could not verify that this device and AI session are still authorised. The action was not executed.".to_string());
     }
+    if policy.0.lock().map(|p| p.paused || p.expires_at.map(|e| e <= now_epoch()).unwrap_or(false)).unwrap_or(true) {
+        pending.0.lock().map_err(|_| "Approval state is unavailable.".to_string())?.take();
+        return Err("Automation was paused or expired while authorisation was being checked. The action was not executed.".to_string());
+    }
     let action_result = if command.command.starts_with("browser.") && !browser_consent.0.load(Ordering::Relaxed) {
         Err("Isolated browser consent was switched off before approval.".to_string())
     } else if command.command.starts_with("browser.") {
@@ -606,8 +610,12 @@ async fn poll_relay_once(connected: &Arc<AtomicBool>, screen_consent: &Arc<Atomi
         }
         let auto = policy.lock().map(|p| policy_auto_approves(&p, &command.command)).unwrap_or(false);
         if auto {
-            let action = if !heartbeat().await || !authorize_pending_command(&command.id).await {
+            let authorised = heartbeat().await && authorize_pending_command(&command.id).await;
+            let still_allowed = policy.lock().map(|p| policy_auto_approves(&p, &command.command)).unwrap_or(false);
+            let action = if !authorised {
                 Err("Device or AI session is no longer authorised. Action blocked.".to_string())
+            } else if !still_allowed {
+                Err("Automation was paused or the session expired before execution. Action blocked.".to_string())
             } else if command.command.starts_with("browser.") {
                 execute_browser_action(&command, app, bridge)
             } else {
