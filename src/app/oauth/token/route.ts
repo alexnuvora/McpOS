@@ -70,6 +70,7 @@ export async function POST(request: NextRequest) {
         client_name: String(oauthClient.client_name).slice(0, 80),
         token_hash: hashOAuthToken(accessToken),
         token_expires_at: accessExpiresAt,
+        token_resource: resource,
         scopes,
       }),
     });
@@ -119,7 +120,7 @@ export async function POST(request: NextRequest) {
   const refreshExpiresAt = new Date(Date.now() + 30 * 24 * 60 * 60_000).toISOString();
   const updated = await supabaseRest(`mcpos_mcp_clients?id=eq.${stored.mcp_client_id}&revoked_at=is.null`, {
     method: "PATCH", headers: { Prefer: "return=minimal" },
-    body: JSON.stringify({ token_hash: hashOAuthToken(nextAccessToken), token_expires_at: accessExpiresAt, last_used_at: new Date().toISOString() }),
+    body: JSON.stringify({ token_hash: hashOAuthToken(nextAccessToken), token_expires_at: accessExpiresAt, token_resource: resource, last_used_at: new Date().toISOString() }),
   });
   if (!updated.ok) return oauthError("server_error", "Could not rotate the access token.", 503);
   const inserted = await supabaseRest("mcpos_oauth_refresh_tokens", {
