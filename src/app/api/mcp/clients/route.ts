@@ -17,12 +17,18 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   const auth = await getDeviceAccount(request);
   if ("response" in auth) return auth.response;
-  let body: { client_name?: unknown };
+  let body: { client_name?: unknown; scopes?: unknown };
   try { body = await request.json(); } catch { return NextResponse.json({ error: "Invalid request body." }, { status: 400 }); }
   const clientName = typeof body.client_name === "string" ? body.client_name.trim() : "";
   if (clientName.length < 1 || clientName.length > 80) {
     return NextResponse.json({ error: "Client name must be between 1 and 80 characters." }, { status: 400 });
   }
+
+  const requestedScopes = Array.isArray(body.scopes) ? body.scopes.filter((scope): scope is string => typeof scope === "string") : [];
+  if (requestedScopes.some(scope => scope !== "screen.capture")) {
+    return NextResponse.json({ error: "Unsupported MCP scope requested." }, { status: 400 });
+  }
+  const scopes = ["workspace.read", "desktop.status", ...new Set(requestedScopes)];
 
   const token = "mcpos_" + randomBytes(32).toString("base64url");
   const tokenHash = createHash("sha256").update(token).digest("hex");
@@ -33,7 +39,7 @@ export async function POST(request: NextRequest) {
       user_id: auth.account.userId,
       client_name: clientName,
       token_hash: tokenHash,
-      scopes: ["workspace.read", "desktop.status"],
+      scopes,
     }),
   });
   if (!response.ok) {
