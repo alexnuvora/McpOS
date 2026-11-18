@@ -30,6 +30,7 @@ const capabilities = [
 export default function Home() {
   const [auth, setAuth] = useState<AuthStatus>({ authenticated: false, user: null });
   const [devices, setDevices] = useState<Device[]>([]);
+  const [clientCount, setClientCount] = useState(0);
   const [deviceName, setDeviceName] = useState("Windows PC");
   const [pairing, setPairing] = useState<PairingCode | null>(null);
   const [busy, setBusy] = useState(false);
@@ -49,8 +50,14 @@ export default function Home() {
       const response = await fetch("/api/auth/status", { cache: "no-store" });
       const data = await response.json() as AuthStatus;
       setAuth(data);
-      if (data.authenticated) await loadDevices();
-      else setDevices([]);
+      if (data.authenticated) {
+        await loadDevices();
+        const clientsResponse = await fetch("/api/mcp/clients", { cache: "no-store" });
+        if (clientsResponse.ok) {
+          const clientData = await clientsResponse.json() as { clients: Array<{ revoked_at: string | null }> };
+          setClientCount(clientData.clients.filter(client => !client.revoked_at).length);
+        }
+      } else { setDevices([]); setClientCount(0); }
     } catch {
       setMessage("Could not reach the McpOS account service.");
     } finally {
@@ -131,7 +138,7 @@ export default function Home() {
         <div className="mb-8 flex flex-col justify-between gap-4 sm:flex-row sm:items-end"><div><div className="mb-2 flex items-center gap-2 text-xs text-indigo-300"><CircleDot size={13}/>YOUR AI DESKTOP CONTROL CENTRE</div><h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">Your AI, at your desktop.</h1><p className="mt-2 max-w-2xl text-sm leading-6 text-slate-400">Connect AI to your Windows desktop, apps, browser and approved files — with you in control.</p></div><a href="#devices" className="flex items-center gap-2 self-start rounded-lg bg-indigo-500 px-4 py-2.5 text-sm font-medium text-white hover:bg-indigo-400"><Plus size={15}/>Pair a device</a></div>
 
         <div className="mb-8 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-          {[[ "Paired devices", String(activeDevices), "Registered Windows companions", Monitor ],[ "Online devices", String(onlineDevices), "Heartbeat seen in the last 90 seconds", Activity ],[ "AI clients", "0", "Remote MCP relay not enabled yet", Braces ],[ "Enabled capabilities", "0", "All desktop permissions default off", ShieldCheck ]].map(([name,value,note,Icon])=>{const I=Icon as typeof Mail;return <div className="panel p-4" key={String(name)}><div className="flex items-center justify-between text-xs text-slate-400"><span>{String(name)}</span><I size={16}/></div><div className="mt-3 text-2xl font-semibold">{String(value)}</div><div className="mt-1 text-[11px] text-slate-500">{String(note)}</div></div>})}
+          {[[ "Paired devices", String(activeDevices), "Registered Windows companions", Monitor ],[ "Online devices", String(onlineDevices), "Heartbeat seen in the last 90 seconds", Activity ],[ "AI clients", String(clientCount), "Active remote MCP credentials", Braces ],[ "Enabled capabilities", "0", "All desktop permissions default off", ShieldCheck ]].map(([name,value,note,Icon])=>{const I=Icon as typeof Mail;return <div className="panel p-4" key={String(name)}><div className="flex items-center justify-between text-xs text-slate-400"><span>{String(name)}</span><I size={16}/></div><div className="mt-3 text-2xl font-semibold">{String(value)}</div><div className="mt-1 text-[11px] text-slate-500">{String(note)}</div></div>})}
         </div>
 
         <section id="devices" className="panel mb-8 p-4 sm:p-5">
