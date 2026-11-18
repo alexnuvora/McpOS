@@ -279,7 +279,7 @@ fn start_browser_bridge() -> Result<BrowserBridge, String> {
                 ("Access-Control-Allow-Private-Network", "true"),
                 ("Cache-Control", "no-store"),
             ];
-            for (name, value) in headers { if let Ok(header) = tiny_http::Header::from_bytes(name, value) { response.add_header(header); } }
+            for (name, value) in headers { if let Ok(header) = tiny_http::Header::from_bytes(name.as_bytes(), value.as_bytes()) { response.add_header(header); } }
             if method == "OPTIONS" { let _ = request.respond(response); continue; }
             if method != "POST" || !path.starts_with("/snapshot/") {
                 let _ = request.respond(tiny_http::Response::empty(tiny_http::StatusCode(404)));
@@ -300,18 +300,23 @@ fn start_browser_bridge() -> Result<BrowserBridge, String> {
     Ok(BrowserBridge { port, pending })
 }
 
+fn browser_url_allowed(url: &url::Url) -> bool {
+    if url.scheme() != "https" || url.host_str().is_none() || !url.username().is_empty() || url.password().is_some() { return false; }
+    let host = url.host_str().unwrap_or_default();
+    if host.eq_ignore_ascii_case("localhost") || host.ends_with(".local") { return false; }
+    if let Ok(address) = host.parse::<std::net::IpAddr>() {
+        let is_private = match address {
+            std::net::IpAddr::V4(value) => value.is_loopback() || value.is_private() || value.is_link_local() || value.is_broadcast() || value.is_unspecified(),
+            std::net::IpAddr::V6(value) => value.is_loopback() || value.is_unspecified() || (value.segments()[0] & 0xfe00) == 0xfc00 || (value.segments()[0] & 0xffc0) == 0xfe80,
+        };
+        if is_private { return false; }
+    }
+    true
+}
 fn open_isolated_browser(app: &tauri::AppHandle, raw_url: &str) -> Result<String, String> {
     let url = url::Url::parse(raw_url).map_err(|_| "The browser URL is invalid.".to_string())?;
-    if url.scheme() != "https" || url.host_str().is_none() || !url.username().is_empty() || url.password().is_some() {
-        return Err("The isolated browser only opens HTTPS URLs without embedded credentials.".to_string());
-    }
-    if let Some(host) = url.host_str() {
-        if host.eq_ignore_ascii_case("localhost") || host.ends_with(".local") { return Err("Local and .local network hosts are blocked in the isolated browser.".to_string()); }
-        if let Ok(address) = host.parse::<std::net::IpAddr>() {
-            const is_private = match address { std::net::IpAddr::V4(value) => value.is_loopback() || value.is_private() || value.is_link_local(), std::net::IpAddr::V6(value) => value.is_loopback() || (value.segments()[0] & 0xfe00) == 0xfc00 || value.is_unicast_link_local() };
-            if is_private { return Err("Private and loopback IP addresses are blocked in the isolated browser.".to_string()); }
-        }
-    }
+    if !browser_url_allowed(&url) { return Err("The isolated browser only permits public HTTPS sites without embedded credentials.".to_string()); }
+
     if let Some(window) = app.get_webview_window("mcpos-isolated-browser") {
         window.navigate(url.clone()).map_err(|_| "Could not navigate the isolated browser.".to_string())?;
         let _ = window.show();
@@ -324,7 +329,7 @@ fn open_isolated_browser(app: &tauri::AppHandle, raw_url: &str) -> Result<String
     WebviewWindowBuilder::new(app, "mcpos-isolated-browser", WebviewUrl::External(url))
         .title("McpOS Isolated Browser")
         .data_directory(profile)
-        .on_navigation(|next_url| next_url.scheme() == "https")
+        .on_navigation(browser_url_allowed)
         .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny)
         .build().map_err(|_| "Could not create the isolated browser window.".to_string())?;
     Ok("Opened the URL in a separate browser profile with isolated cookies and storage.".to_string())
@@ -341,7 +346,13 @@ fn browser_eval_and_collect(app: &tauri::AppHandle, bridge: &BrowserBridge, expr
         bridge.pending.lock().ok().map(|mut map| map.remove(&nonce));
         return Err("Could not execute the browser operation.".to_string());
     }
-    let body = receiver.recv_timeout(Duration::from_secs(5)).map_err(|_| "The isolated browser did not return a result. The page may block local bridge requests.".to_string())?;
+    let body = match receiver.recv_timeout(Duration::from_secs(5)) {
+        Ok(body) => body,
+        Err(_) => {
+            bridge.pending.lock().ok().map(|mut map| map.remove(&nonce));
+            return Err("The isolated browser did not return a result. The page may block local bridge requests.".to_string());
+        }
+    };
     serde_json::from_str(&body).map_err(|_| "The isolated browser returned an invalid result.".to_string())
 }
 
