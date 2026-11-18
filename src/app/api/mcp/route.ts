@@ -157,7 +157,7 @@ function makeServer(client: McpClient) {
       const expiresAt = new Date(Date.now() + 45_000).toISOString();
       const commandResponse = await supabaseRest("mcpos_device_commands", {
         method: "POST", headers: { Prefer: "return=representation" },
-        body: JSON.stringify({ user_id: client.user_id, device_id: device.id, command: "screen.capture", payload: { display: "primary", max_bytes: 4_000_000 }, expires_at: expiresAt }),
+        body: JSON.stringify({ user_id: client.user_id, mcp_client_id: client.id, device_id: device.id, command: "screen.capture", payload: { display: "primary", max_bytes: 4_000_000 }, expires_at: expiresAt }),
       });
       if (!commandResponse.ok) return { content: [{ type: "text", text: "Could not queue the screen-capture request. The database migration may not yet be deployed." }], isError: true };
       const [command] = await commandResponse.json();
@@ -186,7 +186,7 @@ function makeServer(client: McpClient) {
       const expiresAt = new Date(Date.now() + 45_000).toISOString();
       const commandResponse = await supabaseRest("mcpos_device_commands", {
         method: "POST", headers: { Prefer: "return=representation" },
-        body: JSON.stringify({ user_id: client.user_id, device_id: device.id, command: "desktop.accessibility", payload: { scope: "top_level_windows", max_items: 40 }, expires_at: expiresAt }),
+        body: JSON.stringify({ user_id: client.user_id, mcp_client_id: client.id, device_id: device.id, command: "desktop.accessibility", payload: { scope: "top_level_windows", max_items: 40 }, expires_at: expiresAt }),
       });
       if (!commandResponse.ok) return { content: [{ type: "text", text: "Could not queue the accessibility request. The database migration may not yet be deployed." }], isError: true };
       const [command] = await commandResponse.json();
@@ -215,7 +215,7 @@ function makeServer(client: McpClient) {
       const command = operation === "read" ? "files.read" : "files.list";
       const payload = operation === "list_folders" ? {} : { path };
       const expiresAt = new Date(Date.now() + 60_000).toISOString();
-      const queued = await supabaseRest("mcpos_device_commands", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ user_id: client.user_id, device_id: device.id, command, payload, expires_at: expiresAt }) });
+      const queued = await supabaseRest("mcpos_device_commands", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ user_id: client.user_id, mcp_client_id: client.id, device_id: device.id, command, payload, expires_at: expiresAt }) });
       if (!queued.ok) return { content: [{ type: "text", text: "Could not queue the file request. The database migration may not yet be deployed." }], isError: true };
       const [row] = await queued.json();
       await supabaseRest("mcpos_device_audit", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ user_id: client.user_id, device_id: device.id, event_type: "files." + operation + ".requested", outcome: "success", metadata: { command_id: row.id, client_name: client.client_name } }) });
@@ -242,7 +242,7 @@ function makeServer(client: McpClient) {
       if (!device) return { content: [{ type: "text", text: "No online Windows device is available." }], isError: true };
       const payload = action === "pointer_click" ? { x, y, button: button ?? "left" } : { text };
       const expiresAt = new Date(Date.now() + 60_000).toISOString();
-      const queued = await supabaseRest("mcpos_device_commands", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ user_id: client.user_id, device_id: device.id, command, payload, expires_at: expiresAt }) });
+      const queued = await supabaseRest("mcpos_device_commands", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ user_id: client.user_id, mcp_client_id: client.id, device_id: device.id, command, payload, expires_at: expiresAt }) });
       if (!queued.ok) return { content: [{ type: "text", text: "Could not queue the action. The database migration may not yet be deployed." }], isError: true };
       const [row] = await queued.json();
       await supabaseRest("mcpos_device_audit", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ user_id: client.user_id, device_id: device.id, event_type: command + ".requested", outcome: "success", metadata: { command_id: row.id, client_name: client.client_name } }) });
@@ -273,7 +273,7 @@ function makeServer(client: McpClient) {
       const command = "browser." + action;
       const payload = action === "open" ? { url } : action === "click" ? { selector } : action === "type" ? { selector, text } : {};
       const expiresAt = new Date(Date.now() + 60_000).toISOString();
-      const queued = await supabaseRest("mcpos_device_commands", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ user_id: client.user_id, device_id: device.id, command, payload, expires_at: expiresAt }) });
+      const queued = await supabaseRest("mcpos_device_commands", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ user_id: client.user_id, mcp_client_id: client.id, device_id: device.id, command, payload, expires_at: expiresAt }) });
       if (!queued.ok) return { content: [{ type: "text", text: "Could not queue the browser request. The database migration may not yet be deployed." }], isError: true };
       const [row] = await queued.json();
       await supabaseRest("mcpos_device_audit", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ user_id: client.user_id, device_id: device.id, event_type: command + ".requested", outcome: "success", metadata: { command_id: row.id, client_name: client.client_name } }) });
