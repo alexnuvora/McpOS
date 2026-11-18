@@ -9,6 +9,7 @@ type Client = { id: string; client_name: string; scopes: string[]; created_at: s
 export default function IntegrationsPage() {
   const [clients, setClients] = useState<Client[]>([]);
   const [name, setName] = useState("Claude Desktop");
+  const [allowScreenCapture, setAllowScreenCapture] = useState(false);
   const [token, setToken] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -34,7 +35,7 @@ export default function IntegrationsPage() {
       const response = await fetch("/api/mcp/clients", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ client_name: name }),
+        body: JSON.stringify({ client_name: name, scopes: allowScreenCapture ? ["screen.capture"] : [] }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error ?? "Could not create MCP client.");
@@ -79,10 +80,10 @@ export default function IntegrationsPage() {
 
       <section className="mb-6 rounded-2xl border border-[#293345] bg-[#111824] p-5">
         <div className="mb-4 flex items-center gap-2 text-sm font-semibold"><ShieldCheck size={17} className="text-emerald-300"/> Permission-first access</div>
-        <p className="text-sm leading-6 text-slate-400">New client keys can read paired-device status and request a non-sensitive desktop status snapshot. Screen capture, keyboard, mouse, browser and file capabilities are not exposed by this release.</p>
+        <p className="text-sm leading-6 text-slate-400">Every key can read paired-device status. Screen capture is an optional additional scope and still requires the visible local consent switch to be ON in the Windows companion. Mouse, keyboard, browser and file capabilities remain unavailable until their separate approval workflows are implemented.</p>
         <div className="mt-4 grid gap-2 text-xs text-slate-400 sm:grid-cols-2">
-          <div className="rounded-lg bg-[#0c121c] p-3">Granted: workspace.read, desktop.status</div>
-          <div className="rounded-lg bg-[#0c121c] p-3">Not granted: screen, input, browser, files</div>
+          <div className="rounded-lg bg-[#0c121c] p-3">Default: workspace.read, desktop.status</div>
+          <div className="rounded-lg bg-[#0c121c] p-3">Optional: screen.capture (local consent required)</div>
         </div>
       </section>
 
@@ -91,6 +92,7 @@ export default function IntegrationsPage() {
         <p className="mt-1 text-xs text-slate-500">Use one key per AI client so you can revoke access independently.</p>
         <div className="mt-4 flex flex-col gap-3 sm:flex-row">
           <input value={name} onChange={event=>setName(event.target.value)} maxLength={80} placeholder="Client name" className="min-w-0 flex-1 rounded-lg border border-[#30394a] bg-[#0c121c] px-3 py-2.5 text-sm outline-none focus:border-indigo-400"/>
+          <label className="flex items-center gap-2 rounded-lg border border-[#30394a] px-3 py-2 text-xs text-slate-300"><input type="checkbox" checked={allowScreenCapture} onChange={event=>setAllowScreenCapture(event.target.checked)} className="accent-indigo-500"/> Allow screen capture for this key</label>
           <button disabled={busy||!name.trim()} onClick={()=>void createClient()} className="inline-flex items-center justify-center gap-2 rounded-lg bg-indigo-500 px-4 py-2.5 text-sm font-semibold text-white hover:bg-indigo-400 disabled:opacity-50"><Plus size={15}/> Generate key</button>
         </div>
         {token&&<div className="mt-4 rounded-xl border border-emerald-400/30 bg-emerald-400/5 p-4">
