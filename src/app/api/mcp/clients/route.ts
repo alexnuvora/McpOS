@@ -25,7 +25,7 @@ export async function POST(request: NextRequest) {
   }
 
   const requestedScopes = Array.isArray(body.scopes) ? body.scopes.filter((scope): scope is string => typeof scope === "string") : [];
-  if (requestedScopes.some(scope => !["screen.capture", "screen.accessibility", "files.read", "input.pointer", "input.keyboard"].includes(scope))) {
+  if (requestedScopes.some(scope => !["screen.capture", "screen.accessibility", "files.read", "input.pointer", "input.keyboard", "browser.control"].includes(scope))) {
     return NextResponse.json({ error: "Unsupported MCP scope requested." }, { status: 400 });
   }
   const scopes = ["workspace.read", "desktop.status", ...new Set(requestedScopes)];
