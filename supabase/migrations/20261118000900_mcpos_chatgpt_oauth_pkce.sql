@@ -3,6 +3,8 @@
 
 alter table public.mcpos_mcp_clients
   add column if not exists token_expires_at timestamptz;
+alter table public.mcpos_mcp_clients
+  add column if not exists token_resource text;
 
 create table if not exists public.mcpos_oauth_clients (
   client_id text primary key,
