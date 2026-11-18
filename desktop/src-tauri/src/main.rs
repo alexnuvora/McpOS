@@ -205,7 +205,6 @@ struct RelayCommand {
     payload: serde_json::Value,
 }
 
-#[derive(Deserialize)]
 #[tauri::command]
 fn get_approved_folders(folders: tauri::State<'_, ApprovedFolders>) -> Vec<String> {
     folders.0.lock().map(|items| items.iter().map(|path| path.display().to_string()).collect()).unwrap_or_default()
