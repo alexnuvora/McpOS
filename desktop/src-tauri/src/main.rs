@@ -620,14 +620,13 @@ async fn poll_relay_once(connected: &Arc<AtomicBool>, screen_consent: &Arc<Atomi
             None,
         ),
         "screen.capture" => {
-            let allowed_by_policy = policy.lock().map(|p| policy_auto_approves(&p, "screen.capture")).unwrap_or(false);
-            let policy_manual = policy.lock().map(|p| p.mode == "manual" || p.paused || p.expires_at.map(|e| e <= now_epoch()).unwrap_or(true)).unwrap_or(true);
-            if policy_manual && !screen_consent.load(Ordering::Relaxed) {
-                (serde_json::json!({}), Some("Screen capture requires local consent or an active auto-approval session.".into()))
+            let (paused_or_expired, allowed_by_policy) = policy.lock().map(|p| {
+                (p.paused || p.expires_at.map(|e| e <= now_epoch()).unwrap_or(p.mode != "manual"), policy_auto_approves(&p, "screen.capture"))
+            }).unwrap_or((true, false));
+            if paused_or_expired {
+                (serde_json::json!({}), Some("Automation is paused or the local session has expired.".into()))
             } else if !screen_consent.load(Ordering::Relaxed) && !allowed_by_policy {
-                (serde_json::json!({}), Some("Screen capture is not permitted by the local automation policy.".into()))
-            } else if !screen_consent.load(Ordering::Relaxed) {
-                (serde_json::json!({}), Some("Screen capture consent is switched off on this Windows computer.".to_string()))
+                (serde_json::json!({}), Some("Screen capture requires its local consent switch or an active session that explicitly allows captures.".into()))
             } else {
                 match capture_screen_jpeg() {
                     Ok((image_base64, width, height)) => (
