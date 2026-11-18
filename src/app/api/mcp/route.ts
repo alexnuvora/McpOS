@@ -296,7 +296,8 @@ function makeServer(client: McpClient) {
       if (command.status === "completed" && command.result && command.result.consumed !== true) {
         const result = command.result;
         const content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [];
-        const { result: _discarded, ...metadata } = command;
+        const metadata = { ...command };
+        delete metadata.result;
         if (command.command === "screen.capture" && typeof result.image_base64 === "string") {
           const { image_base64, ...imageMetadata } = result;
           content.push({ type: "text", text: JSON.stringify({ ...metadata, result: imageMetadata }, null, 2) });
