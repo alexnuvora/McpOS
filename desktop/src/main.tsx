@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import "./style.css";
 
 type DeviceStatus = { paired: boolean; connected: boolean; device_id: string | null };
+type PendingAction = { id: string; command: string; payload: Record<string, unknown> };
 
 function App() {
   const [code, setCode] = useState("");
@@ -13,6 +14,7 @@ function App() {
   const [screenConsent, setScreenConsent] = useState(false);
   const [accessibilityConsent, setAccessibilityConsent] = useState(false);
   const [approvedFolders, setApprovedFolders] = useState<string[]>([]);
+  const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
   const [error, setError] = useState("");
 
   async function refreshStatus() {
@@ -28,7 +30,8 @@ function App() {
   useEffect(() => {
     const initial = window.setTimeout(() => void refreshStatus(), 0);
     const timer = window.setInterval(() => void refreshStatus(), 15000);
-    return () => { window.clearTimeout(initial); window.clearInterval(timer); };
+    const approvalTimer = window.setInterval(() => { void invoke<PendingAction | null>("get_pending_action").then(setPendingAction).catch(() => undefined); }, 1200);
+    return () => { window.clearTimeout(initial); window.clearInterval(timer); window.clearInterval(approvalTimer); };
   }, []);
 
   async function toggleScreenConsent(enabled: boolean) {
@@ -51,6 +54,18 @@ function App() {
     } catch {
       setError("Could not update the local Windows accessibility setting.");
     }
+  }
+
+  async function approvePendingAction() {
+    setError(""); setMessage("");
+    try { setMessage(await invoke<string>("approve_pending_action")); setPendingAction(null); }
+    catch (reason) { setError(typeof reason === "string" ? reason : "Could not execute the approved action."); setPendingAction(null); }
+  }
+
+  async function denyPendingAction() {
+    setError(""); setMessage("");
+    try { setMessage(await invoke<string>("deny_pending_action")); setPendingAction(null); }
+    catch (reason) { setError(typeof reason === "string" ? reason : "Could not deny the pending action."); }
   }
 
   async function addApprovedFolder() {
@@ -109,6 +124,13 @@ function App() {
       <div className="capability consent-capability"><span className="symbol">▧</span><div><strong>Screen capture consent</strong><small>This is a local Windows switch. It resets to off when McpOS restarts. Turn it off at any time to stop further captures.</small></div><button className={"consent-switch " + (screenConsent ? "is-on" : "")} role="switch" aria-checked={screenConsent} aria-label="Allow screen capture on this computer" onClick={() => void toggleScreenConsent(!screenConsent)}><span /></button></div>
       <div className="capability consent-capability"><span className="symbol">⌖</span><div><strong>Application understanding</strong><small>Read-only Windows UI Automation. Shares a limited list of top-level window names and process IDs, not control text or keystrokes. Local consent resets to off on restart.</small></div><button className={"consent-switch " + (accessibilityConsent ? "is-on" : "")} role="switch" aria-checked={accessibilityConsent} aria-label="Allow Windows accessibility inspection" onClick={() => void toggleAccessibilityConsent(!accessibilityConsent)}><span /></button></div>
       <div className="capability"><span className="symbol">⌘</span><div><strong>Mouse & keyboard</strong><small>No remote input actions are enabled.</small></div><span className="disabled">Not enabled</span></div>
+      {pendingAction && <section className="approval-card">
+        <div className="approval-eyebrow">LOCAL APPROVAL REQUIRED</div>
+        <strong>{pendingAction.command === "input.pointer.click" ? "AI wants to click your screen" : "AI wants to type on your computer"}</strong>
+        {pendingAction.command === "input.pointer.click" ? <p>Button: {String(pendingAction.payload.button ?? "left")} · Position: {String(pendingAction.payload.x)}, {String(pendingAction.payload.y)}</p> : <p className="approval-text">Text to enter: “{String(pendingAction.payload.text ?? "")}”</p>}
+        <div className="approval-actions"><button className="deny" onClick={() => void denyPendingAction()}>Deny</button><button className="approve" onClick={() => void approvePendingAction()}>Approve once</button></div>
+        <small>Nothing happens unless you approve this exact action here. Each action requires a separate approval.</small>
+      </section>}
       <section className="approved-folders">
         <div className="folder-heading"><div><strong>Approved folders</strong><small>Only folders you select here are eligible for read-only AI access. This approval list resets when McpOS restarts.</small></div><button onClick={() => void addApprovedFolder()}>Choose folder</button></div>
         {approvedFolders.length === 0 ? <p className="folder-empty">No folders approved.</p> : approvedFolders.map(path => <div className="folder-row" key={path}><span title={path}>{path}</span><button onClick={() => void removeApprovedFolder(path)}>Remove</button></div>)}
