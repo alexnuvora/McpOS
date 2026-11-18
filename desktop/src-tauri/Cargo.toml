@@ -19,7 +19,7 @@ base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
 xcap = "0.9.10"
 
-uiautomation = { version = "0.25.1", default-features = false }
+uiautomation = { version = "0.25.1", default-features = false, features = ["control", "input"] }
 rfd = "0.15"
 
 enigo = "0.6.1"
