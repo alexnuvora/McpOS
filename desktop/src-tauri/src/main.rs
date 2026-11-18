@@ -97,6 +97,92 @@ async fn pair_device(code: String, connected: tauri::State<'_, Arc<AtomicBool>>)
     Ok(paired.device_name)
 }
 
+
+#[derive(Deserialize)]
+struct RelayCommand {
+    id: String,
+    command: String,
+    payload: serde_json::Value,
+}
+
+#[derive(Deserialize)]
+struct RelayPollResponse {
+    command: Option<RelayCommand>,
+}
+
+async fn poll_relay_once(connected: &Arc<AtomicBool>) {
+    let Some(token) = stored_token() else { return };
+    let Some(api_key) = SUPABASE_ANON_KEY else { return };
+    if api_key.is_empty() { return; }
+
+    let client = reqwest::Client::new();
+    let response = match client
+        .post(format!("{SUPABASE_URL}/functions/v1/device-poll"))
+        .header("apikey", api_key)
+        .bearer_auth(&token)
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+    {
+        Ok(response) if response.status().is_success() => response,
+        _ => return,
+    };
+
+    let Ok(envelope) = response.json::<RelayPollResponse>().await else { return };
+    let Some(command) = envelope.command else { return };
+
+    let device_id = credential(DEVICE_ID_KEY).ok().and_then(|entry| entry.get_password().ok());
+    let (result, error_message) = match command.command.as_str() {
+        "desktop.status" => (
+            serde_json::json!({
+                "paired": true,
+                "connected": connected.load(Ordering::Relaxed),
+                "device_id": device_id,
+                "agent_version": env!("CARGO_PKG_VERSION"),
+                "supported_commands": ["desktop.status"],
+                "execution_enabled": false,
+                "permissions": {
+                    "screen.capture": false,
+                    "screen.accessibility": false,
+                    "input.pointer": false,
+                    "input.keyboard": false,
+                    "browser.control": false,
+                    "files.read": false,
+                    "files.write": false,
+                    "apps.launch": false
+                }
+            }),
+            None,
+        ),
+        _ => (serde_json::json!({}), Some("Unsupported desktop command.".to_string())),
+    };
+
+    let mut body = serde_json::json!({
+        "command_id": command.id,
+        "result": result
+    });
+    if let Some(message) = error_message {
+        body["error_message"] = serde_json::Value::String(message);
+    }
+
+    let _ = client
+        .post(format!("{SUPABASE_URL}/functions/v1/device-result"))
+        .header("apikey", api_key)
+        .bearer_auth(&token)
+        .json(&body)
+        .send()
+        .await;
+}
+
+fn start_relay_polling(connected: Arc<AtomicBool>) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            poll_relay_once(&connected).await;
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+    });
+}
+
 fn show_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
@@ -150,7 +236,8 @@ fn main() {
 
             let connection_state = Arc::new(AtomicBool::new(false));
             app.manage(connection_state.clone());
-            start_heartbeat(app.handle().clone(), connection_state);
+            start_heartbeat(app.handle().clone(), connection_state.clone());
+            start_relay_polling(connection_state);
             Ok(())
         })
         .on_window_event(|window, event| {
