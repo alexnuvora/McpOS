@@ -1,6 +1,7 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import { useState } from "react";
+import type { FormEvent } from "react";
 import Link from "next/link";
 import { ArrowLeft, CheckCircle2, Mail, ShieldCheck } from "lucide-react";
 import { createBrowserSupabaseClient } from "@/lib/supabase/client";
@@ -10,12 +11,6 @@ export default function LoginPage() {
   const [busy, setBusy] = useState(false);
   const [sent, setSent] = useState(false);
   const [error, setError] = useState("");
-
-  useEffect(() => {
-    const reason = new URLSearchParams(window.location.search).get("error");
-    if (reason === "not-authorized") setError("This email address is not authorised for the McpOS workspace. Ask the workspace owner to add it to the access list.");
-    else if (reason === "callback") setError("The sign-in link could not be verified. Request a fresh link and try again.");
-  }, []);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
