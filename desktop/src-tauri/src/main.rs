@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, io::Read, path::{Path, PathBuf}, sync::{mpsc::{sync_channel, SyncSender}, Arc, Mutex, atomic::{AtomicBool, Ordering}}, time::Duration};
 use xcap::{image::{codecs::jpeg::JpegEncoder, DynamicImage}, Monitor};
 use uiautomation::UIAutomation;
+use uuid::Uuid;
 use tauri::{webview::{DownloadEvent, WebviewWindowBuilder}, WebviewUrl};
 use tauri::{
     menu::{Menu, MenuItem},
@@ -355,7 +356,7 @@ fn open_isolated_browser(app: &tauri::AppHandle, raw_url: &str) -> Result<String
 fn browser_eval_and_collect(app: &tauri::AppHandle, bridge: &BrowserBridge, expression: &str) -> Result<serde_json::Value, String> {
     if bridge.port == 0 { return Err("The private browser bridge is unavailable on this computer.".to_string()); }
     let window = app.get_webview_window("mcpos-isolated-browser").ok_or("Open a page in the isolated browser first.")?;
-    let nonce = format!("{}-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos(), std::process::id());
+    let nonce = Uuid::new_v4().to_string();
     let (sender, receiver) = sync_channel(1);
     bridge.pending.lock().map_err(|_| "Browser bridge is unavailable.".to_string())?.insert(nonce.clone(), sender);
     let nonce_js = serde_json::to_string(&nonce).map_err(|_| "Could not prepare browser result collection.".to_string())?;
