@@ -79,7 +79,7 @@ export async function DELETE(request: NextRequest) {
     method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ revoked_at: revokedAt }),
   });
   if (!response.ok) return NextResponse.json({ error: "Could not revoke the MCP client." }, { status: 503 });
-  await supabaseRest(`mcpos_device_commands?mcp_client_id=eq.${body.client_id}&status=in.(queued,claimed)`, {
+  await supabaseRest(`mcpos_device_commands?user_id=eq.${auth.account.userId}&mcp_client_id=eq.${body.client_id}&status=in.(queued,claimed)`, {
     method: "PATCH", headers: { Prefer: "return=minimal" },
     body: JSON.stringify({ status: "denied", error_message: "AI client session revoked before execution.", completed_at: revokedAt }),
   });
