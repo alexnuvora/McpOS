@@ -36,15 +36,15 @@ The repository currently contains:
 
 The dashboard now includes paginated audit history and a revoke-all-AI-clients control. Command completion, denial and failure outcomes are recorded. This is an application audit trail, not a tamper-proof compliance log.
 
-**Still not implemented:** arbitrary shell/terminal execution, application launching, file writes/deletes, clipboard access, continuous screen recording, full accessibility-tree inspection and MCP OAuth. Browser operations may fail on websites whose Content Security Policy or browser network policy blocks the local result bridge. The current relay uses 10-second polling rather than a persistent low-latency stream.
+**Intentionally not exposed:** arbitrary shell/terminal execution, application launching, file writes/deletes, clipboard access, continuous screen recording and full accessibility-tree traversal. Browser operations may fail on websites whose Content Security Policy or browser network policy blocks the local result bridge. The current relay uses 10-second polling rather than a persistent low-latency stream. ChatGPT Enterprise authentication uses OAuth 2.1 authorization-code + PKCE, dynamic client registration, resource metadata, rotating refresh tokens and explicit user consent.
 
 ## Proposed technical direction
 
 - Windows-first desktop companion using **Tauri 2 + Rust** for the native shell and privileged OS boundary.
 - Native Windows UI Automation for accessible application controls; Windows Graphics Capture for screen capture; carefully scoped input simulation for mouse and keyboard.
 - Browser automation through a separately permissioned local browser adapter.
-- A device-initiated, mutually authenticated outbound connection to the gateway for remote MCP clients.
-- A local MCP adapter for compatible desktop MCP clients where supported.
+- A device-initiated, authenticated outbound HTTPS command relay to the gateway for remote MCP clients.
+- A stateless Streamable HTTP MCP endpoint for ChatGPT Enterprise and other compatible remote clients, with separate bearer credentials for Claude Desktop.
 - Per-device identity, short-lived credentials, per-tool grants, explicit approvals and append-only audit events.
 
 The native agent must expose narrow, typed actions rather than a generic unrestricted shell. Screen capture, input, files, browser and application access are separately permissioned capabilities.
@@ -95,7 +95,7 @@ Ensure the Email provider is enabled. The callback verifies the signed-in user's
 
 ## Remote MCP clients
 
-The endpoint is `https://mcpos-dashboard.netlify.app/api/mcp`. Create a separate client credential from the dashboard's **AI connections** page; credentials are hashed in storage and can be revoked independently. The first remote relay supports paired-device listing and a read-only `desktop.status` request. See [docs/MCP_CLIENT_SETUP.md](docs/MCP_CLIENT_SETUP.md) for Claude setup and ChatGPT plan limitations.
+The endpoint is `https://mcpos-dashboard.netlify.app/api/mcp`. ChatGPT Enterprise connects through OAuth 2.1 + PKCE and an explicit McpOS consent screen. Claude Desktop uses a separate bearer credential created from the dashboard's **AI connections** page; only SHA-256 hashes are stored and sessions can be revoked independently. See [docs/MCP_CLIENT_SETUP.md](docs/MCP_CLIENT_SETUP.md) for both connection guides.
 
 ## Delivery milestones
 
