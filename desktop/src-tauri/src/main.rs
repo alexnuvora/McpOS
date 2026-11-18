@@ -121,19 +121,7 @@ fn capture_screen_jpeg() -> Result<(String, u32, u32), String> {
 #[tauri::command]
 fn get_device_status(connected: tauri::State<'_, Arc<AtomicBool>>) -> DeviceStatus {
     let paired = stored_token().is_some();
-    if command.command == "input.pointer.click" || command.command == "input.keyboard.type" {
-        let mut pending = pending_action.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        if pending.is_none() {
-            *pending = Some(command);
-            drop(pending);
-            show_main_window(app);
-        } else {
-            let command_id = command.id.clone();
-            drop(pending);
-            let _ = submit_relay_result(&command_id, serde_json::json!({}), Some("Another local approval is already pending.".to_string())).await;
-        }
-        return;
-    }
+
     let device_id = credential(DEVICE_ID_KEY).ok().and_then(|entry| entry.get_password().ok());
     DeviceStatus { paired, connected: connected.load(Ordering::Relaxed), device_id }
 }
@@ -337,6 +325,20 @@ async fn poll_relay_once(connected: &Arc<AtomicBool>, screen_consent: &Arc<Atomi
 
     let Ok(envelope) = response.json::<RelayPollResponse>().await else { return };
     let Some(command) = envelope.command else { return };
+
+    if command.command == "input.pointer.click" || command.command == "input.keyboard.type" {
+        let mut pending = pending_action.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if pending.is_none() {
+            *pending = Some(command);
+            drop(pending);
+            show_main_window(app);
+        } else {
+            let command_id = command.id.clone();
+            drop(pending);
+            let _ = submit_relay_result(&command_id, serde_json::json!({}), Some("Another local approval is already pending.".to_string())).await;
+        }
+        return;
+    }
 
     let device_id = credential(DEVICE_ID_KEY).ok().and_then(|entry| entry.get_password().ok());
     let (result, error_message) = match command.command.as_str() {
