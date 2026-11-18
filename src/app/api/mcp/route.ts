@@ -28,6 +28,17 @@ async function authenticateClient(request: NextRequest): Promise<McpClient | nul
   return client;
 }
 
+function scopeError(scope: string) {
+  return {
+    content: [{ type: "text" as const, text: "This McpOS connection needs the " + scope + " permission. Reconnect and approve that permission to continue." }],
+    isError: true,
+    _meta: {
+      "mcp/www_authenticate": [
+        'Bearer resource_metadata="https://mcpos-dashboard.netlify.app/.well-known/oauth-protected-resource", error="insufficient_scope", error_description="Additional McpOS permission required: ' + scope + '."
+      ],
+    },
+  };
+}
 function makeServer(client: McpClient) {
   const server = new McpServer({ name: "mcpos-workspace", version: "0.2.0" });
 
@@ -85,7 +96,7 @@ function makeServer(client: McpClient) {
       inputSchema: z.object({}),
     },
     async () => {
-      if (!client.scopes.includes("workspace.read")) return { content: [{ type: "text", text: "This MCP client does not have workspace.read permission." }], isError: true };
+      if (!client.scopes.includes("workspace.read")) return scopeError("workspace.read");
       const response = await supabaseRest(
         `mcpos_devices?select=id,device_name,platform,status,last_seen_at,paired_at&user_id=eq.${client.user_id}&status=neq.revoked&order=paired_at.desc`,
       );
@@ -105,7 +116,7 @@ function makeServer(client: McpClient) {
       inputSchema: z.object({ deviceId: z.string().uuid().optional() }),
     },
     async ({ deviceId }) => {
-      if (!client.scopes.includes("desktop.status")) return { content: [{ type: "text", text: "This MCP client does not have desktop.status permission." }], isError: true };
+      if (!client.scopes.includes("desktop.status")) return scopeError("desktop.status");
       const filter = deviceId ? `&id=eq.${deviceId}` : "";
       const recentCutoff = new Date(Date.now() - 90_000).toISOString();
       const devicesResponse = await supabaseRest(
@@ -155,7 +166,7 @@ function makeServer(client: McpClient) {
       inputSchema: z.object({ deviceId: z.string().uuid().optional() }),
     },
     async ({ deviceId }) => {
-      if (!client.scopes.includes("screen.capture")) return { content: [{ type: "text", text: "This MCP client does not have screen.capture permission. Create a separately scoped key in the dashboard." }], isError: true };
+      if (!client.scopes.includes("screen.capture")) return scopeError("screen.capture");
       const filter = deviceId ? `&id=eq.${deviceId}` : "";
       const recentCutoff = new Date(Date.now() - 90_000).toISOString();
       const devicesResponse = await supabaseRest(`mcpos_devices?select=id,device_name,status,last_seen_at&user_id=eq.${client.user_id}&status=eq.online&last_seen_at=gte.${recentCutoff}${filter}&order=last_seen_at.desc&limit=1`);
@@ -186,7 +197,7 @@ function makeServer(client: McpClient) {
       inputSchema: z.object({ deviceId: z.string().uuid().optional() }),
     },
     async ({ deviceId }) => {
-      if (!client.scopes.includes("screen.accessibility")) return { content: [{ type: "text", text: "This MCP client does not have screen.accessibility permission." }], isError: true };
+      if (!client.scopes.includes("screen.accessibility")) return scopeError("screen.accessibility");
       const filter = deviceId ? `&id=eq.${deviceId}` : "";
       const recentCutoff = new Date(Date.now() - 90_000).toISOString();
       const devicesResponse = await supabaseRest(`mcpos_devices?select=id,device_name,status,last_seen_at&user_id=eq.${client.user_id}&status=eq.online&last_seen_at=gte.${recentCutoff}${filter}&order=last_seen_at.desc&limit=1`);
@@ -217,7 +228,7 @@ function makeServer(client: McpClient) {
       inputSchema: z.object({ operation: z.enum(["list_folders", "list", "read"]), path: z.string().max(2048).optional() }),
     },
     async ({ operation, path }) => {
-      if (!client.scopes.includes("files.read")) return { content: [{ type: "text", text: "This MCP client does not have files.read permission." }], isError: true };
+      if (!client.scopes.includes("files.read")) return scopeError("files.read");
       if (operation !== "list_folders" && !path?.trim()) return { content: [{ type: "text", text: "A path is required for this operation." }], isError: true };
       const recentCutoff = new Date(Date.now() - 90_000).toISOString();
       const devicesResponse = await supabaseRest(`mcpos_devices?select=id,device_name&user_id=eq.${client.user_id}&status=eq.online&last_seen_at=gte.${recentCutoff}&order=last_seen_at.desc&limit=1`);
@@ -246,7 +257,7 @@ function makeServer(client: McpClient) {
     async ({ action, x, y, button, text }) => {
       const command = action === "pointer_click" ? "input.pointer.click" : "input.keyboard.type";
       const requiredScope = action === "pointer_click" ? "input.pointer" : "input.keyboard";
-      if (!client.scopes.includes(requiredScope)) return { content: [{ type: "text", text: `This MCP client does not have ${requiredScope} permission.` }], isError: true };
+      if (!client.scopes.includes(requiredScope)) return scopeError(requiredScope);
       if (action === "pointer_click" && (x === undefined || y === undefined)) return { content: [{ type: "text", text: "Both x and y coordinates are required for a click." }], isError: true };
       if (action === "keyboard_type" && (!text || !text.length || /[\\u0000-\\u001f\\u007f]/.test(text))) return { content: [{ type: "text", text: "Text must be 1–200 printable characters." }], isError: true };
       const recentCutoff = new Date(Date.now() - 90_000).toISOString();
@@ -273,7 +284,7 @@ function makeServer(client: McpClient) {
       inputSchema: z.object({ action: z.enum(["open", "snapshot", "click", "type"]), url: z.string().max(2048).optional(), selector: z.string().max(256).optional(), text: z.string().max(200).optional() }),
     },
     async ({ action, url, selector, text }) => {
-      if (!client.scopes.includes("browser.control")) return { content: [{ type: "text", text: "This MCP client does not have browser.control permission." }], isError: true };
+      if (!client.scopes.includes("browser.control")) return scopeError("browser.control");
       if (action === "open") {
         if (!url) return { content: [{ type: "text", text: "A URL is required." }], isError: true };
         try { const parsed = new URL(url); if (parsed.protocol !== "https:" || !parsed.hostname || parsed.username || parsed.password || parsed.hostname === "localhost" || parsed.hostname.endsWith(".local")) throw new Error("blocked"); }
