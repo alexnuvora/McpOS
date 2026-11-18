@@ -102,8 +102,9 @@ function makeServer(client: McpClient) {
     async ({ deviceId }) => {
       if (!client.scopes.includes("desktop.status")) return { content: [{ type: "text", text: "This MCP client does not have desktop.status permission." }], isError: true };
       const filter = deviceId ? `&id=eq.${deviceId}` : "";
+      const recentCutoff = new Date(Date.now() - 90_000).toISOString();
       const devicesResponse = await supabaseRest(
-        `mcpos_devices?select=id,device_name,status&user_id=eq.${client.user_id}&status=eq.online${filter}&order=last_seen_at.desc&limit=1`,
+        `mcpos_devices?select=id,device_name,status,last_seen_at&user_id=eq.${client.user_id}&status=eq.online&last_seen_at=gte.${recentCutoff}${filter}&order=last_seen_at.desc&limit=1`,
       );
       if (!devicesResponse.ok) return { content: [{ type: "text", text: "Could not check device availability." }], isError: true };
       const [device] = await devicesResponse.json();
@@ -160,6 +161,11 @@ function makeServer(client: McpClient) {
 }
 
 async function handle(request: NextRequest) {
+  const origin = request.headers.get("origin");
+  const allowedOrigins = new Set(["https://chatgpt.com", "https://claude.ai"]);
+  if (origin && !allowedOrigins.has(origin)) {
+    return NextResponse.json({ error: "Origin not allowed." }, { status: 403 });
+  }
   let client: McpClient | null;
   try {
     client = await authenticateClient(request);
