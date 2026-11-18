@@ -98,7 +98,7 @@ export default function IntegrationsPage() {
 
       <section className="mb-6 rounded-2xl border border-[#293345] bg-[#111824] p-5">
         <div className="mb-4 flex items-center gap-2 text-sm font-semibold"><ShieldCheck size={17} className="text-emerald-300"/> Permission-first access</div>
-        <p className="text-sm leading-6 text-slate-400">Every key can read paired-device status. Screen capture is an optional additional scope and still requires the visible local consent switch to be ON in the Windows companion. Mouse, keyboard, browser and file capabilities remain unavailable until their separate approval workflows are implemented.</p>
+        <p className="text-sm leading-6 text-slate-400">Each client starts with workspace.read and desktop.status. Screen capture, Windows application discovery, approved-folder reading, pointer clicks, text entry and isolated browser automation are optional per-client scopes. Sensitive actions also require the relevant Windows-local consent switch; pointer, keyboard and browser interactions require a separate local approval for each action. Folder access is read-only and limited to folders explicitly selected on the paired PC.</p>
         <div className="mt-4 grid gap-2 text-xs text-slate-400 sm:grid-cols-2">
           <div className="rounded-lg bg-[#0c121c] p-3">Default: workspace.read, desktop.status</div>
           <div className="rounded-lg bg-[#0c121c] p-3">Optional: screen.capture / screen.accessibility / files.read / input.pointer / input.keyboard / browser.control</div>
