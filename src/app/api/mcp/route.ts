@@ -47,7 +47,7 @@ function makeServer(client: McpClient) {
         authenticatedClient: client.client_name,
         mode: "outbound-device-relay",
         executionEnabled: false,
-        availableTools: ["mcpos_status", "mcpos_capabilities", "mcpos_list_devices", "mcpos_request_desktop_status", "mcpos_capture_screen", "mcpos_get_accessibility_snapshot", "mcpos_access_approved_files", "mcpos_request_input_action", "mcpos_browser_automation", "mcpos_get_command_status"],
+        availableTools: ["mcpos_status", "mcpos_capabilities", "mcpos_list_devices", "mcpos_request_desktop_status", "mcpos_capture_screen", "mcpos_get_accessibility_snapshot", "mcpos_access_approved_files", "mcpos_request_input_action", "mcpos_browser_automation", "mcpos_get_command_status", "mcpos_profile", "mcpos_get_audit_history"],
       }, null, 2) }],
     }),
   );
@@ -63,14 +63,13 @@ function makeServer(client: McpClient) {
     },
     async ({ includePlanned }) => ({
       content: [{ type: "text", text: JSON.stringify({
-        enabled: ["per-client bearer authentication", "workspace status", "capability discovery", "paired-device listing", "outbound command polling", "read-only desktop status request", "one-shot JPEG screen capture", "bounded read-only Windows application discovery", "read-only approved-folder text access", "one-shot pointer and text-entry actions with local approval", "isolated browser navigation and selector automation", "paginated audit history and session revocation"],
+        enabled: ["per-client bearer authentication", "workspace status", "capability discovery", "paired-device listing", "outbound command polling", "read-only desktop status request", "one-shot JPEG screen capture", "bounded read-only Windows application discovery", "read-only approved-folder text access", "one-shot pointer and text-entry actions with local approval", "isolated browser navigation and selector automation", "paginated audit history and session revocation", "OAuth 2.1 authorization-code with PKCE and rotating refresh tokens"],
         permissionGated: ["screen capture local switch", "Windows accessibility local switch", "native folder-picker grants", "fresh local approval for every input action", "isolated browser local switch and fresh approval for navigation/click/type"],
         planned: includePlanned === false ? [] : [
           "full accessibility-tree inspection",
           "file writes and deletes",
           "application launching",
           "sandboxed terminal",
-          "full OAuth authorization for compatible MCP clients",
         ],
       }, null, 2) }],
     }),
@@ -332,6 +331,42 @@ function makeServer(client: McpClient) {
         return { content };
       }
       return { content: [{ type: "text", text: JSON.stringify(command, null, 2) }] };
+    },
+  );
+
+  server.registerTool(
+    "mcpos_profile",
+    {
+      title: "Authenticated McpOS profile",
+      description: "Return the stable McpOS workspace identity associated with this OAuth or API-key connection. The opaque ID remains stable across token refreshes.",
+      inputSchema: z.object({}),
+      outputSchema: z.object({ id: z.string(), nickname: z.string() }),
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      _meta: { "openai/profile": true, securitySchemes: [{ type: "oauth2", scopes: ["workspace.read"] }] },
+    },
+    async () => {
+      const profile = { id: client.user_id, nickname: client.client_name };
+      return { structuredContent: profile, content: [{ type: "text", text: JSON.stringify(profile) }] };
+    },
+  );
+
+  server.registerTool(
+    "mcpos_get_audit_history",
+    {
+      title: "Read McpOS audit history",
+      description: "Read recent audit events for the authenticated McpOS workspace. Returns only this workspace's events, newest first, with a bounded page size.",
+      inputSchema: z.object({ limit: z.number().int().min(1).max(100).optional(), before: z.string().datetime().optional() }),
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      _meta: { securitySchemes: [{ type: "oauth2", scopes: ["workspace.read"] }] },
+    },
+    async ({ limit, before }) => {
+      if (!client.scopes.includes("workspace.read")) return { content: [{ type: "text", text: "This MCP client does not have workspace.read permission." }], isError: true };
+      const pageSize = Math.min(100, Math.max(1, limit ?? 30));
+      const beforeFilter = before ? `&created_at=lt.${encodeURIComponent(before)}` : "";
+      const response = await supabaseRest(`mcpos_device_audit?select=id,event_type,outcome,metadata,created_at&user_id=eq.${client.user_id}${beforeFilter}&order=created_at.desc&limit=${pageSize}`);
+      if (!response.ok) return { content: [{ type: "text", text: "Could not retrieve McpOS audit history." }], isError: true };
+      const events = await response.json();
+      return { content: [{ type: "text", text: JSON.stringify({ events, nextBefore: events.length ? events[events.length - 1].created_at : null }, null, 2) }] };
     },
   );
 
