@@ -25,6 +25,19 @@ Deno.serve(async request => {
   if (!url || !key) return reply({ error: "Device relay is not configured." }, 503);
   const tokenHash = await sha256(bearer);
   const headers = { apikey: key, Authorization: "Bearer " + key, "Content-Type": "application/json" };
+  const body = await request.json().catch(() => ({}));
+  if (typeof body?.authorize_command_id === "string") {
+    const authorization = await fetch(url + "/rest/v1/rpc/authorize_mcpos_device_command", {
+      method: "POST", headers, body: JSON.stringify({ p_token_hash: tokenHash, p_command_id: body.authorize_command_id }),
+    });
+    if (!authorization.ok) {
+      const details = await authorization.text();
+      if (details.includes("invalid_device_credential")) return reply({ error: "Device credential revoked or unknown." }, 401);
+      console.error("Device command authorization failed:", authorization.status, details.slice(0, 300));
+      return reply({ error: "Could not authorize the pending desktop action." }, 503);
+    }
+    return reply({ authorized: (await authorization.json()) === true });
+  }
   const response = await fetch(url + "/rest/v1/rpc/claim_mcpos_device_command", {
     method: "POST", headers, body: JSON.stringify({ p_token_hash: tokenHash }),
   });
