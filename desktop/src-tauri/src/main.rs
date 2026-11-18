@@ -54,14 +54,16 @@ async fn heartbeat() -> bool {
         .unwrap_or(false)
 }
 
+struct ScreenCaptureConsent(Arc<AtomicBool>);
+
 #[tauri::command]
-fn get_screen_capture_consent(consent: tauri::State<'_, Arc<AtomicBool>>) -> bool {
-    consent.load(Ordering::Relaxed)
+fn get_screen_capture_consent(consent: tauri::State<'_, ScreenCaptureConsent>) -> bool {
+    consent.0.load(Ordering::Relaxed)
 }
 
 #[tauri::command]
-fn set_screen_capture_consent(enabled: bool, consent: tauri::State<'_, Arc<AtomicBool>>) -> bool {
-    consent.store(enabled, Ordering::Relaxed);
+fn set_screen_capture_consent(enabled: bool, consent: tauri::State<'_, ScreenCaptureConsent>) -> bool {
+    consent.0.store(enabled, Ordering::Relaxed);
     enabled
 }
 
@@ -278,7 +280,7 @@ fn main() {
             let connection_state = Arc::new(AtomicBool::new(false));
             app.manage(connection_state.clone());
             let screen_consent = Arc::new(AtomicBool::new(false));
-            app.manage(screen_consent.clone());
+            app.manage(ScreenCaptureConsent(screen_consent.clone()));
             start_heartbeat(app.handle().clone(), connection_state.clone());
             start_relay_polling(connection_state, screen_consent);
             Ok(())
