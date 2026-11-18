@@ -224,7 +224,8 @@ fn execute_files_command(command: &RelayCommand, folders: &Arc<Mutex<Vec<PathBuf
             let size = entry.metadata().map(|meta| meta.len()).unwrap_or(0);
             items.push(serde_json::json!({ "name": name, "kind": kind, "size_bytes": size }));
         }
-        return (serde_json::json!({ "path": target.display().to_string(), "items": items, "truncated": items.len() >= 100 }), None);
+        let truncated = items.len() >= 100;
+        return (serde_json::json!({ "path": target.display().to_string(), "items": items, "truncated": truncated }), None);
     }
     if command.command == "files.read" {
         if !target.is_file() { return (serde_json::json!({}), Some("Only files can be read.".to_string())); }
