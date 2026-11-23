@@ -470,7 +470,7 @@ fn get_browser_snapshot(app: &tauri::AppHandle, bridge: &BrowserBridge) -> Resul
                 type: element.getAttribute('type') || undefined,
                 disabled: Boolean(element.disabled),
                 editable: element.matches('input:not([type="hidden"]),textarea,[contenteditable="true"]'),
-                sensitive: element.matches('input[type="password"],input[autocomplete="current-password"],input[autocomplete="new-password"]')
+                sensitive: element.matches('input[type=password],input[autocomplete=current-password],input[autocomplete=new-password]')
             }));
         return { ok: true, url: location.href, title: document.title, text: (document.body?.innerText || '').slice(0, 12000), interactive };
     })()"#)
