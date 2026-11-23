@@ -448,7 +448,32 @@ fn browser_eval_and_collect(app: &tauri::AppHandle, bridge: &BrowserBridge, expr
 }
 
 fn get_browser_snapshot(app: &tauri::AppHandle, bridge: &BrowserBridge) -> Result<serde_json::Value, String> {
-    browser_eval_and_collect(app, bridge, "({ ok: true, url: location.href, title: document.title, text: (document.body?.innerText || '').slice(0, 12000) })")
+    browser_eval_and_collect(app, bridge, r#"(() => {
+        const cssPath = (element) => {
+            if (element.id && CSS.escape) return '#' + CSS.escape(element.id);
+            const parts = [];
+            for (let node = element; node && node.nodeType === 1 && parts.length < 6; node = node.parentElement) {
+                const tag = node.tagName.toLowerCase();
+                const siblings = node.parentElement ? Array.from(node.parentElement.children).filter(item => item.tagName === node.tagName) : [];
+                parts.unshift(tag + (siblings.length > 1 ? ':nth-of-type(' + (siblings.indexOf(node) + 1) + ')' : ''));
+                if (node.id && CSS.escape) { parts[0] = '#' + CSS.escape(node.id); break; }
+            }
+            return parts.join(' > ');
+        };
+        const interactive = Array.from(document.querySelectorAll('a[href],button,input,textarea,select,[role="button"],[contenteditable="true"]'))
+            .filter(element => element.getClientRects().length && !element.closest('[hidden],[inert]'))
+            .slice(0, 80).map(element => ({
+                selector: cssPath(element).slice(0, 256),
+                tag: element.tagName.toLowerCase(),
+                role: element.getAttribute('role') || undefined,
+                label: (element.getAttribute('aria-label') || element.getAttribute('placeholder') || element.innerText || element.getAttribute('name') || '').trim().slice(0, 140),
+                type: element.getAttribute('type') || undefined,
+                disabled: Boolean(element.disabled),
+                editable: element.matches('input:not([type="hidden"]),textarea,[contenteditable="true"]'),
+                sensitive: element.matches('input[type="password"],input[autocomplete="current-password"],input[autocomplete="new-password"]')
+            }));
+        return { ok: true, url: location.href, title: document.title, text: (document.body?.innerText || '').slice(0, 12000), interactive };
+    })()"#)
 }
 
 fn execute_browser_action(command: &RelayCommand, app: &tauri::AppHandle, bridge: &BrowserBridge) -> Result<serde_json::Value, String> {
@@ -471,7 +496,7 @@ fn execute_browser_action(command: &RelayCommand, app: &tauri::AppHandle, bridge
             if selector.is_empty() || selector.len() > 256 || text.is_empty() || text.chars().count() > 200 || text.chars().any(|character| character.is_control()) { return Err("Selector or text is outside the allowed limits.".to_string()); }
             let selector_js = serde_json::to_string(selector).map_err(|_| "Invalid CSS selector.".to_string())?;
             let text_js = serde_json::to_string(text).map_err(|_| "Invalid text.".to_string())?;
-            browser_eval_and_collect(app, bridge, &format!("(() => {{ const selector = {selector_js}; const element = document.querySelector(selector); if (!element) return {{ ok: false, error: 'No element matched the selector', selector }}; if (!(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element.isContentEditable)) return {{ ok: false, error: 'Target is not an editable field', selector }}; element.focus(); if ('value' in element) {{ const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element), 'value')?.set; if (setter) setter.call(element, {text_js}); else element.value = {text_js}; }} else element.textContent = {text_js}; element.dispatchEvent(new InputEvent('input', {{ bubbles: true, inputType: 'insertText', data: {text_js} }})); element.dispatchEvent(new Event('change', {{ bubbles: true }})); return {{ ok: true, action: 'type', selector, characters: {text_js}.length }}; }})()"))
+            browser_eval_and_collect(app, bridge, &format!("(() => {{ const selector = {selector_js}; const element = document.querySelector(selector); if (!element) return {{ ok: false, error: 'No element matched the selector', selector }}; if (!(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element.isContentEditable)) return {{ ok: false, error: 'Target is not an editable field', selector }}; if (element.matches('input[type="password"],input[autocomplete="current-password"],input[autocomplete="new-password"]')) return {{ ok: false, error: 'Password fields require direct local entry', selector }}; element.focus(); if ('value' in element) {{ const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element), 'value')?.set; if (setter) setter.call(element, {text_js}); else element.value = {text_js}; }} else element.textContent = {text_js}; element.dispatchEvent(new InputEvent('input', {{ bubbles: true, inputType: 'insertText', data: {text_js} }})); element.dispatchEvent(new Event('change', {{ bubbles: true }})); return {{ ok: true, action: 'type', selector, characters: {text_js}.length }}; }})()"))
         },
         _ => Err("Unsupported browser action.".to_string()),
     }
