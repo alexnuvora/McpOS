@@ -204,6 +204,35 @@ fn set_screen_capture_consent(enabled: bool, consent: tauri::State<'_, ScreenCap
     enabled
 }
 
+// Read-only discovery: never launch an application or expose arbitrary PATH contents.
+fn discover_developer_tools() -> serde_json::Value {
+    let candidates: &[(&str, &[&str])] = &[
+        ("VS Code", &["Code.exe", "code.cmd"]),
+        ("Chrome", &["chrome.exe"]),
+        ("Git", &["git.exe"]),
+        ("Node.js", &["node.exe"]),
+        ("npm", &["npm.cmd"]),
+        ("Python", &["python.exe", "py.exe"]),
+        ("PowerShell", &["pwsh.exe", "powershell.exe"]),
+    ];
+    let mut directories: Vec<PathBuf> = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).collect();
+    for variable in ["LOCALAPPDATA", "PROGRAMFILES", "PROGRAMFILES(X86)"] {
+        if let Some(root) = std::env::var_os(variable) {
+            let base = PathBuf::from(root);
+            directories.push(base.clone());
+            for suffix in ["Programs/Microsoft VS Code/bin", "Programs/Microsoft VS Code", "Google/Chrome/Application", "Microsoft VS Code/bin", "Microsoft VS Code", "Git/bin", "Git/cmd", "nodejs", "PowerShell/7"] {
+                directories.push(base.join(suffix));
+            }
+        }
+    }
+    let found: Vec<serde_json::Value> = candidates.iter().map(|(name, executables)| {
+        let path = directories.iter().flat_map(|directory| executables.iter().map(move |exe| directory.join(exe)))
+            .find(|candidate| candidate.is_file());
+        serde_json::json!({"name": name, "installed": path.is_some(), "executable": path.map(|p| p.to_string_lossy().to_string())})
+    }).collect();
+    serde_json::json!({"tools": found, "read_only": true})
+}
+
 fn capture_screen_jpeg() -> Result<(String, u32, u32), String> {
     let monitors = Monitor::all().map_err(|_| "Windows could not enumerate the displays.".to_string())?;
     let monitor = monitors.iter().find(|monitor| monitor.is_primary().unwrap_or(false)).or_else(|| monitors.first()).ok_or("No active display was found.".to_string())?;
@@ -652,6 +681,7 @@ async fn poll_relay_once(connected: &Arc<AtomicBool>, screen_consent: &Arc<Atomi
                 "supported_commands": ["desktop.status", "screen.capture", "desktop.accessibility", "files.list", "files.read", "input.pointer.click", "input.keyboard.type", "input.keyboard.shortcut", "browser.open", "browser.snapshot", "browser.click", "browser.type"],
                 "execution_enabled": policy.lock().map(|p| policy_active(&p)).unwrap_or(false),
                 "automation_policy": policy.lock().map(|p| policy_json(&p)).unwrap_or_else(|_| serde_json::json!({"mode":"manual","paused":true})),
+                "developer_tools": discover_developer_tools(),
                 "permissions": {
                     "screen.capture": screen_consent.load(Ordering::Relaxed),
                     "screen.accessibility": accessibility_consent.load(Ordering::Relaxed),
