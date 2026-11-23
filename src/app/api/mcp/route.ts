@@ -253,13 +253,14 @@ function makeServer(client: McpClient) {
       description: "Queue a bounded pointer click, text-entry action or allowlisted keyboard shortcut. The Windows computer enforces its local Manual, Selected or Auto-approve-all policy; Auto mode never grants destructive file operations.",
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
       _meta: { securitySchemes: [{ type: "oauth2", scopes: ["input.pointer","input.keyboard"] }] },
-      inputSchema: z.object({ action: z.enum(["pointer_click", "keyboard_type", "keyboard_shortcut"]), x: z.number().int().min(0).max(32767).optional(), y: z.number().int().min(0).max(32767).optional(), button: z.enum(["left", "right"]).optional(), text: z.string().max(200).optional(), keys: z.array(z.string().max(12)).min(2).max(4).optional() }),
+      inputSchema: z.object({ action: z.enum(["pointer_click", "pointer_move", "pointer_scroll", "keyboard_type", "keyboard_shortcut"]), x: z.number().int().min(0).max(32767).optional(), y: z.number().int().min(0).max(32767).optional(), button: z.enum(["left", "right"]).optional(), steps: z.number().int().min(-12).max(12).optional(), axis: z.enum(["vertical", "horizontal"]).optional(), text: z.string().max(200).optional(), keys: z.array(z.string().max(12)).min(2).max(4).optional() }),
     },
-    async ({ action, x, y, button, text, keys }) => {
-      const command = action === "pointer_click" ? "input.pointer.click" : action === "keyboard_type" ? "input.keyboard.type" : "input.keyboard.shortcut";
-      const requiredScope = action === "pointer_click" ? "input.pointer" : "input.keyboard";
+    async ({ action, x, y, button, steps, axis, text, keys }) => {
+      const command = action === "pointer_click" ? "input.pointer.click" : action === "pointer_move" ? "input.pointer.move" : action === "pointer_scroll" ? "input.pointer.scroll" : action === "keyboard_type" ? "input.keyboard.type" : "input.keyboard.shortcut";
+      const requiredScope = action.startsWith("pointer_") ? "input.pointer" : "input.keyboard";
       if (!client.scopes.includes(requiredScope)) return scopeError(requiredScope);
-      if (action === "pointer_click" && (x === undefined || y === undefined)) return { content: [{ type: "text", text: "Both x and y coordinates are required for a click." }], isError: true };
+      if ((action === "pointer_click" || action === "pointer_move") && (x === undefined || y === undefined)) return { content: [{ type: "text", text: "Both x and y coordinates are required for a click." }], isError: true };
+      if (action === "pointer_scroll" && steps === undefined) return { content: [{ type: "text", text: "Scroll steps are required." }], isError: true };
       if (action === "keyboard_type" && (!text || !text.length || /[\u0000-\u001f\u007f]/.test(text))) return { content: [{ type: "text", text: "Text must be 1–200 printable characters." }], isError: true };
       if (action === "keyboard_shortcut" && (!keys || keys.length < 2 || keys.length > 4)) return { content: [{ type: "text", text: "A keyboard shortcut must contain 2–4 allowlisted keys." }], isError: true };
       const recentCutoff = new Date(Date.now() - 90_000).toISOString();
@@ -267,7 +268,7 @@ function makeServer(client: McpClient) {
       if (!devicesResponse.ok) return { content: [{ type: "text", text: "Could not check device availability." }], isError: true };
       const [device] = await devicesResponse.json();
       if (!device) return { content: [{ type: "text", text: "No online Windows device is available." }], isError: true };
-      const payload = action === "pointer_click" ? { x, y, button: button ?? "left" } : action === "keyboard_type" ? { text } : { keys };
+      const payload = action === "pointer_click" ? { x, y, button: button ?? "left" } : action === "pointer_move" ? { x, y } : action === "pointer_scroll" ? { steps, axis: axis ?? "vertical" } : action === "keyboard_type" ? { text } : { keys };
       const expiresAt = new Date(Date.now() + 60_000).toISOString();
       const queued = await supabaseRest("mcpos_device_commands", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ user_id: client.user_id, mcp_client_id: client.id, device_id: device.id, command, payload, expires_at: expiresAt }) });
       if (!queued.ok) return { content: [{ type: "text", text: "Could not queue the action. The database migration may not yet be deployed." }], isError: true };
