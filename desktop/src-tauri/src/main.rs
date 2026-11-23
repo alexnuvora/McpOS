@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use base64::Engine;
-use enigo::{Button, Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
+use enigo::{Axis, Button, Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
 use keyring::Entry;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, io::Read, path::{Path, PathBuf}, sync::{mpsc::{sync_channel, SyncSender}, Arc, Mutex, atomic::{AtomicBool, Ordering}}, time::{Duration, SystemTime, UNIX_EPOCH}};
@@ -97,10 +97,10 @@ fn policy_active(policy: &AutomationPolicy) -> bool {
 fn policy_auto_approves(policy: &AutomationPolicy, command: &str) -> bool {
     if !policy_active(policy) { return false; }
     if policy.mode == "all" {
-        return matches!(command, "input.pointer.click" | "input.keyboard.type" | "input.keyboard.shortcut" | "browser.open" | "browser.click" | "browser.type" | "screen.capture");
+        return matches!(command, "input.pointer.click" | "input.pointer.move" | "input.pointer.scroll" | "input.keyboard.type" | "input.keyboard.shortcut" | "browser.open" | "browser.click" | "browser.type" | "screen.capture");
     }
     match command {
-        "input.pointer.click" => policy.auto_pointer,
+        "input.pointer.click" | "input.pointer.move" | "input.pointer.scroll" => policy.auto_pointer,
         "input.keyboard.type" | "input.keyboard.shortcut" => policy.auto_keyboard,
         "browser.open" | "browser.click" | "browser.type" => policy.auto_browser,
         "screen.capture" => policy.auto_screen,
@@ -508,6 +508,23 @@ fn execute_browser_action(command: &RelayCommand, app: &tauri::AppHandle, bridge
 fn execute_input_action(command: &RelayCommand) -> Result<serde_json::Value, String> {
     let mut enigo = Enigo::new(&Settings::default()).map_err(|_| "Windows input simulation could not start.".to_string())?;
     match command.command.as_str() {
+        "input.pointer.move" => {
+            let x = command.payload.get("x").and_then(|v| v.as_i64()).ok_or("An x coordinate is required.")?;
+            let y = command.payload.get("y").and_then(|v| v.as_i64()).ok_or("A y coordinate is required.")?;
+            let (width, height) = enigo.main_display().map_err(|_| "Could not read display dimensions.")?;
+            if x < 0 || y < 0 || x >= width as i64 || y >= height as i64 { return Err("Coordinates outside primary display.".into()); }
+            enigo.move_mouse(x as i32, y as i32, Coordinate::Abs).map_err(|_| "Pointer movement failed.")?;
+            Ok(serde_json::json!({"action":"move","x":x,"y":y}))
+        },
+        "input.pointer.scroll" => {
+            let steps = command.payload.get("steps").and_then(|v| v.as_i64()).ok_or("Scroll steps required.")?;
+            if steps.abs() > 12 { return Err("Scroll is limited to 12 steps per request.".into()); }
+            let axis = match command.payload.get("axis").and_then(|v| v.as_str()).unwrap_or("vertical") {
+                "vertical" => Axis::Vertical, "horizontal" => Axis::Horizontal, _ => return Err("Invalid scroll axis.".into())
+            };
+            enigo.scroll(steps as i32, axis).map_err(|_| "Pointer scroll failed.")?;
+            Ok(serde_json::json!({"action":"scroll","steps":steps}))
+        },
         "input.pointer.click" => {
             let x = command.payload.get("x").and_then(|value| value.as_i64()).ok_or("A valid x coordinate is required.")?;
             let y = command.payload.get("y").and_then(|value| value.as_i64()).ok_or("A valid y coordinate is required.")?;
@@ -636,7 +653,7 @@ async fn poll_relay_once(connected: &Arc<AtomicBool>, screen_consent: &Arc<Atomi
     let Ok(envelope) = response.json::<RelayPollResponse>().await else { return };
     let Some(command) = envelope.command else { return };
 
-    if command.command == "input.pointer.click" || command.command == "input.keyboard.type" || command.command == "input.keyboard.shortcut" || command.command == "browser.open" || command.command == "browser.click" || command.command == "browser.type" {
+    if matches!(command.command.as_str(), "input.pointer.click" | "input.pointer.move" | "input.pointer.scroll") || command.command == "input.keyboard.type" || command.command == "input.keyboard.shortcut" || command.command == "browser.open" || command.command == "browser.click" || command.command == "browser.type" {
         if command.command.starts_with("browser.") && !browser_consent.load(Ordering::Relaxed) {
             let _ = submit_relay_result(&command.id, serde_json::json!({}), Some("Isolated browser consent is switched off on this Windows computer.".to_string())).await;
             return;
@@ -678,7 +695,7 @@ async fn poll_relay_once(connected: &Arc<AtomicBool>, screen_consent: &Arc<Atomi
                 "connected": connected.load(Ordering::Relaxed),
                 "device_id": device_id,
                 "agent_version": env!("CARGO_PKG_VERSION"),
-                "supported_commands": ["desktop.status", "screen.capture", "desktop.accessibility", "files.list", "files.read", "input.pointer.click", "input.keyboard.type", "input.keyboard.shortcut", "browser.open", "browser.snapshot", "browser.click", "browser.type"],
+                "supported_commands": ["desktop.status", "screen.capture", "desktop.accessibility", "files.list", "files.read", "input.pointer.click", "input.pointer.move", "input.pointer.scroll", "input.keyboard.type", "input.keyboard.shortcut", "browser.open", "browser.snapshot", "browser.click", "browser.type"],
                 "execution_enabled": policy.lock().map(|p| policy_active(&p)).unwrap_or(false),
                 "automation_policy": policy.lock().map(|p| policy_json(&p)).unwrap_or_else(|_| serde_json::json!({"mode":"manual","paused":true})),
                 "developer_tools": discover_developer_tools(),
