@@ -35,3 +35,11 @@ export function isAllowedMcpOSEmail(email: string | null | undefined) {
     .filter(Boolean);
   return allowed.includes(email.trim().toLowerCase());
 }
+
+/** This compatibility release never enables public registration. */
+export function publicRegistrationEnabled() { return false; }
+
+export function isMcpOSAccountAllowed(user: { email?: string | null; email_confirmed_at?: string | null; is_anonymous?: boolean; banned_until?: string | null }) {
+  if (!user.email || !user.email_confirmed_at || user.is_anonymous || (user.banned_until && Date.parse(user.banned_until) > Date.now())) return false;
+  return isAllowedMcpOSEmail(user.email) || publicRegistrationEnabled();
+}
