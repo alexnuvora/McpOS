@@ -340,19 +340,19 @@ function makeServer(client: McpClient) {
     "mcpos_get_command_status",
     {
       title: "Get desktop command status",
-      description: "Retrieve the result of a previously queued desktop request (status, screenshot, accessibility, approved files, approved input or isolated-browser result). Only commands belonging to this authenticated AI client are visible.",
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      description: "Retrieve the status and one-time result of a previously queued desktop request. Only commands belonging to this authenticated AI client are visible. Completed results expire after 15 minutes.",
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
       _meta: { securitySchemes: [{ type: "oauth2", scopes: ["workspace.read"] }] },
       inputSchema: z.object({ commandId: z.string().uuid() }),
     },
     async ({ commandId }) => {
       if (!client.scopes.includes("workspace.read")) return scopeError("workspace.read");
-      const response = await supabaseRest(
-        `mcpos_device_commands?select=id,device_id,command,status,result,error_message,created_at,expires_at,completed_at&user_id=eq.${client.user_id}&mcp_client_id=eq.${client.id}&id=eq.${commandId}&limit=1`,
-      );
+      const response = await supabaseRest("rpc/consume_mcpos_command_result", {
+        method: "POST", body: JSON.stringify({ p_user_id: client.user_id, p_client_id: client.id, p_command_id: commandId }),
+      });
       if (!response.ok) return { content: [{ type: "text", text: "Could not retrieve the command status." }], isError: true };
-      const [command] = await response.json();
-      if (!command) return { content: [{ type: "text", text: "Command not found for this workspace." }], isError: true };
+      const command = await response.json();
+      if (!command) return { content: [{ type: "text", text: "Command not found or no longer authorized for this workspace." }], isError: true };
       if (command.status === "completed" && command.result && command.result.consumed !== true) {
         const result = command.result;
         const content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [];
@@ -365,9 +365,6 @@ function makeServer(client: McpClient) {
         } else {
           content.push({ type: "text", text: JSON.stringify(command, null, 2) });
         }
-        await supabaseRest(`mcpos_device_commands?id=eq.${commandId}&user_id=eq.${client.user_id}&status=eq.completed`, {
-          method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ result: { consumed: true } }),
-        });
         await supabaseRest("mcpos_device_audit", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ user_id: client.user_id, device_id: command.device_id, event_type: "mcp.command.result_consumed", outcome: "success", metadata: { command_id: command.id, client_name: client.client_name } }) });
         return { content };
       }
