@@ -125,9 +125,5 @@ export async function POST(request: NextRequest) {
   });
   if (!rotation.ok) return oauthError("server_error", "Could not rotate the session. Please retry.", 503);
   if (await rotation.json() !== true) return oauthError("invalid_grant", "The refresh token is expired, revoked, already used, or no longer authorised.");
-  await supabaseRest("mcpos_device_audit", {
-    method: "POST", headers: { Prefer: "return=minimal" },
-    body: JSON.stringify({ user_id: stored.user_id, event_type: "mcp.oauth.token_refreshed", outcome: "success", metadata: { client_id: clientId, mcp_client_id: stored.mcp_client_id } }),
-  });
   return tokenResponse(nextAccessToken, nextRefreshToken, stored.scopes as string[]);
 }
