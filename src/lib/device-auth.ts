@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { createClient } from "@supabase/supabase-js";
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient, isMcpOSAccountAllowed } from "@/lib/supabase/server";
 
@@ -46,4 +47,18 @@ export function newPairingCode(): string {
   const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   const bytes = randomBytes(10);
   return Array.from(bytes, byte => alphabet[byte & 31]).join("");
+}
+
+/** Recheck account eligibility on bearer authentication and OAuth token issuance/refresh. */
+export async function isMcpOSAccountIdAllowed(userId: string) {
+  const url = supabaseUrl();
+  const key = serviceKey();
+  if (!url || !key) throw new Error("Account verification unavailable");
+  const admin = createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
+  const { data, error } = await admin.auth.admin.getUserById(userId);
+  if (error) {
+    if (error.status === 404) return false;
+    throw new Error("Account verification unavailable");
+  }
+  return Boolean(data.user && isMcpOSAccountAllowed(data.user));
 }
