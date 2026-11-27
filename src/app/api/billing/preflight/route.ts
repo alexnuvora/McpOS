@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getDeviceAccount, supabaseRest } from "@/lib/device-auth";
 import { isAllowedMcpOSEmail } from "@/lib/supabase/server";
-import { evaluateSandboxEntitlement } from "@/lib/billing-entitlement";
+import { evaluateSandboxEntitlement, getCommandEnforcementMode } from "@/lib/billing-entitlement";
 import { sandboxBillingReadiness } from "@/lib/sandbox-billing";
 
 export const runtime = "nodejs";
@@ -28,5 +28,5 @@ export async function GET(request: NextRequest) {
       webhookEvidence = event ? { status: "observed", latestEventAt: event.event_created_at } : { status: "none", latestEventAt: null };
     } catch { webhookEvidence = { status: "unavailable", latestEventAt: null }; }
   }
-  return NextResponse.json({ ...readiness, webhookEvidence, entitlementPreview: entitlement ? { status: entitlement.status, plan: entitlement.status === "allowed" ? entitlement.billing.billing_plan ?? null : null, enforcementChanged: false } : null }, { headers: { "Cache-Control": "no-store" } });
+  return NextResponse.json({ ...readiness, webhookEvidence, commandEnforcementMode: getCommandEnforcementMode(auth.account.userId), entitlementPreview: entitlement ? { status: entitlement.status, plan: entitlement.status === "allowed" ? entitlement.billing.billing_plan ?? null : null, enforcementChanged: false } : null }, { headers: { "Cache-Control": "no-store" } });
 }
