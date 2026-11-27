@@ -2,8 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getDeviceAccount, supabaseRest } from "@/lib/device-auth";
 import { isAllowedMcpOSEmail } from "@/lib/supabase/server";
 import { evaluateSandboxEntitlement } from "@/lib/billing-entitlement";
-import { mcposAppOrigin } from "@/lib/app-origin";
-import { sandboxBillingReadiness } from "@/lib/sandbox-billing";
+import { isHostedSandboxOrigin, sandboxBillingReadiness } from "@/lib/sandbox-billing";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -15,7 +14,7 @@ export async function GET(request: NextRequest) {
   const readiness = await sandboxBillingReadiness();
   // Preview-only, authenticated, read-only evaluation of the same paid policy
   // used by the MCP command gateway. It never enables enforcement or queues work.
-  const entitlement = readiness.readyForPreviewCheckout && mcposAppOrigin() === "https://deploy-preview-12--mcpos-dashboard.netlify.app"
+  const entitlement = readiness.readyForPreviewCheckout && isHostedSandboxOrigin()
     ? await evaluateSandboxEntitlement(auth.account.userId)
     : null;
   // Evidence from this account's persisted ledger, not a blanket claim about
