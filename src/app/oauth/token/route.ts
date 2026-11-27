@@ -104,7 +104,7 @@ export async function POST(request: NextRequest) {
     return oauthError("invalid_grant", "The refresh token is invalid, expired, or revoked.");
   }
 
-  const ownerResponse = await supabaseRest(`mcpos_mcp_clients?select=id,revoked_at&id=eq.${stored.mcp_client_id}&limit=1`);
+  const ownerResponse = await supabaseRest(`mcpos_mcp_clients?select=id,revoked_at&id=eq.${stored.mcp_client_id}&user_id=eq.${stored.user_id}&limit=1`);
   if (!ownerResponse.ok) return oauthError("server_error", "Could not verify the McpOS session.", 503);
   const [owner] = await ownerResponse.json();
   if (!owner || owner.revoked_at) return oauthError("invalid_grant", "This McpOS session has been revoked.");
@@ -118,11 +118,11 @@ export async function POST(request: NextRequest) {
   const nextRefreshToken = newOAuthToken("mcpos_rt_");
   const accessExpiresAt = new Date(Date.now() + 60 * 60_000).toISOString();
   const refreshExpiresAt = new Date(Date.now() + 30 * 24 * 60 * 60_000).toISOString();
-  const updated = await supabaseRest(`mcpos_mcp_clients?id=eq.${stored.mcp_client_id}&revoked_at=is.null`, {
-    method: "PATCH", headers: { Prefer: "return=minimal" },
+  const updated = await supabaseRest(`mcpos_mcp_clients?id=eq.${stored.mcp_client_id}&user_id=eq.${stored.user_id}&revoked_at=is.null`, {
+    method: "PATCH", headers: { Prefer: "return=representation" },
     body: JSON.stringify({ token_hash: hashOAuthToken(nextAccessToken), token_expires_at: accessExpiresAt, token_resource: resource, last_used_at: new Date().toISOString() }),
   });
-  if (!updated.ok) return oauthError("server_error", "Could not rotate the access token.", 503);
+  if (!updated.ok || (await updated.json()).length !== 1) return oauthError("server_error", "Could not rotate the access token.", 503);
   const inserted = await supabaseRest("mcpos_oauth_refresh_tokens", {
     method: "POST", headers: { Prefer: "return=minimal" },
     body: JSON.stringify({
