@@ -35,3 +35,19 @@ export function isAllowedMcpOSEmail(email: string | null | undefined) {
     .filter(Boolean);
   return allowed.includes(email.trim().toLowerCase());
 }
+
+/** Public onboarding remains explicitly disabled unless sandbox billing and enforcement are both ready. */
+export function publicRegistrationEnabled() {
+  return process.env.MCPOS_PUBLIC_REGISTRATION === "true"
+    && process.env.MCPOS_BILLING_ENABLED === "true"
+    && process.env.MCPOS_ENFORCE_SUBSCRIPTIONS === "true"
+    && Boolean(process.env.STRIPE_SECRET_KEY?.startsWith("sk_test_"))
+    && Boolean(process.env.MCPOS_TURNSTILE_SITE_KEY)
+    && process.env.MCPOS_AUTH_CAPTCHA_VERIFIED === "true"
+    && process.env.MCPOS_PUBLIC_LAUNCH_APPROVED === "true";
+}
+
+export function isMcpOSAccountAllowed(user: { email?: string | null; email_confirmed_at?: string | null; is_anonymous?: boolean; banned_until?: string | null }) {
+  if (!user.email || !user.email_confirmed_at || user.is_anonymous || (user.banned_until && Date.parse(user.banned_until) > Date.now())) return false;
+  return isAllowedMcpOSEmail(user.email) || publicRegistrationEnabled();
+}

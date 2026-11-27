@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
+import { createClient } from "@supabase/supabase-js";
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient, isAllowedMcpOSEmail } from "@/lib/supabase/server";
+import { createServerSupabaseClient, isMcpOSAccountAllowed } from "@/lib/supabase/server";
 
 const supabaseUrl = () => (process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "").replace(/\/$/, "");
 const serviceKey = () => process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -28,7 +29,7 @@ export async function getDeviceAccount(_request: NextRequest): Promise<AccountRe
   try {
     const supabase = await createServerSupabaseClient();
     const { data: { user }, error } = await supabase.auth.getUser();
-    if (error || !user || !isAllowedMcpOSEmail(user.email)) {
+    if (error || !user || !isMcpOSAccountAllowed(user)) {
       return { response: NextResponse.json({ error: "Sign in with an authorised McpOS email address first." }, { status: 401 }) };
     }
     return { account: { userId: user.id, email: user.email! } };
@@ -46,4 +47,18 @@ export function newPairingCode(): string {
   const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   const bytes = randomBytes(10);
   return Array.from(bytes, byte => alphabet[byte & 31]).join("");
+}
+
+/** Recheck account eligibility on bearer authentication and OAuth token issuance/refresh. */
+export async function isMcpOSAccountIdAllowed(userId: string) {
+  const url = supabaseUrl();
+  const key = serviceKey();
+  if (!url || !key) throw new Error("Account verification unavailable");
+  const admin = createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
+  const { data, error } = await admin.auth.admin.getUserById(userId);
+  if (error) {
+    if (error.status === 404) return false;
+    throw new Error("Account verification unavailable");
+  }
+  return Boolean(data.user && isMcpOSAccountAllowed(data.user));
 }

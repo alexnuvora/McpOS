@@ -1,12 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient, isAllowedMcpOSEmail } from "@/lib/supabase/server";
+import { createServerSupabaseClient, isMcpOSAccountAllowed } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest) {
   const code = request.nextUrl.searchParams.get("code");
   const requestedNext = request.nextUrl.searchParams.get("next") || "/";
-  const next = requestedNext.startsWith("/") && !requestedNext.startsWith("//") ? requestedNext : "/";
+  const origin = request.nextUrl.origin;
+  let next = "/";
+  try {
+    const target = new URL(requestedNext, origin);
+    if (requestedNext.startsWith("/") && !requestedNext.startsWith("//") && !requestedNext.includes("\\") && target.origin === origin) next = target.pathname + target.search + target.hash;
+  } catch { /* Fall back to the dashboard. */ }
   const loginUrl = new URL("/login", request.url);
 
   if (!code) {
@@ -22,7 +27,7 @@ export async function GET(request: NextRequest) {
   }
 
   const { data: { user } } = await supabase.auth.getUser();
-  if (!user || !isAllowedMcpOSEmail(user.email)) {
+  if (!user || !isMcpOSAccountAllowed(user)) {
     await supabase.auth.signOut();
     loginUrl.searchParams.set("error", "not-authorized");
     return NextResponse.redirect(loginUrl);

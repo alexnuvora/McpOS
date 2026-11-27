@@ -415,18 +415,33 @@ fn start_browser_bridge() -> Result<BrowserBridge, String> {
 }
 
 fn browser_url_allowed(url: &url::Url) -> bool {
-    if url.scheme() != "https" || url.host_str().is_none() || !url.username().is_empty() || url.password().is_some() { return false; }
-    let host = url.host_str().unwrap_or_default();
-    if host.eq_ignore_ascii_case("localhost") || host.ends_with(".local") { return false; }
-    if let Ok(address) = host.parse::<std::net::IpAddr>() {
-        let is_private = match address {
-            std::net::IpAddr::V4(value) => value.is_loopback() || value.is_private() || value.is_link_local() || value.is_broadcast() || value.is_unspecified(),
-            std::net::IpAddr::V6(value) => value.is_loopback() || value.is_unspecified() || (value.segments()[0] & 0xfe00) == 0xfc00 || (value.segments()[0] & 0xffc0) == 0xfe80,
-        };
-        if is_private { return false; }
-    }
-    true
+    if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() || url.port_or_known_default() != Some(443) { return false; }
+    // Apply the same lexical policy to initial URLs and every top-level redirect.
+    // This does not constrain DNS resolution or subresource requests.
+    let Some(url::Host::Domain(domain)) = url.host() else { return false; };
+    let host = domain.trim_end_matches('.').to_ascii_lowercase();
+    if host.len() > 253 || !host.contains('.') { return false; }
+    if ["localhost", "local", "internal", "home.arpa", "lan", "corp", "test", "invalid", "onion"].iter().any(|suffix| host == *suffix || host.ends_with(&format!(".{suffix}"))) { return false; }
+    host.split('.').all(|label| !label.is_empty() && label.len() <= 63 && !label.starts_with('-') && !label.ends_with('-') && label.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'))
 }
+
+#[cfg(test)]
+mod browser_policy_tests {
+    use super::browser_url_allowed;
+    #[test]
+    fn rejects_non_public_navigation_syntax() {
+        for raw in ["http://example.com", "https://localhost./", "https://a.local./", "https://router.home.arpa", "https://127.0.0.1", "https://2130706433", "https://[::1]", "https://8.8.8.8", "https://[::ffff:127.0.0.1]", "https://server", "https://example.com:8443", "https://user:password@example.com", "https://a.internal", "https://a.lan", "https://a.onion", "https://example..com"] {
+            assert!(!browser_url_allowed(&url::Url::parse(raw).unwrap()), "accepted {raw}");
+        }
+    }
+    #[test]
+    fn permits_normal_https_navigation() {
+        for raw in ["https://example.com", "https://example.com:443/path", "https://sub.example.com/path?x=1", "https://example.com./"] {
+            assert!(browser_url_allowed(&url::Url::parse(raw).unwrap()), "rejected {raw}");
+        }
+    }
+}
+
 fn open_isolated_browser(app: &tauri::AppHandle, raw_url: &str) -> Result<String, String> {
     let url = url::Url::parse(raw_url).map_err(|_| "The browser URL is invalid.".to_string())?;
     if !browser_url_allowed(&url) { return Err("The isolated browser only permits public HTTPS sites without embedded credentials.".to_string()); }
@@ -501,7 +516,7 @@ fn get_browser_snapshot(app: &tauri::AppHandle, bridge: &BrowserBridge) -> Resul
                 editable: element.matches('input:not([type="hidden"]),textarea,[contenteditable="true"]'),
                 sensitive: element.matches('input[type=password],input[autocomplete=current-password],input[autocomplete=new-password]')
             }));
-        return { ok: true, url: location.href, title: document.title, text: (document.body?.innerText || '').slice(0, 12000), interactive };
+        return { ok: true, url: location.origin + location.pathname, title: document.title, text: (document.body?.innerText || '').slice(0, 12000), interactive };
     })()"#)
 }
 

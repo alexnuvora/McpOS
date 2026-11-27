@@ -1,0 +1,72 @@
+name: McpOS billing database validation
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "supabase/**"
+      - ".github/workflows/billing-database-ci.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+          github-token: ${{ github.token }}
+      - name: Confirm validated migration
+        run: cmp supabase/migrations/20261127024424_mcpos_billing_events.sql supabase/pending/mcpos_billing_events.sql
+      - name: Confirm validated command authorization migration
+        run: cmp supabase/migrations/20261127030852_mcpos_command_authorization.sql supabase/pending/mcpos_command_authorization.sql
+      - name: Confirm validated checkout reservation migration
+        run: cmp supabase/migrations/20261127031522_mcpos_checkout_attempts.sql supabase/pending/mcpos_checkout_attempts.sql
+      - name: Confirm validated command usage migration
+        run: cmp supabase/migrations/20261127031919_mcpos_command_usage.sql supabase/pending/mcpos_command_usage.sql
+      - name: Confirm validated retention migration
+        run: cmp supabase/migrations/20261127035352_mcpos_command_retention.sql supabase/pending/mcpos_command_retention.sql
+      - name: Start isolated local database
+        run: supabase db start
+      - name: Verify private billing ledger privileges
+        run: |
+          result="$(supabase db query --local --read-only --output json "select c.relrowsecurity as rls_enabled, has_table_privilege('anon',c.oid,'SELECT') as anon_read, has_table_privilege('authenticated',c.oid,'INSERT') as user_write, has_table_privilege('service_role',c.oid,'SELECT') as server_read, has_table_privilege('service_role',c.oid,'INSERT') as server_insert, exists (select 1 from pg_constraint p where p.conrelid=c.oid and p.contype='p') as has_primary_key from pg_class c join pg_namespace n on n.oid=c.relnamespace where n.nspname='public' and c.relname='mcpos_billing_events'")"
+          printf '%s\n' "$result"
+          printf '%s' "$result" | jq -e 'length == 1 and .[0].rls_enabled and (.[0].anon_read | not) and (.[0].user_write | not) and .[0].server_read and .[0].server_insert and .[0].has_primary_key'
+      - name: Check command RPC permissions
+        run: |
+          result="$(supabase db query --local --read-only --output json "select p.proname, p.prosecdef as security_definer, has_function_privilege('anon',p.oid,'EXECUTE') as anon_execute, has_function_privilege('authenticated',p.oid,'EXECUTE') as user_execute, has_function_privilege('service_role',p.oid,'EXECUTE') as server_execute from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname in ('claim_mcpos_device_command','authorize_mcpos_device_command')")"
+          printf '%s\n' "$result"
+          printf '%s' "$result" | jq -e 'length == 2 and all(.[]; (.security_definer | not) and (.anon_execute | not) and (.user_execute | not) and .server_execute)'
+      - name: Exercise command authorization fixtures
+        run: |
+          container="$(docker ps --filter name=supabase_db_ --format '{{.Names}}')"
+          test "$(printf '%s\n' "$container" | wc -l)" = 1
+          test -n "$container"
+          docker exec -i "$container" psql -U postgres -d postgres -v ON_ERROR_STOP=1 < supabase/tests/command_authorization.sql
+          docker exec -i "$container" psql -U postgres -d postgres -v ON_ERROR_STOP=1 < supabase/tests/checkout_reservations.sql
+          docker exec -i "$container" psql -U postgres -d postgres -v ON_ERROR_STOP=1 < supabase/tests/command_usage.sql
+          docker exec -i "$container" psql -U postgres -d postgres -v ON_ERROR_STOP=1 < supabase/tests/command_retention.sql
+          docker exec -i "$container" psql -U postgres -d postgres -v ON_ERROR_STOP=1 < supabase/tests/oauth_refresh.sql
+          docker exec -i "$container" psql -U postgres -d postgres -v ON_ERROR_STOP=1 < supabase/tests/oauth_exchange.sql
+          docker exec -i "$container" psql -U postgres -d postgres -v ON_ERROR_STOP=1 < supabase/tests/oauth_registration.sql
+          docker exec -i "$container" psql -U postgres -d postgres -v ON_ERROR_STOP=1 < supabase/tests/oauth_revocation.sql
+      - name: Verify checkout reservation isolation
+        run: |
+          result="$(supabase db query --local --read-only --output json "select c.relrowsecurity as rls_enabled, has_table_privilege('anon',c.oid,'SELECT') as anon_read, has_table_privilege('authenticated',c.oid,'INSERT') as user_write, has_table_privilege('service_role',c.oid,'INSERT') as server_insert, exists (select 1 from pg_constraint p where p.conrelid=c.oid and p.contype='p') as has_primary_key from pg_class c join pg_namespace n on n.oid=c.relnamespace where n.nspname='public' and c.relname='mcpos_checkout_attempts'")"
+          printf '%s' "$result" | jq -e 'length == 1 and .[0].rls_enabled and (.[0].anon_read | not) and (.[0].user_write | not) and .[0].server_insert and .[0].has_primary_key'
+      - name: Preserve generated migration
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcpos-billing-migration
+          path: |
+            supabase/migrations/*_mcpos_billing_events.sql
+            supabase/migrations/*_mcpos_command_authorization.sql
+            supabase/migrations/*_mcpos_checkout_attempts.sql
+            supabase/migrations/*_mcpos_command_usage.sql
+            supabase/migrations/*_mcpos_command_retention.sql
+      - name: Stop local database
+        if: always()
+        run: supabase stop --no-backup

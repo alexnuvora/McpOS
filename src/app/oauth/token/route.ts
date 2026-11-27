@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createHash, timingSafeEqual } from "node:crypto";
-import { supabaseRest } from "@/lib/device-auth";
-import { hashOAuthToken, MCP_RESOURCE_URL, newOAuthToken, oauthError } from "@/lib/mcp-oauth";
+import { isMcpOSAccountIdAllowed, supabaseRest } from "@/lib/device-auth";
+import { hashOAuthToken, MCP_RESOURCE_URL, newOAuthToken, oauthError, readOAuthBody } from "@/lib/mcp-oauth";
 
 export const dynamic = "force-dynamic";
 
@@ -22,7 +22,10 @@ function tokenResponse(accessToken: string, refreshToken: string, scopes: string
 }
 
 export async function POST(request: NextRequest) {
-  const form = new URLSearchParams(await request.text());
+  const raw = await readOAuthBody(request);
+  if (raw === null) return oauthError("invalid_request", "Request body is too large or invalid.", 413);
+  const form = new URLSearchParams(raw);
+  for (const name of new Set(form.keys())) if (form.getAll(name).length !== 1) return oauthError("invalid_request", "Duplicate parameters are not allowed.");
   const grantType = form.get("grant_type") || "";
   const clientId = form.get("client_id") || "";
   const resource = form.get("resource") || "";
@@ -52,46 +55,22 @@ export async function POST(request: NextRequest) {
       return oauthError("invalid_grant", "The authorization code is expired, already used, or does not match this PKCE request.");
     }
 
-    const consumed = await supabaseRest(`mcpos_oauth_codes?code_hash=eq.${codeHash}&consumed_at=is.null&expires_at=gt.${encodeURIComponent(new Date().toISOString())}`, {
-      method: "PATCH", headers: { Prefer: "return=representation" }, body: JSON.stringify({ consumed_at: new Date().toISOString() }),
-    });
-    if (!consumed.ok || (await consumed.json()).length !== 1) return oauthError("invalid_grant", "The authorization code has already been consumed.");
+    try { if (!await isMcpOSAccountIdAllowed(authCode.user_id)) return oauthError("invalid_grant", "Account access is no longer available."); }
+    catch { return oauthError("server_error", "Account verification unavailable.", 503); }
 
     const accessToken = newOAuthToken("mcpos_at_");
     const refreshToken = newOAuthToken("mcpos_rt_");
-    const accessExpiresAt = new Date(Date.now() + 60 * 60_000).toISOString();
-    const refreshExpiresAt = new Date(Date.now() + 30 * 24 * 60 * 60_000).toISOString();
     const scopes = authCode.scopes as string[];
-
-    const mcpClientResponse = await supabaseRest("mcpos_mcp_clients", {
-      method: "POST", headers: { Prefer: "return=representation" },
+    const exchange = await supabaseRest("rpc/exchange_mcpos_oauth_code", {
+      method: "POST",
       body: JSON.stringify({
-        user_id: authCode.user_id,
-        client_name: String(oauthClient.client_name).slice(0, 80),
-        token_hash: hashOAuthToken(accessToken),
-        token_expires_at: accessExpiresAt,
-        token_resource: resource,
-        scopes,
+        p_code_hash: codeHash, p_client_id: clientId, p_user_id: authCode.user_id,
+        p_redirect_uri: redirectUri, p_resource: resource, p_challenge: calculatedChallenge,
+        p_access_hash: hashOAuthToken(accessToken), p_refresh_hash: hashOAuthToken(refreshToken),
       }),
     });
-    if (!mcpClientResponse.ok) return oauthError("server_error", "Could not create the authenticated MCP session.", 503);
-    const [mcpClient] = await mcpClientResponse.json();
-
-    const refreshInsert = await supabaseRest("mcpos_oauth_refresh_tokens", {
-      method: "POST", headers: { Prefer: "return=minimal" },
-      body: JSON.stringify({
-        token_hash: hashOAuthToken(refreshToken), client_id: clientId, mcp_client_id: mcpClient.id,
-        user_id: authCode.user_id, resource, scopes, expires_at: refreshExpiresAt,
-      }),
-    });
-    if (!refreshInsert.ok) {
-      await supabaseRest(`mcpos_mcp_clients?id=eq.${mcpClient.id}`, { method: "DELETE" });
-      return oauthError("server_error", "Could not create the refresh session.", 503);
-    }
-    await supabaseRest("mcpos_device_audit", {
-      method: "POST", headers: { Prefer: "return=minimal" },
-      body: JSON.stringify({ user_id: authCode.user_id, event_type: "mcp.oauth.token_issued", outcome: "success", metadata: { client_name: oauthClient.client_name, scopes } }),
-    });
+    if (!exchange.ok) return oauthError("server_error", "Could not issue the session. Please retry.", 503);
+    if (await exchange.json() !== true) return oauthError("invalid_grant", "The authorization code is expired, consumed, or invalid.");
     return tokenResponse(accessToken, refreshToken, scopes);
   }
 
@@ -104,36 +83,20 @@ export async function POST(request: NextRequest) {
     return oauthError("invalid_grant", "The refresh token is invalid, expired, or revoked.");
   }
 
-  const ownerResponse = await supabaseRest(`mcpos_mcp_clients?select=id,revoked_at&id=eq.${stored.mcp_client_id}&limit=1`);
-  if (!ownerResponse.ok) return oauthError("server_error", "Could not verify the McpOS session.", 503);
-  const [owner] = await ownerResponse.json();
-  if (!owner || owner.revoked_at) return oauthError("invalid_grant", "This McpOS session has been revoked.");
-
-  const rotated = await supabaseRest(`mcpos_oauth_refresh_tokens?token_hash=eq.${refreshHash}&revoked_at=is.null`, {
-    method: "PATCH", headers: { Prefer: "return=representation" }, body: JSON.stringify({ revoked_at: new Date().toISOString() }),
-  });
-  if (!rotated.ok || (await rotated.json()).length !== 1) return oauthError("invalid_grant", "The refresh token has already been rotated.");
+  try { if (!await isMcpOSAccountIdAllowed(stored.user_id)) return oauthError("invalid_grant", "Account access is no longer available."); }
+  catch { return oauthError("server_error", "Account verification unavailable.", 503); }
 
   const nextAccessToken = newOAuthToken("mcpos_at_");
   const nextRefreshToken = newOAuthToken("mcpos_rt_");
-  const accessExpiresAt = new Date(Date.now() + 60 * 60_000).toISOString();
-  const refreshExpiresAt = new Date(Date.now() + 30 * 24 * 60 * 60_000).toISOString();
-  const updated = await supabaseRest(`mcpos_mcp_clients?id=eq.${stored.mcp_client_id}&revoked_at=is.null`, {
-    method: "PATCH", headers: { Prefer: "return=minimal" },
-    body: JSON.stringify({ token_hash: hashOAuthToken(nextAccessToken), token_expires_at: accessExpiresAt, token_resource: resource, last_used_at: new Date().toISOString() }),
-  });
-  if (!updated.ok) return oauthError("server_error", "Could not rotate the access token.", 503);
-  const inserted = await supabaseRest("mcpos_oauth_refresh_tokens", {
-    method: "POST", headers: { Prefer: "return=minimal" },
+  const rotation = await supabaseRest("rpc/rotate_mcpos_oauth_refresh", {
+    method: "POST",
     body: JSON.stringify({
-      token_hash: hashOAuthToken(nextRefreshToken), client_id: clientId, mcp_client_id: stored.mcp_client_id,
-      user_id: stored.user_id, resource, scopes: stored.scopes, expires_at: refreshExpiresAt,
+      p_old_hash: refreshHash, p_client_id: clientId, p_user_id: stored.user_id,
+      p_resource: resource, p_access_hash: hashOAuthToken(nextAccessToken),
+      p_refresh_hash: hashOAuthToken(nextRefreshToken),
     }),
   });
-  if (!inserted.ok) return oauthError("server_error", "Could not rotate the refresh token.", 503);
-  await supabaseRest("mcpos_device_audit", {
-    method: "POST", headers: { Prefer: "return=minimal" },
-    body: JSON.stringify({ user_id: stored.user_id, event_type: "mcp.oauth.token_refreshed", outcome: "success", metadata: { client_id: clientId, mcp_client_id: stored.mcp_client_id } }),
-  });
+  if (!rotation.ok) return oauthError("server_error", "Could not rotate the session. Please retry.", 503);
+  if (await rotation.json() !== true) return oauthError("invalid_grant", "The refresh token is expired, revoked, already used, or no longer authorised.");
   return tokenResponse(nextAccessToken, nextRefreshToken, stored.scopes as string[]);
 }

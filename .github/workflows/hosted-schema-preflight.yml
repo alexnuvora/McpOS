@@ -1,0 +1,30 @@
+name: McpOS hosted schema preflight
+on:
+  push:
+    branches: [production/gateway-hardening]
+    paths: [".github/workflows/hosted-schema-preflight.yml"]
+  pull_request:
+    branches: [main]
+    paths: [".github/workflows/hosted-schema-preflight.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    if: github.ref == 'refs/heads/production/gateway-hardening' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'production/gateway-hardening')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Read hosted schema metadata only
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
+        run: |
+          set -euo pipefail
+          test "$PROJECT_REF" = "kvwwabuqydwsbhlcqxwz"
+          test -n "$SUPABASE_ACCESS_TOKEN"
+          query="select pg_catalog.to_regclass('public.mcpos_billing_events') is not null as billing_ledger, pg_catalog.to_regclass('public.mcpos_checkout_attempts') is not null as checkout_reservations, pg_catalog.to_regclass('public.mcpos_daily_command_usage') is not null as command_quota, pg_catalog.to_regprocedure('public.consume_mcpos_command_result(uuid,uuid,uuid)') is not null as result_consumption, pg_catalog.to_regprocedure('public.authorize_mcpos_device_command(text,uuid)') is not null as command_authorization, pg_catalog.to_regprocedure('public.mcpos_purge_expired_command_data()') is not null as retention_cleanup"
+          body="$(jq -nc --arg query "$query" '{query:$query}')"
+          result="$(curl --fail --silent --show-error --max-time 20 -X POST "https://api.supabase.com/v1/projects/$PROJECT_REF/database/query/read-only" -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" -H "Content-Type: application/json" --data "$body")"
+          printf '%s\n' "$result" | jq -e 'if type == "array" and length == 1 and (.[0] | type == "object") then .[0] | with_entries(select(.value | type == "boolean")) else error("Unexpected schema check response") end'
+          printf '%s\n' "$result" | jq -e '.[0] | length == 6 and all(.[]; . == true)' || echo "::warning::Hosted schema is not yet ready for sandbox checkout; no migrations have been applied by this job."
