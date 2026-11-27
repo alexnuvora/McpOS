@@ -20,12 +20,7 @@ async function authenticateClient(request: NextRequest): Promise<McpClient | nul
   );
   if (!response.ok) throw new Error("McpOS client authentication service is unavailable.");
   const [client] = await response.json() as McpClient[];
-  if (!client || client.revoked_at || (client.token_expires_at && new Date(client.token_expires_at).getTime() <= Date.now()) || (client.token_resource && client.token_resource !== MCP_RESOURCE_URL)) return null;
-  await supabaseRest(`mcpos_mcp_clients?id=eq.${client.id}&revoked_at=is.null`, {
-    method: "PATCH",
-    headers: { Prefer: "return=minimal" },
-    body: JSON.stringify({ last_used_at: new Date().toISOString() }),
-  });
+  if (!client || client.revoked_at || (client.token_expires_at && (!Number.isFinite(Date.parse(client.token_expires_at)) || Date.parse(client.token_expires_at) <= Date.now())) || (client.token_resource && client.token_resource !== MCP_RESOURCE_URL)) return null;
   return client;
 }
 
