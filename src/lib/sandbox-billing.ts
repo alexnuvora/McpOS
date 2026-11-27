@@ -1,13 +1,10 @@
 import { mcposAppOrigin } from "@/lib/app-origin";
 import { supabaseRest } from "@/lib/device-auth";
 
-const previewOrigin = "https://deploy-preview-12--mcpos-dashboard.netlify.app";
+import { hostedSandboxOriginAllowed, sandboxOriginEnabled } from "@/lib/sandbox-origin-policy.mjs";
 
 export function sandboxBillingEnabled(): boolean {
-  if (process.env.MCPOS_BILLING_ENABLED === "false") return false;
-  // The trusted build marker is only set for this Netlify deploy preview.
-  return process.env.MCPOS_BUILD_PREVIEW_ORIGIN === previewOrigin ||
-    (mcposAppOrigin()?.startsWith("http://127.0.0.1:") === true && process.env.MCPOS_BILLING_ENABLED === "true");
+  return sandboxOriginEnabled(process.env, mcposAppOrigin());
 }
 
 const sandboxAccount = "acct_1TNzE92NnZDbZsO0";
@@ -27,7 +24,7 @@ export async function sandboxBillingReadiness() {
   const portalId = process.env.STRIPE_PORTAL_CONFIGURATION;
   const portalConfigured = /^bpc_[A-Za-z0-9]+$/.test(portalId || "");
   const appOrigin = mcposAppOrigin() || "";
-  const previewOriginConfigured = appOrigin.replace(/\/$/, "") === "https://deploy-preview-12--mcpos-dashboard.netlify.app";
+  const previewOriginConfigured = hostedSandboxOriginAllowed(process.env, appOrigin);
   const enabled = sandboxBillingEnabled();
   const enforcementDisabled = process.env.MCPOS_ENFORCE_SUBSCRIPTIONS !== "true";
   const publicRegistrationDisabled = process.env.MCPOS_PUBLIC_REGISTRATION !== "true";
