@@ -83,6 +83,10 @@ test("authenticated billing checks are scoped to the signed-in account", async (
     assert.equal(invalidRecovery.status,307);
     assert.equal(invalidRecovery.headers.get("location"),base+"/login?error=recovery");
     assert.equal((await login(credentials,"https://wrong-origin.invalid")).status,403);
+    const invalidLogin = body => fetch(base+"/api/auth/login",{method:"POST",headers:{Origin:base,"Content-Type":"application/json"},body});
+    assert.equal((await invalidLogin("null")).status,400);
+    assert.equal((await invalidLogin("[]")).status,400);
+    assert.equal((await invalidLogin(JSON.stringify({email:"x".repeat(17000)}))).status,413);
     assert.equal((await login({...credentials,password:"incorrect-password"})).status,401);
     assert.equal((await login({...credentials,email:"not-allowed@example.invalid"})).status,401);
     const deniedRegistration = await login({action:"register",email:"not-allowed@example.invalid",password:"test-password-123"});
