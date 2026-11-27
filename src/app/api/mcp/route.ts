@@ -52,16 +52,17 @@ function makeServer(client: McpClient) {
       _meta: { securitySchemes: [{ type: "oauth2", scopes: ["workspace.read"] }] },
       inputSchema: z.object({}),
     },
-    async () => ({
-      content: [{ type: "text" as const, text: JSON.stringify({
+    async () => {
+      if (!client.scopes.includes("workspace.read")) return scopeError("workspace.read");
+      return { content: [{ type: "text" as const, text: JSON.stringify({
         name: "McpOS",
         version: "0.2.0",
         authenticatedClient: client.client_name,
         mode: "outbound-device-relay",
-        executionEnabled: false,
+        executionMode: "permission-gated",
         availableTools: ["mcpos_status", "mcpos_capabilities", "mcpos_list_devices", "mcpos_request_desktop_status", "mcpos_capture_screen", "mcpos_get_accessibility_snapshot", "mcpos_access_approved_files", "mcpos_request_input_action", "mcpos_browser_automation", "mcpos_get_command_status", "mcpos_profile", "mcpos_get_audit_history"],
-      }, null, 2) }],
-    }),
+      }, null, 2) }] };
+    },
   );
 
   server.registerTool(
@@ -73,7 +74,9 @@ function makeServer(client: McpClient) {
       _meta: { securitySchemes: [{ type: "oauth2", scopes: ["workspace.read"] }] },
       inputSchema: z.object({ includePlanned: z.boolean().optional() }),
     },
-    async ({ includePlanned }) => ({
+    async ({ includePlanned }) => {
+      if (!client.scopes.includes("workspace.read")) return scopeError("workspace.read");
+      return {
       content: [{ type: "text", text: JSON.stringify({
         enabled: ["per-client bearer authentication", "workspace status", "capability discovery", "paired-device listing", "outbound command polling", "read-only desktop status request", "one-shot JPEG screen capture", "bounded read-only Windows application discovery", "read-only approved-folder text access", "one-shot pointer and text-entry actions with local approval", "isolated browser navigation and selector automation", "paginated audit history and session revocation", "OAuth 2.1 authorization-code with PKCE and rotating refresh tokens"],
         permissionGated: ["screen capture local switch", "Windows accessibility local switch", "native folder-picker grants", "fresh local approval for every input action", "isolated browser local switch and fresh approval for navigation/click/type"],
@@ -83,8 +86,8 @@ function makeServer(client: McpClient) {
           "application launching",
           "sandboxed terminal",
         ],
-      }, null, 2) }],
-    }),
+      }, null, 2) }] };
+    },
   );
 
   server.registerTool(
@@ -102,7 +105,7 @@ function makeServer(client: McpClient) {
         `mcpos_devices?select=id,device_name,platform,status,last_seen_at,paired_at&user_id=eq.${client.user_id}&status=neq.revoked&order=paired_at.desc`,
       );
       if (!response.ok) return { content: [{ type: "text", text: "Could not retrieve paired devices." }], isError: true };
-      const devices = await response.json();
+      const devices = (await response.json() as Array<{ status: string; last_seen_at: string | null }>).map(device => ({ ...device, status: device.status === "online" && (!device.last_seen_at || !Number.isFinite(Date.parse(device.last_seen_at)) || Date.now() - Date.parse(device.last_seen_at) > 90_000) ? "offline" : device.status }));
       return { content: [{ type: "text", text: JSON.stringify({ devices }, null, 2) }] };
     },
   );
@@ -320,6 +323,7 @@ function makeServer(client: McpClient) {
       inputSchema: z.object({ commandId: z.string().uuid() }),
     },
     async ({ commandId }) => {
+      if (!client.scopes.includes("workspace.read")) return scopeError("workspace.read");
       const response = await supabaseRest(
         `mcpos_device_commands?select=id,device_id,command,status,result,error_message,created_at,expires_at,completed_at&user_id=eq.${client.user_id}&mcp_client_id=eq.${client.id}&id=eq.${commandId}&limit=1`,
       );
