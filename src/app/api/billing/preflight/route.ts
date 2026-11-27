@@ -1,3 +1,4 @@
+import { mcposAppOrigin } from "@/lib/app-origin";
 import { NextRequest, NextResponse } from "next/server";
 import { getDeviceAccount, supabaseRest } from "@/lib/device-auth";
 import { isAllowedMcpOSEmail } from "@/lib/supabase/server";
@@ -25,7 +26,7 @@ export async function GET(request: NextRequest) {
   const pricesConfigured = priceIds.every(id => /^price_[A-Za-z0-9]+$/.test(id || "")) && new Set(priceIds).size === 3;
   const portalId = process.env.STRIPE_PORTAL_CONFIGURATION;
   const portalConfigured = /^bpc_[A-Za-z0-9]+$/.test(portalId || "");
-  const appOrigin = process.env.NEXT_PUBLIC_APP_URL || "";
+  const appOrigin = mcposAppOrigin() || "";
   const previewOriginConfigured = appOrigin.replace(/\/$/, "") === "https://deploy-preview-12--mcpos-dashboard.netlify.app";
   const enabled = process.env.MCPOS_BILLING_ENABLED === "true";
   const enforcementDisabled = process.env.MCPOS_ENFORCE_SUBSCRIPTIONS !== "true";
