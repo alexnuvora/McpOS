@@ -20,3 +20,11 @@ verify_jwt = false
 
 [functions.device-result]
 verify_jwt = false
+
+# Local CLI auth settings; hosted configuration is managed separately.
+[auth]
+site_url = "http://127.0.0.1:3000"
+additional_redirect_urls = ["http://127.0.0.1:3000/auth/recovery", "http://127.0.0.1:3000/auth/callback"]
+
+[auth.email]
+enable_confirmations = true
