@@ -1,3 +1,4 @@
+import { mcposAppOrigin } from "@/lib/app-origin";
 import { NextRequest, NextResponse } from "next/server";
 import * as z from "zod/v4";
 import { getDeviceAccount, supabaseRest } from "@/lib/device-auth";
@@ -9,7 +10,7 @@ export async function POST(request: NextRequest) {
   const auth = await getDeviceAccount(request);
   if ("response" in auth) return auth.response;
   const key = process.env.STRIPE_SECRET_KEY;
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL;
+  const appUrl = mcposAppOrigin();
   if (process.env.MCPOS_BILLING_ENABLED !== "true" || !key?.startsWith("sk_test_") || !appUrl) {
     return NextResponse.json({ error: "Sandbox billing is unavailable." }, { status: 503 });
   }
