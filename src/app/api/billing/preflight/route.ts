@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getDeviceAccount } from "@/lib/device-auth";
+import { getDeviceAccount, supabaseRest } from "@/lib/device-auth";
 import { isAllowedMcpOSEmail } from "@/lib/supabase/server";
 import { evaluateSandboxEntitlement } from "@/lib/billing-entitlement";
 import { mcposAppOrigin } from "@/lib/app-origin";
@@ -18,5 +18,16 @@ export async function GET(request: NextRequest) {
   const entitlement = readiness.readyForPreviewCheckout && mcposAppOrigin() === "https://deploy-preview-12--mcpos-dashboard.netlify.app"
     ? await evaluateSandboxEntitlement(auth.account.userId)
     : null;
-  return NextResponse.json({ ...readiness, entitlementPreview: entitlement ? { status: entitlement.status, plan: entitlement.status === "allowed" ? entitlement.billing.billing_plan ?? null : null, enforcementChanged: false } : null }, { headers: { "Cache-Control": "no-store" } });
+  // Evidence from this account's persisted ledger, not a blanket claim about
+  // Stripe delivery health or other customers' subscriptions.
+  let webhookEvidence: { status: "observed" | "none" | "unavailable" | "not_checked"; latestEventAt: string | null } = { status: "not_checked", latestEventAt: null };
+  if (readiness.enabled && readiness.checks.ledgerReady) {
+    try {
+      const response = await supabaseRest("mcpos_billing_events?select=event_created_at&user_id=eq." + encodeURIComponent(auth.account.userId) + "&order=event_created_at.desc&limit=1", { signal: AbortSignal.timeout(5000) });
+      if (!response.ok) throw new Error("Ledger unavailable");
+      const [event] = await response.json();
+      webhookEvidence = event ? { status: "observed", latestEventAt: event.event_created_at } : { status: "none", latestEventAt: null };
+    } catch { webhookEvidence = { status: "unavailable", latestEventAt: null }; }
+  }
+  return NextResponse.json({ ...readiness, webhookEvidence, entitlementPreview: entitlement ? { status: entitlement.status, plan: entitlement.status === "allowed" ? entitlement.billing.billing_plan ?? null : null, enforcementChanged: false } : null }, { headers: { "Cache-Control": "no-store" } });
 }
