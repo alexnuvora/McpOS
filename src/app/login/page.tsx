@@ -27,11 +27,13 @@ export default function LoginPage() {
 
   useEffect(() => {
     let stopped = false;
-    setPasswordUpdated(new URLSearchParams(window.location.search).get("password") === "updated");
     fetch("/api/auth/login", { cache: "no-store" }).then(async response => {
       if (!response.ok) throw new Error("Sign-in configuration unavailable");
       const result = await response.json();
-      if (!stopped) setConfig(result);
+      if (!stopped) {
+        setConfig(result);
+        setPasswordUpdated(new URLSearchParams(window.location.search).get("password") === "updated");
+      }
     }).catch(() => { if (!stopped) setError("Sign-in configuration unavailable. Refresh and try again."); });
     return () => { stopped = true; };
   }, []);
