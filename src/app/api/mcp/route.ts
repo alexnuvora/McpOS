@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { McpServer } from "@modelcontextprotocol/server";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/server";
 import * as z from "zod/v4";
-import { supabaseRest } from "@/lib/device-auth";
+import { isMcpOSAccountIdAllowed, supabaseRest } from "@/lib/device-auth";
 import { checkCommandEntitlement } from "@/lib/billing-entitlement";
 import { MCP_RESOURCE_URL } from "@/lib/mcp-oauth";
 
@@ -22,6 +22,7 @@ async function authenticateClient(request: NextRequest): Promise<McpClient | nul
   if (!response.ok) throw new Error("McpOS client authentication service is unavailable.");
   const [client] = await response.json() as McpClient[];
   if (!client || client.revoked_at || (client.token_expires_at && (!Number.isFinite(Date.parse(client.token_expires_at)) || Date.parse(client.token_expires_at) <= Date.now())) || (client.token_resource && client.token_resource !== MCP_RESOURCE_URL)) return null;
+  if (!await isMcpOSAccountIdAllowed(client.user_id)) return null;
   const cutoff = new Date(Date.now() - 300_000).toISOString();
   if (!client.last_used_at || Date.parse(client.last_used_at) < Date.parse(cutoff)) {
     try { await supabaseRest(`mcpos_mcp_clients?id=eq.${client.id}&revoked_at=is.null&or=(last_used_at.is.null,last_used_at.lt.${cutoff})`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ last_used_at: new Date().toISOString() }) }); } catch { /* Activity tracking must not interrupt authentication. */ }
