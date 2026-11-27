@@ -316,7 +316,15 @@ function makeServer(client: McpClient) {
       if (entitlement.status !== "allowed") return { content: [{ type: "text" as const, text: entitlement.status === "subscription_required" ? "An active McpOS subscription is required to request desktop commands. Manage your plan in the McpOS dashboard." : "Subscription verification is temporarily unavailable. No desktop command was queued." }], isError: true };
       if (action === "open") {
         if (!url) return { content: [{ type: "text", text: "A URL is required." }], isError: true };
-        try { const parsed = new URL(url); if (parsed.protocol !== "https:" || !parsed.hostname || parsed.username || parsed.password || parsed.hostname === "localhost" || parsed.hostname.endsWith(".localhost") || parsed.hostname.endsWith(".local") || !parsed.hostname.includes(".") || /^\d+(?:\.\d+){3}$/.test(parsed.hostname) || parsed.hostname.includes(":") || parsed.hostname.endsWith(".internal") || parsed.hostname.endsWith(".home.arpa")) throw new Error("blocked"); }
+        try {
+          const parsed = new URL(url);
+          const host = parsed.hostname.replace(/\.+$/, "").toLowerCase();
+          const reserved = ["localhost", "local", "internal", "home.arpa", "lan", "corp", "test", "invalid", "onion"];
+          if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.port || host.length > 253 ||
+              !host.includes(".") || /^\d+(?:\.\d+){3}$/.test(host) || host.includes(":") ||
+              reserved.some(suffix => host === suffix || host.endsWith("." + suffix)) ||
+              !host.split(".").every(label => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label))) throw new Error("blocked");
+        }
         catch { return { content: [{ type: "text", text: "Only valid HTTPS URLs without embedded credentials or local hostnames are allowed." }], isError: true }; }
       }
       if ((action === "click" || action === "type") && !selector?.trim()) return { content: [{ type: "text", text: "A CSS selector is required." }], isError: true };
