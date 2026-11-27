@@ -30,22 +30,17 @@ export async function POST(request: NextRequest) {
     ? body.client_name.trim().slice(0, 120)
     : "ChatGPT MCP client";
   const clientId = "mcpos_oauth_" + randomBytes(24).toString("base64url");
-  const response = await supabaseRest("mcpos_oauth_clients", {
+  const response = await supabaseRest("rpc/register_mcpos_oauth_client", {
     method: "POST",
-    headers: { Prefer: "return=minimal" },
-    body: JSON.stringify({
-      client_id: clientId,
-      client_name: clientName,
-      redirect_uris: redirects,
-      grant_types: ["authorization_code", "refresh_token"],
-      response_types: ["code"],
-      token_endpoint_auth_method: "none",
-    }),
+    body: JSON.stringify({ p_client_id: clientId, p_client_name: clientName, p_redirect_uris: redirects }),
   });
   if (!response.ok) {
-    console.error("McpOS OAuth client registration failed:", response.status, (await response.text()).slice(0, 300));
+    console.error("McpOS OAuth client registration failed:", response.status);
     return oauthError("server_error", "Could not register the OAuth client.", 503);
   }
+  const registered = await response.json();
+  if (registered === false) return NextResponse.json({ error: "temporarily_unavailable", error_description: "Registration limit reached. Try again later." }, { status: 429, headers: { "Retry-After": "60", "Cache-Control": "no-store" } });
+  if (registered !== true) return oauthError("server_error", "Could not verify registration.", 503);
   return NextResponse.json({
     client_id: clientId,
     client_name: clientName,
