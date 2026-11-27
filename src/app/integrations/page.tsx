@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { ArrowLeft, Copy, KeyRound, Plus, RefreshCw, ShieldCheck, Trash2 } from "lucide-react";
 
-type Client = { id: string; client_name: string; scopes: string[]; created_at: string; last_used_at: string | null; revoked_at: string | null };
+type Client = { id: string; client_name: string; scopes: string[]; created_at: string; last_used_at: string | null; revoked_at: string | null; token_expires_at: string | null };
 
 export default function IntegrationsPage() {
   const [clients, setClients] = useState<Client[]>([]);
@@ -45,7 +45,7 @@ export default function IntegrationsPage() {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error ?? "Could not create MCP client.");
       setToken(data.token);
-      setMessage("Client created. Copy the token now; it will not be shown again.");
+      setMessage("Client created. Copy the token now; it will not be shown again. It expires in 90 days.");
       await load();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Could not create MCP client.");
@@ -125,7 +125,7 @@ export default function IntegrationsPage() {
 
       <section className="mb-6 rounded-2xl border border-[#293345] bg-[#111824] p-5">
         <h2 className="text-base font-semibold">Create a bearer key (Claude Desktop / other MCP clients)</h2>
-        <p className="mt-1 text-xs text-slate-500">Use one key per client so you can revoke access independently. ChatGPT Enterprise uses the OAuth connection below and does not need a copied key.</p>
+        <p className="mt-1 text-xs text-slate-500">Use one key per client so you can revoke access independently. New bearer keys expire after 90 days; create a replacement before expiry. Existing legacy keys should be rotated manually. ChatGPT Enterprise uses the OAuth connection below and does not need a copied key.</p>
         <div className="mt-4 flex flex-col gap-3 sm:flex-row">
           <input value={name} onChange={event=>setName(event.target.value)} maxLength={80} placeholder="Client name" className="min-w-0 flex-1 rounded-lg border border-[#30394a] bg-[#0c121c] px-3 py-2.5 text-sm outline-none focus:border-indigo-400"/>
           <label className="flex items-center gap-2 rounded-lg border border-[#30394a] px-3 py-2 text-xs text-slate-300"><input type="checkbox" checked={allowScreenCapture} onChange={event=>setAllowScreenCapture(event.target.checked)} className="accent-indigo-500"/> Allow screen capture for this key</label>
@@ -147,7 +147,7 @@ export default function IntegrationsPage() {
 
       <section className="rounded-2xl border border-[#293345] bg-[#111824] p-5">
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-base font-semibold">Registered AI clients</h2><p className="mt-1 text-xs text-slate-500">Revoke one key or all active AI sessions instantly.</p></div><div className="flex items-center gap-2"><button onClick={()=>void revokeAllClients()} disabled={busy||!clients.some(client=>!client.revoked_at)} className="rounded-lg border border-rose-400/30 px-3 py-2 text-xs text-rose-300 hover:bg-rose-400/10 disabled:opacity-40">Revoke all sessions</button><button onClick={()=>void load()} disabled={busy} aria-label="Refresh" className="rounded-lg border border-[#30394a] p-2 text-slate-400 hover:text-white"><RefreshCw size={15}/></button></div></div>
-        {clients.length===0?<p className="rounded-lg border border-dashed border-[#30394a] p-5 text-center text-sm text-slate-500">No AI clients created yet.</p>:<div className="space-y-2">{clients.map(client=><div key={client.id} className="flex flex-col justify-between gap-3 rounded-xl border border-[#252d3a] bg-[#0c121c] p-4 sm:flex-row sm:items-center"><div className="min-w-0"><div className="font-medium">{client.client_name}</div><div className="mt-1 text-xs text-slate-500">Created {new Date(client.created_at).toLocaleString()} · {client.scopes.join(", ")}</div><div className="mt-1 text-xs text-slate-500">{client.revoked_at?"Revoked":client.last_used_at?"Last used "+new Date(client.last_used_at).toLocaleString():"Never used"}</div></div>{!client.revoked_at&&<button disabled={busy} onClick={()=>void revokeClient(client.id)} className="inline-flex items-center justify-center gap-2 self-start rounded-lg border border-rose-400/20 px-3 py-2 text-xs text-rose-300 hover:bg-rose-400/10 disabled:opacity-50"><Trash2 size={13}/> Revoke</button>}</div>)}</div>}
+        {clients.length===0?<p className="rounded-lg border border-dashed border-[#30394a] p-5 text-center text-sm text-slate-500">No AI clients created yet.</p>:<div className="space-y-2">{clients.map(client=><div key={client.id} className="flex flex-col justify-between gap-3 rounded-xl border border-[#252d3a] bg-[#0c121c] p-4 sm:flex-row sm:items-center"><div className="min-w-0"><div className="font-medium">{client.client_name}</div><div className="mt-1 text-xs text-slate-500">Created {new Date(client.created_at).toLocaleString()} · {client.scopes.join(", ")}</div><div className="mt-1 text-xs text-slate-500">{client.revoked_at?"Revoked":client.last_used_at?"Last used "+new Date(client.last_used_at).toLocaleString():"Never used"}</div>{!client.revoked_at&&<div className="mt-1 text-xs text-slate-500">{client.token_expires_at?"Access credential expiry: "+new Date(client.token_expires_at).toLocaleString()+" (OAuth may renew automatically)":"Legacy credential without expiry — rotate or revoke"}</div>}</div>{!client.revoked_at&&<button disabled={busy} onClick={()=>void revokeClient(client.id)} className="inline-flex items-center justify-center gap-2 self-start rounded-lg border border-rose-400/20 px-3 py-2 text-xs text-rose-300 hover:bg-rose-400/10 disabled:opacity-50"><Trash2 size={13}/> Revoke</button>}</div>)}</div>}
       </section>
       <section className="mt-6 rounded-2xl border border-[#293345] bg-[#111824] p-5">
         <h2 className="font-semibold">MCP server address</h2>
