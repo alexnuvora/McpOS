@@ -39,6 +39,9 @@ begin
     (token_hash, client_id, mcp_client_id, user_id, resource, scopes, expires_at)
   values (p_refresh_hash, old_token.client_id, old_token.mcp_client_id,
     old_token.user_id, old_token.resource, old_token.scopes, now() + interval '30 days');
+  insert into public.mcpos_device_audit (user_id,event_type,outcome,metadata)
+    values (old_token.user_id,'mcp.oauth.token_refreshed','success',
+      jsonb_build_object('client_id',old_token.client_id,'mcp_client_id',old_token.mcp_client_id));
   return true;
 end;
 $$;
