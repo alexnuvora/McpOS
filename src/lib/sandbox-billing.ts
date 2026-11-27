@@ -2,10 +2,19 @@ import { mcposAppOrigin } from "@/lib/app-origin";
 import { supabaseRest } from "@/lib/device-auth";
 
 const previewOrigin = "https://deploy-preview-12--mcpos-dashboard.netlify.app";
+const vercelTestOrigin = "https://mcpos-dashboard.vercel.app";
+
+export function isHostedSandboxOrigin(): boolean {
+  const origin = mcposAppOrigin();
+  return origin === previewOrigin || (origin === vercelTestOrigin && process.env.MCPOS_BILLING_ENABLED === "true");
+}
 
 export function sandboxBillingEnabled(): boolean {
   if (process.env.MCPOS_BILLING_ENABLED === "false") return false;
-  // The trusted build marker is only set for this Netlify deploy preview.
+  // Vercel hosted testing is opt-in and never permits live Stripe keys or public onboarding.
+  if (mcposAppOrigin() === vercelTestOrigin) {
+    return process.env.MCPOS_BILLING_ENABLED === "true" && process.env.MCPOS_ENFORCE_SUBSCRIPTIONS !== "true" && process.env.MCPOS_PUBLIC_REGISTRATION !== "true" && Boolean(process.env.STRIPE_SECRET_KEY?.startsWith("sk_test_"));
+  }
   return process.env.MCPOS_BUILD_PREVIEW_ORIGIN === previewOrigin ||
     (mcposAppOrigin()?.startsWith("http://127.0.0.1:") === true && process.env.MCPOS_BILLING_ENABLED === "true");
 }
@@ -26,8 +35,7 @@ export async function sandboxBillingReadiness() {
   const pricesConfigured = priceIds.every(id => /^price_[A-Za-z0-9]+$/.test(id || "")) && new Set(priceIds).size === 3;
   const portalId = process.env.STRIPE_PORTAL_CONFIGURATION;
   const portalConfigured = /^bpc_[A-Za-z0-9]+$/.test(portalId || "");
-  const appOrigin = mcposAppOrigin() || "";
-  const previewOriginConfigured = appOrigin.replace(/\/$/, "") === "https://deploy-preview-12--mcpos-dashboard.netlify.app";
+  const previewOriginConfigured = isHostedSandboxOrigin();
   const enabled = sandboxBillingEnabled();
   const enforcementDisabled = process.env.MCPOS_ENFORCE_SUBSCRIPTIONS !== "true";
   const publicRegistrationDisabled = process.env.MCPOS_PUBLIC_REGISTRATION !== "true";
