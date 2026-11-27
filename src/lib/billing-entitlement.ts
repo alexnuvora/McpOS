@@ -47,6 +47,11 @@ export async function checkCommandEntitlement(userId: string): Promise<CommandEn
   if (process.env.MCPOS_ENFORCE_SUBSCRIPTIONS !== "true") return { status: "allowed", billing: {} };
   const owners = (process.env.MCPOS_BILLING_EXEMPT_USER_IDS || "").split(",").map(id => id.trim()).filter(Boolean);
   if (owners.includes(userId)) return { status: "allowed", billing: {} };
+  return evaluateSandboxEntitlement(userId);
+}
+
+/** Evaluate the paid policy without changing global enforcement or queuing a command. */
+export async function evaluateSandboxEntitlement(userId: string): Promise<CommandEntitlement> {
   try {
     const subscriptions = await getSandboxSubscriptions(userId);
     for (const plan of ["business", "professional", "personal"] as const) {
