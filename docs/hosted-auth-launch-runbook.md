@@ -3,7 +3,7 @@
 Status on 2026-11-27: hosted auth verification observed CAPTCHA disabled, six-character provider password minimum, two authentication emails per hour, confirmation required, direct provider sign-up enabled and anonymous sign-in disabled. McpOS public onboarding remains disabled. This document is a rollout plan, not a claim that these settings have changed.
 
 ## Prerequisites (owner-controlled)
-- Create a production Cloudflare Turnstile widget for mcpos-dashboard.netlify.app and a separate preview widget for deploy-preview-12--mcpos-dashboard.netlify.app.
+- While the two deployments share one Auth project, use one Cloudflare Turnstile widget explicitly authorised for mcpos-dashboard.netlify.app and deploy-preview-12--mcpos-dashboard.netlify.app. Use separate widgets only after separating the Auth projects.
 - Configure a verified sending domain and dedicated transactional SMTP credentials. Supabase's built-in mail service is development-only; confirm sender identity, delivery, capacity and abuse limits before enabling signup.
 - Set MCPOS_TURNSTILE_SITE_KEY through Netlify's environment settings for the corresponding deployment contexts. The site key is public; the secret key belongs only in the Supabase Auth provider settings, never in Git, logs, or the frontend.
 - Both deployments currently share hosted Auth. Stage and verify a compatible login build on both origins before enabling provider-wide CAPTCHA, or create a separate staging Auth project. A single shared Auth provider must accept the widget tokens from both origins; do not assume separate widget secrets will work against one provider. Prefer a single production widget with explicitly authorised hostnames while the shared project is retained.
