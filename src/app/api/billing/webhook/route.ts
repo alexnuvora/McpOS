@@ -2,7 +2,7 @@ import { sandboxBillingEnabled } from "@/lib/sandbox-billing";
 import { NextRequest, NextResponse } from "next/server";
 import * as z from "zod/v4";
 import { supabaseRest } from "@/lib/device-auth";
-import { verifyStripeSignature } from "@/lib/stripe-signature.mjs";
+import { readStripeBody, verifyStripeSignature } from "@/lib/stripe-signature.mjs";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -33,10 +33,8 @@ export async function POST(request: NextRequest) {
   if (!sandboxBillingEnabled() || !secret || !process.env.STRIPE_SECRET_KEY?.startsWith("sk_test_")) {
     return NextResponse.json({ error: "Sandbox billing is unavailable." }, { status: 503 });
   }
-  const length = Number(request.headers.get("content-length") || "0");
-  if (length > 262144) return NextResponse.json({ error: "Payload too large." }, { status: 413 });
-  const raw = Buffer.from(await request.arrayBuffer());
-  if (raw.length > 262144) return NextResponse.json({ error: "Payload too large." }, { status: 413 });
+  const raw = await readStripeBody(request);
+  if (raw === null) return NextResponse.json({ error: "Payload too large or invalid." }, { status: 413 });
   if (!verifyStripeSignature(raw, request.headers.get("stripe-signature") || "", secret)) {
     return NextResponse.json({ error: "Invalid signature." }, { status: 400 });
   }
