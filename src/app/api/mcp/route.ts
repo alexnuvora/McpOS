@@ -41,6 +41,16 @@ function scopeError(scope: string) {
     },
   };
 }
+async function queueError(response: Response) {
+  const error = await response.json().catch(() => null);
+  const message = error?.code === "P0001" && error?.message === "mcpos_daily_command_limit"
+    ? "Your daily McpOS command allowance has been reached. It resets at midnight UTC. View your usage in the billing dashboard."
+    : error?.code === "P0001" && error?.message === "mcpos_billing_verification_expired"
+      ? "The subscription verification window expired. Request a fresh command."
+      : "Could not queue the desktop command. No command was accepted.";
+  return { content: [{ type: "text" as const, text: message }], isError: true };
+}
+
 function makeServer(client: McpClient) {
   const server = new McpServer({ name: "mcpos-workspace", version: "0.2.0" });
 
@@ -151,7 +161,7 @@ function makeServer(client: McpClient) {
           expires_at: expiresAt,
         }),
       });
-      if (!commandResponse.ok) return { content: [{ type: "text", text: "Could not queue a desktop status request." }], isError: true };
+      if (!commandResponse.ok) return queueError(commandResponse);
       const [command] = await commandResponse.json();
       return { content: [{ type: "text", text: JSON.stringify({
         commandId: command.id,
@@ -187,7 +197,7 @@ function makeServer(client: McpClient) {
         method: "POST", headers: { Prefer: "return=representation" },
         body: JSON.stringify({ user_id: client.user_id, mcp_client_id: client.id, ...entitlement.billing, device_id: device.id, command: "screen.capture", payload: { display: "primary", max_bytes: 4_000_000 }, expires_at: expiresAt }),
       });
-      if (!commandResponse.ok) return { content: [{ type: "text", text: "Could not queue the screen-capture request. The database migration may not yet be deployed." }], isError: true };
+      if (!commandResponse.ok) return queueError(commandResponse);
       const [command] = await commandResponse.json();
       await supabaseRest("mcpos_device_audit", {
         method: "POST", headers: { Prefer: "return=minimal" },
@@ -220,7 +230,7 @@ function makeServer(client: McpClient) {
         method: "POST", headers: { Prefer: "return=representation" },
         body: JSON.stringify({ user_id: client.user_id, mcp_client_id: client.id, ...entitlement.billing, device_id: device.id, command: "desktop.accessibility", payload: { scope: "top_level_windows", max_items: 40 }, expires_at: expiresAt }),
       });
-      if (!commandResponse.ok) return { content: [{ type: "text", text: "Could not queue the accessibility request. The database migration may not yet be deployed." }], isError: true };
+      if (!commandResponse.ok) return queueError(commandResponse);
       const [command] = await commandResponse.json();
       await supabaseRest("mcpos_device_audit", {
         method: "POST", headers: { Prefer: "return=minimal" },
@@ -252,7 +262,7 @@ function makeServer(client: McpClient) {
       const payload = operation === "list_folders" ? {} : { path };
       const expiresAt = new Date(Date.now() + 60_000).toISOString();
       const queued = await supabaseRest("mcpos_device_commands", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ user_id: client.user_id, mcp_client_id: client.id, ...entitlement.billing, device_id: device.id, command, payload, expires_at: expiresAt }) });
-      if (!queued.ok) return { content: [{ type: "text", text: "Could not queue the file request. The database migration may not yet be deployed." }], isError: true };
+      if (!queued.ok) return queueError(queued);
       const [row] = await queued.json();
       await supabaseRest("mcpos_device_audit", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ user_id: client.user_id, device_id: device.id, event_type: "files." + operation + ".requested", outcome: "success", metadata: { command_id: row.id, client_name: client.client_name } }) });
       return { content: [{ type: "text", text: JSON.stringify({ commandId: row.id, operation, path: path ?? null, status: "queued", localApproval: "The Windows computer must be online and the path must be inside a folder selected in its local McpOS UI.", nextStep: "Call mcpos_get_command_status with this commandId." }, null, 2) }] };
@@ -285,7 +295,7 @@ function makeServer(client: McpClient) {
       const payload = action === "pointer_click" ? { x, y, button: button ?? "left" } : action === "pointer_move" ? { x, y } : action === "pointer_scroll" ? { steps, axis: axis ?? "vertical" } : action === "keyboard_type" ? { text } : { keys };
       const expiresAt = new Date(Date.now() + 60_000).toISOString();
       const queued = await supabaseRest("mcpos_device_commands", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ user_id: client.user_id, mcp_client_id: client.id, ...entitlement.billing, device_id: device.id, command, payload, expires_at: expiresAt }) });
-      if (!queued.ok) return { content: [{ type: "text", text: "Could not queue the action. The database migration may not yet be deployed." }], isError: true };
+      if (!queued.ok) return queueError(queued);
       const [row] = await queued.json();
       await supabaseRest("mcpos_device_audit", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ user_id: client.user_id, device_id: device.id, event_type: command + ".requested", outcome: "success", metadata: { command_id: row.id, client_name: client.client_name } }) });
       return { content: [{ type: "text", text: JSON.stringify({ commandId: row.id, action, status: "queued", device: device.device_name, approval: "The Windows companion enforces its local Manual, Selected or AUTO policy. Manual or non-selected actions require a fresh local approval; active AUTO permissions may execute automatically.", nextStep: "Call mcpos_get_command_status after the user approves or denies." }, null, 2) }] };
@@ -320,7 +330,7 @@ function makeServer(client: McpClient) {
       const payload = action === "open" ? { url } : action === "click" ? { selector } : action === "type" ? { selector, text } : {};
       const expiresAt = new Date(Date.now() + 60_000).toISOString();
       const queued = await supabaseRest("mcpos_device_commands", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ user_id: client.user_id, mcp_client_id: client.id, ...entitlement.billing, device_id: device.id, command, payload, expires_at: expiresAt }) });
-      if (!queued.ok) return { content: [{ type: "text", text: "Could not queue the browser request. The database migration may not yet be deployed." }], isError: true };
+      if (!queued.ok) return queueError(queued);
       const [row] = await queued.json();
       await supabaseRest("mcpos_device_audit", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ user_id: client.user_id, device_id: device.id, event_type: command + ".requested", outcome: "success", metadata: { command_id: row.id, client_name: client.client_name } }) });
       return { content: [{ type: "text", text: JSON.stringify({ commandId: row.id, action, status: action === "snapshot" ? "queued" : "awaiting_local_approval", device: device.device_name, localConsent: "The isolated browser switch must be ON on the Windows computer.", approval: action === "snapshot" ? "Read-only snapshot; no click or input is performed." : "The Windows companion enforces its local Manual, Selected or AUTO policy; browser consent remains separately required.", nextStep: "Call mcpos_get_command_status with this commandId." }, null, 2) }] };
