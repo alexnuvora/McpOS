@@ -53,6 +53,7 @@ test("signed billing webhook: invalid signature, live rejection, replay and canc
 });
 test("unauthenticated billing status and checkout are denied", async () => {
   assert.equal((await fetch(base+"/api/billing/status")).status,401);
+  assert.equal((await fetch(base+"/api/billing/preflight")).status,401);
   assert.equal((await fetch(base+"/api/billing/checkout",{method:"POST",headers:{"Content-Type":"application/json",Origin:base},body:JSON.stringify({plan:"personal"})})).status,401);
 });
 
@@ -77,6 +78,16 @@ test("authenticated billing checks are scoped to the signed-in account", async (
     assert.ifError(signed.error);
     const cookie = [...cookies].map(([name,value]) => name + "=" + value).join("; ");
     assert.ok(cookie);
+    const preflight = await fetch(base+"/api/billing/preflight",{headers:{Cookie:cookie}});
+    assert.equal(preflight.status,200);
+    const readiness = await preflight.json();
+    assert.equal(readiness.readyForPreviewCheckout,false);
+    assert.equal(readiness.checks.ledgerReady,true);
+    assert.equal(readiness.checks.reservationsReady,true);
+    assert.equal(readiness.checks.quotasReady,true);
+    assert.equal(readiness.checks.stripeAccountVerified,false);
+    assert.ok(!JSON.stringify(readiness).includes("sk_test_"));
+    assert.ok(!JSON.stringify(readiness).includes("whsec_"));
     const status = await fetch(base+"/api/billing/status",{headers:{Cookie:cookie}});
     assert.equal(status.status,200);
     assert.equal((await status.json()).subscriptions.length,0,"another account's ledger must not be visible");
