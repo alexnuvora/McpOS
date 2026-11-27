@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createHash, timingSafeEqual } from "node:crypto";
-import { supabaseRest } from "@/lib/device-auth";
+import { isMcpOSAccountIdAllowed, supabaseRest } from "@/lib/device-auth";
 import { hashOAuthToken, MCP_RESOURCE_URL, newOAuthToken, oauthError } from "@/lib/mcp-oauth";
 
 export const dynamic = "force-dynamic";
@@ -51,6 +51,9 @@ export async function POST(request: NextRequest) {
         !sameSecret(calculatedChallenge, authCode.code_challenge)) {
       return oauthError("invalid_grant", "The authorization code is expired, already used, or does not match this PKCE request.");
     }
+
+    try { if (!await isMcpOSAccountIdAllowed(authCode.user_id)) return oauthError("invalid_grant", "Account access is no longer available."); }
+    catch { return oauthError("server_error", "Account verification unavailable.", 503); }
 
     const consumed = await supabaseRest(`mcpos_oauth_codes?code_hash=eq.${codeHash}&consumed_at=is.null&expires_at=gt.${encodeURIComponent(new Date().toISOString())}`, {
       method: "PATCH", headers: { Prefer: "return=representation" }, body: JSON.stringify({ consumed_at: new Date().toISOString() }),
@@ -103,6 +106,9 @@ export async function POST(request: NextRequest) {
   if (!stored || stored.client_id !== clientId || stored.resource !== resource || stored.revoked_at || new Date(stored.expires_at).getTime() <= Date.now()) {
     return oauthError("invalid_grant", "The refresh token is invalid, expired, or revoked.");
   }
+
+  try { if (!await isMcpOSAccountIdAllowed(stored.user_id)) return oauthError("invalid_grant", "Account access is no longer available."); }
+  catch { return oauthError("server_error", "Account verification unavailable.", 503); }
 
   const ownerResponse = await supabaseRest(`mcpos_mcp_clients?select=id,revoked_at&id=eq.${stored.mcp_client_id}&user_id=eq.${stored.user_id}&limit=1`);
   if (!ownerResponse.ok) return oauthError("server_error", "Could not verify the McpOS session.", 503);
