@@ -74,6 +74,25 @@ test("authenticated billing checks are scoped to the signed-in account", async (
     setAll: entries => entries.forEach(({name,value}) => cookies.set(name,value)),
   } });
   try {
+    const login = (payload, origin = base, cookie = "") => fetch(base+"/api/auth/login",{method:"POST",headers:{Origin:origin,"Content-Type":"application/json",Cookie:cookie},body:JSON.stringify(payload)});
+    const credentials = {action:"password",email,password,next:"/billing"};
+    assert.equal((await login(credentials,"https://wrong-origin.invalid")).status,403);
+    assert.equal((await login({...credentials,password:"incorrect-password"})).status,401);
+    assert.equal((await login({...credentials,email:"not-allowed@example.invalid"})).status,401);
+    const deniedRegistration = await login({action:"register",email:"not-allowed@example.invalid",password:"test-password-123"});
+    assert.equal(deniedRegistration.status,200);
+    assert.deepEqual(await deniedRegistration.json(),{ok:true});
+    assert.equal((await login({action:"register",email,password:"short"})).status,400);
+    const appLogin = await login({...credentials,next:"//evil.invalid"});
+    assert.equal(appLogin.status,200);
+    assert.equal((await appLogin.json()).next,"/");
+    const appCookies = appLogin.headers.getSetCookie().map(value=>value.split(";")[0]).join("; ");
+    assert.ok(appCookies);
+    assert.equal((await fetch(base+"/api/billing/status",{headers:{Cookie:appCookies}})).status,200);
+    const updatePassword = (payload, cookie="", origin=base) => fetch(base+"/api/auth/password",{method:"POST",headers:{Origin:origin,"Content-Type":"application/json",Cookie:cookie},body:JSON.stringify(payload)});
+    assert.equal((await updatePassword({password:"replacement-password-123"})).status,401);
+    assert.equal((await updatePassword({password:"replacement-password-123"},appCookies,"https://wrong-origin.invalid")).status,403);
+    assert.equal((await updatePassword({password:"short"},appCookies)).status,400);
     const signed = await auth.auth.signInWithPassword({email,password});
     assert.ifError(signed.error);
     const cookie = [...cookies].map(([name,value]) => name + "=" + value).join("; ");
@@ -95,6 +114,10 @@ test("authenticated billing checks are scoped to the signed-in account", async (
     assert.equal((await request("/api/billing/checkout",{plan:"personal"},"https://wrong-origin.invalid")).status,403);
     assert.equal((await request("/api/billing/checkout",{plan:"invalid-plan"})).status,400);
     assert.equal((await request("/api/billing/portal",{subscriptionId:stripeId})).status,404,"another account's subscription must not be accessible");
+    const replacement = "replacement-" + randomUUID();
+    assert.equal((await updatePassword({password:replacement},cookie)).status,200);
+    assert.equal((await login(credentials)).status,401);
+    assert.equal((await login({...credentials,password:replacement})).status,200);
   } finally {
     await admin.auth.admin.deleteUser(created.data.user.id);
   }
