@@ -72,6 +72,21 @@ jobs:
           done
           curl --fail --silent "$MCPOS_TEST_APP_URL/api/health" >/dev/null
           node --test tests/integration/billing-webhook.test.mjs
+      - name: Run command entitlement HTTP tests with enforcement enabled
+        env:
+          MCPOS_ENFORCE_SUBSCRIPTIONS: "true"
+          MCPOS_TEST_APP_URL: http://127.0.0.1:3001
+          NEXT_PUBLIC_APP_URL: http://127.0.0.1:3001
+        run: |
+          node node_modules/next/dist/bin/next start --hostname 127.0.0.1 --port 3001 > "$RUNNER_TEMP/mcpos-enforcement.log" 2>&1 &
+          pid=$!
+          trap 'kill "$pid" || true' EXIT
+          for i in $(seq 1 40); do
+            if curl --fail --silent "$MCPOS_TEST_APP_URL/api/health" >/dev/null; then break; fi
+            sleep 1
+          done
+          curl --fail --silent "$MCPOS_TEST_APP_URL/api/health" >/dev/null
+          node --test tests/integration/subscription-enforcement.test.mjs
       - name: Stop isolated stack
         if: always()
         run: |
