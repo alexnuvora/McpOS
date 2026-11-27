@@ -37,12 +37,21 @@ export async function getSandboxSubscriptions(userId: string) {
   return subscriptions;
 }
 
-export async function checkCommandEntitlement(userId: string): Promise<"allowed" | "subscription_required" | "unavailable"> {
-  if (process.env.MCPOS_ENFORCE_SUBSCRIPTIONS !== "true") return "allowed";
+type PaidPlan = "personal" | "professional" | "business";
+type CommandEntitlement =
+  | { status: "allowed"; billing: { billing_plan?: PaidPlan; billing_verified_until?: string } }
+  | { status: "subscription_required" | "unavailable" };
+
+export async function checkCommandEntitlement(userId: string): Promise<CommandEntitlement> {
+  if (process.env.MCPOS_ENFORCE_SUBSCRIPTIONS !== "true") return { status: "allowed", billing: {} };
   const owners = (process.env.MCPOS_BILLING_EXEMPT_USER_IDS || "").split(",").map(id => id.trim()).filter(Boolean);
-  if (owners.includes(userId)) return "allowed";
+  if (owners.includes(userId)) return { status: "allowed", billing: {} };
   try {
     const subscriptions = await getSandboxSubscriptions(userId);
-    return subscriptions.some(sub => sub.active) ? "allowed" : "subscription_required";
-  } catch { return "unavailable"; }
+    for (const plan of ["business", "professional", "personal"] as const) {
+      const end = Math.max(0, ...subscriptions.filter(sub => sub.active && sub.plan === plan).map(sub => sub.currentPeriodEnd ?? 0));
+      if (end * 1000 > Date.now()) return { status: "allowed", billing: { billing_plan: plan, billing_verified_until: new Date(Math.min(end * 1000, Date.now() + 75_000)).toISOString() } };
+    }
+    return { status: "subscription_required" };
+  } catch { return { status: "unavailable" }; }
 }
