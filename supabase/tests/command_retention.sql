@@ -27,7 +27,7 @@ begin
 end $$;
 reset role;
 do $$ begin
-  if not exists(select 1 from cron.job where jobname='mcpos-purge-expired-command-data' and active) then raise exception 'Cleanup schedule missing'; end if;
+  if exists(select 1 from cron.job where jobname='mcpos-purge-expired-command-data' and active) then raise exception 'Historical cleanup must not be scheduled before explicit activation'; end if;
   if has_function_privilege('authenticated','public.consume_mcpos_command_result(uuid,uuid,uuid)','EXECUTE') or has_function_privilege('anon','public.mcpos_purge_expired_command_data()','EXECUTE') then raise exception 'Unexpected public RPC privileges'; end if;
 end $$;
 rollback;
