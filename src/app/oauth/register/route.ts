@@ -1,13 +1,15 @@
 import { randomBytes } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseRest } from "@/lib/device-auth";
-import { isSafeRedirectUri, oauthError } from "@/lib/mcp-oauth";
+import { isSafeRedirectUri, oauthError, readOAuthBody } from "@/lib/mcp-oauth";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(request: NextRequest) {
   let body: Record<string, unknown>;
-  try { body = await request.json(); } catch { return oauthError("invalid_client_metadata", "A JSON client registration document is required."); }
+  const raw = await readOAuthBody(request, 49152);
+  if (raw === null) return oauthError("invalid_client_metadata", "Registration document is too large or invalid.", 413);
+  try { body = JSON.parse(raw); if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("invalid document"); } catch { return oauthError("invalid_client_metadata", "A JSON client registration document is required."); }
 
   const redirects = body.redirect_uris;
   if (!Array.isArray(redirects) || redirects.length < 1 || redirects.length > 20 || !redirects.every(isSafeRedirectUri)) {
