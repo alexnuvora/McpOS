@@ -26,6 +26,7 @@ jobs:
     runs-on: windows-latest
     permissions:
       contents: read
+    environment: ${{ startsWith(github.ref, 'refs/tags/v') && 'windows-release' || 'windows-ci' }}
     defaults:
       run:
         working-directory: desktop
@@ -66,8 +67,232 @@ jobs:
       - name: Generate Windows application icon
         run: python scripts/generate_icon.py
 
-      - name: Build Windows installers
+      - name: Build unsigned CI installers
+        if: "!startsWith(github.ref, 'refs/tags/v')"
         run: npm run tauri:build
+
+      - name: Install Azure Artifact Signing CLI
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: cargo install artifact-signing-cli --locked
+
+      - name: Build signed Windows installers
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          SIGNING_ENDPOINT: ${{ vars.MCPOS_SIGNING_ENDPOINT }}
+          SIGNING_ACCOUNT: ${{ vars.MCPOS_SIGNING_ACCOUNT }}
+          SIGNING_PROFILE: ${{ vars.MCPOS_SIGNING_PROFILE }}
+        run: |
+          if (-not $env:AZURE_CLIENT_ID -or -not $env:AZURE_CLIENT_SECRET -or -not $env:AZURE_TENANT_ID) { throw "Release signing credentials are missing" }
+          if ($env:SIGNING_ENDPOINT -notmatch '^https://[a-z0-9]+\.codesigning\.azure\.net/?
+
+      - name: Upload Windows installers
+        if: "!startsWith(github.ref, 'refs/tags/v')"
+        uses: actions/upload-artifact@v4
+        with:
+          name: McpOS-Windows-Installers
+          path: |
+            desktop/src-tauri/target/release/bundle/nsis/*.exe
+            desktop/src-tauri/target/release/bundle/msi/*.msi
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Verify release signatures
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          EXPECTED_PUBLISHER: ${{ vars.MCPOS_SIGNING_PUBLISHER_SUBJECT }}
+        run: |
+          if (-not $env:EXPECTED_PUBLISHER) { throw "Expected certificate publisher is not configured" }
+          $files = @(Get-ChildItem src-tauri/target/release/bundle/nsis/*.exe, src-tauri/target/release/bundle/msi/*.msi -ErrorAction SilentlyContinue)
+          if ($files.Count -lt 2) { throw "Expected NSIS and MSI installers" }
+          $app = Get-Item src-tauri/target/release/mcpos-desktop.exe
+          foreach ($file in @($app) + $files) {
+            $sig = Get-AuthenticodeSignature $file.FullName
+            if ($sig.Status -ne 'Valid' -or -not $sig.TimeStamperCertificate) { throw "Unsigned, untrusted or untimestamped release file: $($file.Name)" }
+            if ($sig.SignerCertificate.Subject -ne $env:EXPECTED_PUBLISHER) { throw "Unexpected publisher: $($file.Name)" }
+            Write-Host "Verified: $($file.Name)"
+          }
+
+      - name: Generate installer checksums
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          Get-ChildItem src-tauri/target/release/bundle/nsis/*.exe, src-tauri/target/release/bundle/msi/*.msi | ForEach-Object {
+            "$( (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() )  $($_.Name)"
+          } | Set-Content -Encoding ascii SHA256SUMS.txt
+
+      - name: Upload verified release assets
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: McpOS-Verified-Release
+          path: |
+            desktop/src-tauri/target/release/bundle/nsis/*.exe
+            desktop/src-tauri/target/release/bundle/msi/*.msi
+            desktop/SHA256SUMS.txt
+          if-no-files-found: error
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: windows-build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: McpOS-Verified-Release
+          path: release
+      - name: Publish GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          draft: true
+          files: |
+            release/**/*.exe
+            release/**/*.msi
+            release/**/SHA256SUMS.txt
+ -or $env:SIGNING_ACCOUNT -notmatch '^[a-zA-Z0-9-]+
+
+      - name: Upload Windows installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: McpOS-Windows-Installers
+          path: |
+            desktop/src-tauri/target/release/bundle/nsis/*.exe
+            desktop/src-tauri/target/release/bundle/msi/*.msi
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Verify release signatures
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem src-tauri/target/release/bundle/nsis/*.exe, src-tauri/target/release/bundle/msi/*.msi -ErrorAction SilentlyContinue)
+          if ($files.Count -lt 2) { throw "Expected NSIS and MSI installers" }
+          $app = Get-Item src-tauri/target/release/mcpos-desktop.exe
+          foreach ($file in @($app) + $files) {
+            $sig = Get-AuthenticodeSignature $file.FullName
+            if ($sig.Status -ne 'Valid' -or -not $sig.TimeStamperCertificate) { throw "Unsigned, untrusted or untimestamped release file: $($file.Name)" }
+            Write-Host "Verified: $($file.Name)"
+          }
+
+      - name: Generate installer checksums
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          Get-ChildItem src-tauri/target/release/bundle/nsis/*.exe, src-tauri/target/release/bundle/msi/*.msi | ForEach-Object {
+            "$( (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() )  $($_.Name)"
+          } | Set-Content -Encoding ascii SHA256SUMS.txt
+
+      - name: Upload verified release assets
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: McpOS-Verified-Release
+          path: |
+            desktop/src-tauri/target/release/bundle/nsis/*.exe
+            desktop/src-tauri/target/release/bundle/msi/*.msi
+            desktop/SHA256SUMS.txt
+          if-no-files-found: error
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: windows-build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: McpOS-Verified-Release
+          path: release
+      - name: Publish GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          draft: true
+          files: |
+            release/**/*.exe
+            release/**/*.msi
+            release/**/SHA256SUMS.txt
+ -or $env:SIGNING_PROFILE -notmatch '^[a-zA-Z0-9-]+
+
+      - name: Upload Windows installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: McpOS-Windows-Installers
+          path: |
+            desktop/src-tauri/target/release/bundle/nsis/*.exe
+            desktop/src-tauri/target/release/bundle/msi/*.msi
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Verify release signatures
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem src-tauri/target/release/bundle/nsis/*.exe, src-tauri/target/release/bundle/msi/*.msi -ErrorAction SilentlyContinue)
+          if ($files.Count -lt 2) { throw "Expected NSIS and MSI installers" }
+          $app = Get-Item src-tauri/target/release/mcpos-desktop.exe
+          foreach ($file in @($app) + $files) {
+            $sig = Get-AuthenticodeSignature $file.FullName
+            if ($sig.Status -ne 'Valid' -or -not $sig.TimeStamperCertificate) { throw "Unsigned, untrusted or untimestamped release file: $($file.Name)" }
+            Write-Host "Verified: $($file.Name)"
+          }
+
+      - name: Generate installer checksums
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          Get-ChildItem src-tauri/target/release/bundle/nsis/*.exe, src-tauri/target/release/bundle/msi/*.msi | ForEach-Object {
+            "$( (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() )  $($_.Name)"
+          } | Set-Content -Encoding ascii SHA256SUMS.txt
+
+      - name: Upload verified release assets
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: McpOS-Verified-Release
+          path: |
+            desktop/src-tauri/target/release/bundle/nsis/*.exe
+            desktop/src-tauri/target/release/bundle/msi/*.msi
+            desktop/SHA256SUMS.txt
+          if-no-files-found: error
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: windows-build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: McpOS-Verified-Release
+          path: release
+      - name: Publish GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          draft: true
+          files: |
+            release/**/*.exe
+            release/**/*.msi
+            release/**/SHA256SUMS.txt
+) { throw "Invalid signing configuration" }
+          $command = "artifact-signing-cli -e $env:SIGNING_ENDPOINT -a $env:SIGNING_ACCOUNT -c $env:SIGNING_PROFILE -d McpOS %1"
+          $config = @{ bundle = @{ windows = @{ signCommand = $command } } } | ConvertTo-Json -Depth 5 -Compress
+          $config | Set-Content -Encoding utf8 src-tauri/tauri.release.conf.json
+          npm run tauri:build -- --config src-tauri/tauri.release.conf.json
+          if ($LASTEXITCODE -ne 0) { throw "Signed build failed" }
 
       - name: Upload Windows installers
         uses: actions/upload-artifact@v4
