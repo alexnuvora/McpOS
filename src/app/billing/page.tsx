@@ -95,7 +95,7 @@ export default function BillingPage() {
         {statusMessage && <p className="mt-3 text-sm text-slate-400">{statusMessage}</p>}
         {subscriptions.map(sub => <div key={sub.id} className="mt-4 flex flex-wrap items-center justify-between gap-4 border-t border-slate-800 pt-4">
           <div><p className="font-medium capitalize">{sub.plan || "Unknown plan"} · {sub.status}</p>
-          {sub.currentPeriodEnd && <p className="text-sm text-slate-400">{sub.cancelAtPeriodEnd ? "Ends" : "Period ends"} {new Date(sub.currentPeriodEnd * 1000).toLocaleDateString("en-GB")}</p>}</div>
+          {sub.currentPeriodEnd && !["canceled", "incomplete_expired"].includes(sub.status) && <p className="text-sm text-slate-400">{sub.cancelAtPeriodEnd ? "Ends (will not renew)" : "Period ends"} {new Date(sub.currentPeriodEnd * 1000).toLocaleDateString("en-GB")}</p>}</div>
           <button type="button" disabled={busy !== null} onClick={() => void portal(sub.id)} className="rounded-lg border border-indigo-400 px-4 py-2 text-sm text-indigo-300 disabled:opacity-50">Manage billing</button>
         </div>)}
       </section>
