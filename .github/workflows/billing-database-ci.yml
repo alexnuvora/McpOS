@@ -21,13 +21,8 @@ jobs:
         run: cmp supabase/migrations/20261127024424_mcpos_billing_events.sql supabase/pending/mcpos_billing_events.sql
       - name: Confirm validated command authorization migration
         run: cmp supabase/migrations/20261127030852_mcpos_command_authorization.sql supabase/pending/mcpos_command_authorization.sql
-      - name: Generate staged checkout reservation migration
-        run: |
-          supabase migration new mcpos_checkout_attempts < supabase/pending/mcpos_checkout_attempts.sql
-          file="$(find supabase/migrations -name '*_mcpos_checkout_attempts.sql' -print)"
-          test -f "$file"
-          cmp "$file" supabase/pending/mcpos_checkout_attempts.sql
-          echo "Generated migration: $file"
+      - name: Confirm validated checkout reservation migration
+        run: cmp supabase/migrations/20261127031522_mcpos_checkout_attempts.sql supabase/pending/mcpos_checkout_attempts.sql
       - name: Start isolated local database
         run: supabase db start
       - name: Verify private billing ledger privileges
