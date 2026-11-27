@@ -19,6 +19,7 @@ McpOS is operated under VORLEN LTD (company number 17387520). This is an interna
 - Confirm anonymous users are rejected and owner access preserved. Review static token expiry, resource bindings and OAuth client registration abuse controls.
 - Test account isolation, quotas, simultaneous checkouts, device revocation and grant expiry using two accounts.
 - Verify the Windows installer signature and publisher; validate local permission switches, stop controls and browser network isolation.
+- Browser hostname validation is only a lexical top-level navigation safeguard, not a network sandbox. DNS rebinding, private-address resolution and subresource requests require enforceable egress controls and separate runtime tests before public browser automation is offered. Review sensitive-field handling and bridge result confidentiality. Do not claim network isolation based on hostname tests.
 - Exercise ChatGPT and Claude separately with the intended distribution method; confirm current platform policies for paid external functionality.
 - Confirm monitoring and incident response, backup/restore, rate limiting, support contact and refund handling.
 - Keep public registration off until every required gate is evidenced. No live billing until a distinct production rollout and owner approval.
