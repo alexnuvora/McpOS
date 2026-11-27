@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient, isAllowedMcpOSEmail } from "@/lib/supabase/server";
+import { createServerSupabaseClient, isMcpOSAccountAllowed } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
 
@@ -27,7 +27,7 @@ export async function GET(request: NextRequest) {
   }
 
   const { data: { user } } = await supabase.auth.getUser();
-  if (!user || !isAllowedMcpOSEmail(user.email)) {
+  if (!user || !isMcpOSAccountAllowed(user)) {
     await supabase.auth.signOut();
     loginUrl.searchParams.set("error", "not-authorized");
     return NextResponse.redirect(loginUrl);
