@@ -1,0 +1,70 @@
+name: McpOS hosted billing diagnostics
+on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/hosted-billing-diagnostics.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify hosted schema and billing permissions
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$PROJECT_REF" = "kvwwabuqydwsbhlcqxwz"
+          test -n "$SUPABASE_ACCESS_TOKEN"
+          query_ro() {
+            local body
+            body="$(jq -nc --arg query "$1" '{query:$query}')"
+            curl --fail --silent --show-error --max-time 20 \
+              -X POST "https://api.supabase.com/v1/projects/$PROJECT_REF/database/query/read-only" \
+              -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
+              -H "Content-Type: application/json" --data "$body"
+          }
+          query="$(cat <<'SQL'
+          with expected(name, write_privileges) as (
+            values ('mcpos_billing_events','INSERT'),
+                   ('mcpos_checkout_attempts','INSERT, UPDATE, DELETE'),
+                   ('mcpos_daily_command_usage','INSERT, UPDATE')
+          ), checked as (
+            select e.name, c.oid is not null as present,
+              coalesce(c.relrowsecurity,false) as rls_enabled,
+              coalesce(not has_table_privilege('anon',c.oid,'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER'),false)
+                and coalesce(not has_table_privilege('authenticated',c.oid,'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER'),false) as client_grants_revoked,
+              coalesce(has_table_privilege('service_role',c.oid,'SELECT'),false) and
+                coalesce((select bool_and(has_table_privilege('service_role',c.oid,trim(p))) from unnest(string_to_array(e.write_privileges,',')) as p),false) as service_role_ready
+            from expected e
+            left join pg_namespace n on n.nspname='public'
+            left join pg_class c on c.relnamespace=n.oid and c.relname=e.name
+          )
+          select name, present, rls_enabled, client_grants_revoked, service_role_ready from checked order by name
+          SQL
+          )"
+          result="$(query_ro "$query")"
+          printf '%s\n' "$result" | jq -e 'if type == "array" and length == 3 then map({name,present,rls_enabled,client_grants_revoked,service_role_ready}) else error("Unexpected schema check response") end'
+          rpc="$(query_ro "select to_regprocedure('public.consume_mcpos_command_result(uuid,uuid,uuid)') is not null as result_consumption, to_regprocedure('public.authorize_mcpos_device_command(text,uuid)') is not null as command_authorization, to_regprocedure('public.mcpos_purge_expired_command_data()') is not null as retention_cleanup")"
+          printf '%s\n' "$rpc" | jq -e 'if type == "array" and length == 1 then .[0] | {result_consumption,command_authorization,retention_cleanup} else error("Unexpected RPC check response") end'
+          # Public Actions logs contain schema booleans only; no customer or event records.
+          printf '%s\n' "$result" | jq -e 'all(.[]; .present and .rls_enabled and .client_grants_revoked and .service_role_ready)' >/dev/null
+          printf '%s\n' "$rpc" | jq -e '.[0] | all(.[]; . == true)' >/dev/null
+      - name: Verify billing tables are readable without exposing rows
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$PROJECT_REF" = "kvwwabuqydwsbhlcqxwz"
+          query="select (select count(*) from (select event_id, event_type, stripe_status, livemode from public.mcpos_billing_events limit 0) e) = 0 as ledger_readable, (select count(*) from (select user_id from public.mcpos_checkout_attempts limit 0) c) = 0 as reservations_readable, (select count(*) from (select user_id from public.mcpos_daily_command_usage limit 0) u) = 0 as quota_readable"
+          body="$(jq -nc --arg query "$query" '{query:$query}')"
+          result="$(curl --fail --silent --show-error --max-time 20 -X POST "https://api.supabase.com/v1/projects/$PROJECT_REF/database/query/read-only" -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" -H "Content-Type: application/json" --data "$body")"
+          printf '%s\n' "$result" | jq -e 'if type == "array" and length == 1 then .[0] | {ledger_readable,reservations_readable,quota_readable} else error("Unexpected billing check response") end'
+          printf '%s\n' "$result" | jq -e '.[0] | all(.[]; . == true)' >/dev/null
