@@ -1,0 +1,40 @@
+name: McpOS hosted authentication launch preflight
+on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/hosted-auth-launch-preflight.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Read nonsecret launch readiness indicators
+        env:
+          TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          PROJECT: ${{ vars.SUPABASE_PROJECT_REF }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$PROJECT" = "kvwwabuqydwsbhlcqxwz"
+          test -n "$TOKEN"
+          config="$(curl --fail --silent --show-error --max-time 20 -H "Authorization: Bearer $TOKEN" "https://api.supabase.com/v1/projects/$PROJECT/config/auth")"
+          required='["https://mcpos-dashboard.vercel.app/auth/callback","https://mcpos-dashboard.vercel.app/auth/recovery"]'
+          checks="$(printf '%s' "$config" | jq -e --argjson required "$required" '
+            ((.uri_allow_list // "") | split(",") | map(gsub("^\\s+|\\s+$";""))) as $urls |
+            {
+              vercel_site_url: (.site_url == "https://mcpos-dashboard.vercel.app" or .site_url == "https://mcpos-dashboard.vercel.app/"),
+              vercel_redirects: all($required[]; . as $url | $urls | index($url) != null),
+              email_enabled: (.external_email_enabled == true),
+              email_confirmation_required: (.mailer_autoconfirm == false),
+              anonymous_signin_disabled: (.external_anonymous_users_enabled == false),
+              password_minimum_12: ((.password_min_length // 0) >= 12),
+              turnstile_enabled: (.security_captcha_enabled == true and .security_captcha_provider == "turnstile"),
+              custom_smtp_configured: (((.smtp_host // "") | length) > 0 and ((.smtp_user // "") | length) > 0 and ((.smtp_admin_email // "") | length) > 0),
+              recovery_code_template: ((.mailer_templates_recovery_content // "") | contains("{{ .Token }}"))
+            }')"
+          printf '%s\n' "$checks"
+          printf '%s' "$checks" | jq -e 'all(.[]; . == true)' >/dev/null
