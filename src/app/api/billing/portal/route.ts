@@ -1,3 +1,4 @@
+import { sandboxBillingEnabled } from "@/lib/sandbox-billing";
 import { mcposAppOrigin } from "@/lib/app-origin";
 import { NextRequest, NextResponse } from "next/server";
 import * as z from "zod/v4";
@@ -11,7 +12,7 @@ export async function POST(request: NextRequest) {
   if ("response" in auth) return auth.response;
   const key = process.env.STRIPE_SECRET_KEY;
   const appUrl = mcposAppOrigin();
-  if (process.env.MCPOS_BILLING_ENABLED !== "true" || !key?.startsWith("sk_test_") || !appUrl) {
+  if (!sandboxBillingEnabled() || !key?.startsWith("sk_test_") || !appUrl) {
     return NextResponse.json({ error: "Sandbox billing is unavailable." }, { status: 503 });
   }
   try {
