@@ -25,13 +25,8 @@ jobs:
         run: cmp supabase/migrations/20261127031522_mcpos_checkout_attempts.sql supabase/pending/mcpos_checkout_attempts.sql
       - name: Confirm validated command usage migration
         run: cmp supabase/migrations/20261127031919_mcpos_command_usage.sql supabase/pending/mcpos_command_usage.sql
-      - name: Generate staged retention migration
-        run: |
-          supabase migration new mcpos_command_retention < supabase/pending/mcpos_command_retention.sql
-          file="$(find supabase/migrations -name '*_mcpos_command_retention.sql' -print)"
-          test -f "$file"
-          cmp "$file" supabase/pending/mcpos_command_retention.sql
-          echo "Generated migration: $file"
+      - name: Confirm validated retention migration
+        run: cmp supabase/migrations/20261127035352_mcpos_command_retention.sql supabase/pending/mcpos_command_retention.sql
       - name: Start isolated local database
         run: supabase db start
       - name: Verify private billing ledger privileges
