@@ -15,7 +15,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: mcpos-desktop-${{ github.ref }}
@@ -24,6 +24,8 @@ concurrency:
 jobs:
   windows-build:
     runs-on: windows-latest
+    permissions:
+      contents: read
     defaults:
       run:
         working-directory: desktop
@@ -46,17 +48,17 @@ jobs:
 
       - name: Resolve Supabase publishable API key
         env:
-          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
-          SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
+          PUBLIC_KEY: ${{ vars.MCPOS_SUPABASE_PUBLISHABLE_KEY }}
         shell: bash
         run: |
-          test -n "$SUPABASE_ACCESS_TOKEN" || (echo "::error::Missing SUPABASE_ACCESS_TOKEN secret" && exit 1)
-          test -n "$SUPABASE_PROJECT_REF" || (echo "::error::Missing SUPABASE_PROJECT_REF variable" && exit 1)
-          response="$(curl --fail --silent --show-error "https://api.supabase.com/v1/projects/$SUPABASE_PROJECT_REF/api-keys?reveal=true" -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN")"
-          key="$(printf '%s' "$response" | jq -r '[.[] | select(.type == "publishable" or .name == "anon") | (.api_key // .key)] | map(select(. != null and . != "")) | .[0] // empty')"
-          test -n "$key" || (echo "::error::Could not resolve the project's publishable API key" && exit 1)
-          echo "::add-mask::$key"
-          echo "SUPABASE_ANON_KEY=$key" >> "$GITHUB_ENV"
+          if [ -n "$PUBLIC_KEY" ]; then
+            echo "SUPABASE_ANON_KEY=$PUBLIC_KEY" >> "$GITHUB_ENV"
+          elif [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            echo "::notice::PR builds are compile-only without a configured public API key"
+          else
+            echo "::error::Configure MCPOS_SUPABASE_PUBLISHABLE_KEY as a repository variable (publishable or anon key only)"
+            exit 1
+          fi
 
       - name: Install frontend dependencies
         run: npm install
@@ -77,11 +79,56 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+      - name: Verify release signatures
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem src-tauri/target/release/bundle/nsis/*.exe, src-tauri/target/release/bundle/msi/*.msi -ErrorAction SilentlyContinue)
+          if ($files.Count -lt 2) { throw "Expected NSIS and MSI installers" }
+          $app = Get-Item src-tauri/target/release/mcpos-desktop.exe
+          foreach ($file in @($app) + $files) {
+            $sig = Get-AuthenticodeSignature $file.FullName
+            if ($sig.Status -ne 'Valid' -or -not $sig.TimeStamperCertificate) { throw "Unsigned, untrusted or untimestamped release file: $($file.Name)" }
+            Write-Host "Verified: $($file.Name)"
+          }
+
+      - name: Generate installer checksums
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          Get-ChildItem src-tauri/target/release/bundle/nsis/*.exe, src-tauri/target/release/bundle/msi/*.msi | ForEach-Object {
+            "$( (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() )  $($_.Name)"
+          } | Set-Content -Encoding ascii SHA256SUMS.txt
+
+      - name: Upload verified release assets
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: McpOS-Verified-Release
+          path: |
+            desktop/src-tauri/target/release/bundle/nsis/*.exe
+            desktop/src-tauri/target/release/bundle/msi/*.msi
+            desktop/SHA256SUMS.txt
+          if-no-files-found: error
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: windows-build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: McpOS-Verified-Release
+          path: release
       - name: Publish GitHub release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
+          draft: true
           files: |
-            desktop/src-tauri/target/release/bundle/nsis/*.exe
-            desktop/src-tauri/target/release/bundle/msi/*.msi
+            release/**/*.exe
+            release/**/*.msi
+            release/**/SHA256SUMS.txt
