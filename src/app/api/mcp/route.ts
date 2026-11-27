@@ -293,7 +293,7 @@ function makeServer(client: McpClient) {
       if (!client.scopes.includes("browser.control")) return scopeError("browser.control");
       if (action === "open") {
         if (!url) return { content: [{ type: "text", text: "A URL is required." }], isError: true };
-        try { const parsed = new URL(url); if (parsed.protocol !== "https:" || !parsed.hostname || parsed.username || parsed.password || parsed.hostname === "localhost" || parsed.hostname.endsWith(".local")) throw new Error("blocked"); }
+        try { const parsed = new URL(url); if (parsed.protocol !== "https:" || !parsed.hostname || parsed.username || parsed.password || parsed.hostname === "localhost" || parsed.hostname.endsWith(".localhost") || parsed.hostname.endsWith(".local") || !parsed.hostname.includes(".") || /^\d+(?:\.\d+){3}$/.test(parsed.hostname) || parsed.hostname.includes(":") || parsed.hostname.endsWith(".internal") || parsed.hostname.endsWith(".home.arpa")) throw new Error("blocked"); }
         catch { return { content: [{ type: "text", text: "Only valid HTTPS URLs without embedded credentials or local hostnames are allowed." }], isError: true }; }
       }
       if ((action === "click" || action === "type") && !selector?.trim()) return { content: [{ type: "text", text: "A CSS selector is required." }], isError: true };
