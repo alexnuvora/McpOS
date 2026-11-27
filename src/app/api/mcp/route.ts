@@ -9,18 +9,22 @@ import { MCP_RESOURCE_URL } from "@/lib/mcp-oauth";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-type McpClient = { id: string; user_id: string; client_name: string; scopes: string[]; revoked_at: string | null; token_expires_at?: string | null; token_resource?: string | null };
+type McpClient = { id: string; user_id: string; client_name: string; scopes: string[]; revoked_at: string | null; token_expires_at?: string | null; token_resource?: string | null; last_used_at?: string | null };
 
 async function authenticateClient(request: NextRequest): Promise<McpClient | null> {
   const token = (request.headers.get("authorization") ?? "").match(/^Bearer\s+(.+)$/i)?.[1];
   if (!token || !token.startsWith("mcpos_") || token.length < 40 || token.length > 128) return null;
   const tokenHash = createHash("sha256").update(token).digest("hex");
   const response = await supabaseRest(
-    `mcpos_mcp_clients?select=id,user_id,client_name,scopes,revoked_at,token_expires_at,token_resource&token_hash=eq.${tokenHash}&limit=1`,
+    `mcpos_mcp_clients?select=id,user_id,client_name,scopes,revoked_at,token_expires_at,token_resource,last_used_at&token_hash=eq.${tokenHash}&limit=1`,
   );
   if (!response.ok) throw new Error("McpOS client authentication service is unavailable.");
   const [client] = await response.json() as McpClient[];
   if (!client || client.revoked_at || (client.token_expires_at && (!Number.isFinite(Date.parse(client.token_expires_at)) || Date.parse(client.token_expires_at) <= Date.now())) || (client.token_resource && client.token_resource !== MCP_RESOURCE_URL)) return null;
+  const cutoff = new Date(Date.now() - 300_000).toISOString();
+  if (!client.last_used_at || Date.parse(client.last_used_at) < Date.parse(cutoff)) {
+    try { await supabaseRest(`mcpos_mcp_clients?id=eq.${client.id}&revoked_at=is.null&or=(last_used_at.is.null,last_used_at.lt.${cutoff})`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ last_used_at: new Date().toISOString() }) }); } catch { /* Activity tracking must not interrupt authentication. */ }
+  }
   return client;
 }
 
