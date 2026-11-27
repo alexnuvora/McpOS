@@ -20,3 +20,29 @@ export function verifyStripeSignature(raw, header, secret, nowSeconds = Math.flo
     return actual.length === expected.length && timingSafeEqual(actual, expected);
   });
 }
+
+/**
+ * Read an exact binary webhook body with an enforced streaming size limit.
+ * @param {Request} request
+ * @param {number} maxBytes
+ * @returns {Promise<Buffer|null>}
+ */
+export async function readStripeBody(request, maxBytes = 262144) {
+  const length = request.headers.get("content-length");
+  if (length !== null && (!/^\d+$/.test(length) || Number(length) > maxBytes)) return null;
+  if (!request.body) return Buffer.alloc(0);
+  const reader = request.body.getReader();
+  const chunks = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > maxBytes) { await reader.cancel(); return null; }
+      chunks.push(Buffer.from(value));
+    }
+    return Buffer.concat(chunks, size);
+  } catch { return null; }
+  finally { reader.releaseLock(); }
+}
