@@ -122,7 +122,7 @@ function makeServer(client: McpClient) {
     async ({ deviceId }) => {
       if (!client.scopes.includes("desktop.status")) return scopeError("desktop.status");
       const entitlement = await checkCommandEntitlement(client.user_id);
-      if (entitlement !== "allowed") return { content: [{ type: "text" as const, text: entitlement === "subscription_required" ? "An active McpOS subscription is required to request desktop commands. Manage your plan in the McpOS dashboard." : "Subscription verification is temporarily unavailable. No desktop command was queued." }], isError: true };
+      if (entitlement.status !== "allowed") return { content: [{ type: "text" as const, text: entitlement.status === "subscription_required" ? "An active McpOS subscription is required to request desktop commands. Manage your plan in the McpOS dashboard." : "Subscription verification is temporarily unavailable. No desktop command was queued." }], isError: true };
       const filter = deviceId ? `&id=eq.${deviceId}` : "";
       const recentCutoff = new Date(Date.now() - 90_000).toISOString();
       const devicesResponse = await supabaseRest(
@@ -143,7 +143,7 @@ function makeServer(client: McpClient) {
         headers: { Prefer: "return=representation" },
         body: JSON.stringify({
           user_id: client.user_id,
-          mcp_client_id: client.id,
+          mcp_client_id: client.id, ...entitlement.billing,
           device_id: device.id,
           command: "desktop.status",
           payload: {},
@@ -174,7 +174,7 @@ function makeServer(client: McpClient) {
     async ({ deviceId }) => {
       if (!client.scopes.includes("screen.capture")) return scopeError("screen.capture");
       const entitlement = await checkCommandEntitlement(client.user_id);
-      if (entitlement !== "allowed") return { content: [{ type: "text" as const, text: entitlement === "subscription_required" ? "An active McpOS subscription is required to request desktop commands. Manage your plan in the McpOS dashboard." : "Subscription verification is temporarily unavailable. No desktop command was queued." }], isError: true };
+      if (entitlement.status !== "allowed") return { content: [{ type: "text" as const, text: entitlement.status === "subscription_required" ? "An active McpOS subscription is required to request desktop commands. Manage your plan in the McpOS dashboard." : "Subscription verification is temporarily unavailable. No desktop command was queued." }], isError: true };
       const filter = deviceId ? `&id=eq.${deviceId}` : "";
       const recentCutoff = new Date(Date.now() - 90_000).toISOString();
       const devicesResponse = await supabaseRest(`mcpos_devices?select=id,device_name,status,last_seen_at&user_id=eq.${client.user_id}&status=eq.online&last_seen_at=gte.${recentCutoff}${filter}&order=last_seen_at.desc&limit=1`);
@@ -184,7 +184,7 @@ function makeServer(client: McpClient) {
       const expiresAt = new Date(Date.now() + 45_000).toISOString();
       const commandResponse = await supabaseRest("mcpos_device_commands", {
         method: "POST", headers: { Prefer: "return=representation" },
-        body: JSON.stringify({ user_id: client.user_id, mcp_client_id: client.id, device_id: device.id, command: "screen.capture", payload: { display: "primary", max_bytes: 4_000_000 }, expires_at: expiresAt }),
+        body: JSON.stringify({ user_id: client.user_id, mcp_client_id: client.id, ...entitlement.billing, device_id: device.id, command: "screen.capture", payload: { display: "primary", max_bytes: 4_000_000 }, expires_at: expiresAt }),
       });
       if (!commandResponse.ok) return { content: [{ type: "text", text: "Could not queue the screen-capture request. The database migration may not yet be deployed." }], isError: true };
       const [command] = await commandResponse.json();
@@ -207,7 +207,7 @@ function makeServer(client: McpClient) {
     async ({ deviceId }) => {
       if (!client.scopes.includes("screen.accessibility")) return scopeError("screen.accessibility");
       const entitlement = await checkCommandEntitlement(client.user_id);
-      if (entitlement !== "allowed") return { content: [{ type: "text" as const, text: entitlement === "subscription_required" ? "An active McpOS subscription is required to request desktop commands. Manage your plan in the McpOS dashboard." : "Subscription verification is temporarily unavailable. No desktop command was queued." }], isError: true };
+      if (entitlement.status !== "allowed") return { content: [{ type: "text" as const, text: entitlement.status === "subscription_required" ? "An active McpOS subscription is required to request desktop commands. Manage your plan in the McpOS dashboard." : "Subscription verification is temporarily unavailable. No desktop command was queued." }], isError: true };
       const filter = deviceId ? `&id=eq.${deviceId}` : "";
       const recentCutoff = new Date(Date.now() - 90_000).toISOString();
       const devicesResponse = await supabaseRest(`mcpos_devices?select=id,device_name,status,last_seen_at&user_id=eq.${client.user_id}&status=eq.online&last_seen_at=gte.${recentCutoff}${filter}&order=last_seen_at.desc&limit=1`);
@@ -217,7 +217,7 @@ function makeServer(client: McpClient) {
       const expiresAt = new Date(Date.now() + 45_000).toISOString();
       const commandResponse = await supabaseRest("mcpos_device_commands", {
         method: "POST", headers: { Prefer: "return=representation" },
-        body: JSON.stringify({ user_id: client.user_id, mcp_client_id: client.id, device_id: device.id, command: "desktop.accessibility", payload: { scope: "top_level_windows", max_items: 40 }, expires_at: expiresAt }),
+        body: JSON.stringify({ user_id: client.user_id, mcp_client_id: client.id, ...entitlement.billing, device_id: device.id, command: "desktop.accessibility", payload: { scope: "top_level_windows", max_items: 40 }, expires_at: expiresAt }),
       });
       if (!commandResponse.ok) return { content: [{ type: "text", text: "Could not queue the accessibility request. The database migration may not yet be deployed." }], isError: true };
       const [command] = await commandResponse.json();
@@ -240,7 +240,7 @@ function makeServer(client: McpClient) {
     async ({ operation, path }) => {
       if (!client.scopes.includes("files.read")) return scopeError("files.read");
       const entitlement = await checkCommandEntitlement(client.user_id);
-      if (entitlement !== "allowed") return { content: [{ type: "text" as const, text: entitlement === "subscription_required" ? "An active McpOS subscription is required to request desktop commands. Manage your plan in the McpOS dashboard." : "Subscription verification is temporarily unavailable. No desktop command was queued." }], isError: true };
+      if (entitlement.status !== "allowed") return { content: [{ type: "text" as const, text: entitlement.status === "subscription_required" ? "An active McpOS subscription is required to request desktop commands. Manage your plan in the McpOS dashboard." : "Subscription verification is temporarily unavailable. No desktop command was queued." }], isError: true };
       if (operation !== "list_folders" && !path?.trim()) return { content: [{ type: "text", text: "A path is required for this operation." }], isError: true };
       const recentCutoff = new Date(Date.now() - 90_000).toISOString();
       const devicesResponse = await supabaseRest(`mcpos_devices?select=id,device_name&user_id=eq.${client.user_id}&status=eq.online&last_seen_at=gte.${recentCutoff}&order=last_seen_at.desc&limit=1`);
@@ -250,7 +250,7 @@ function makeServer(client: McpClient) {
       const command = operation === "read" ? "files.read" : "files.list";
       const payload = operation === "list_folders" ? {} : { path };
       const expiresAt = new Date(Date.now() + 60_000).toISOString();
-      const queued = await supabaseRest("mcpos_device_commands", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ user_id: client.user_id, mcp_client_id: client.id, device_id: device.id, command, payload, expires_at: expiresAt }) });
+      const queued = await supabaseRest("mcpos_device_commands", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ user_id: client.user_id, mcp_client_id: client.id, ...entitlement.billing, device_id: device.id, command, payload, expires_at: expiresAt }) });
       if (!queued.ok) return { content: [{ type: "text", text: "Could not queue the file request. The database migration may not yet be deployed." }], isError: true };
       const [row] = await queued.json();
       await supabaseRest("mcpos_device_audit", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ user_id: client.user_id, device_id: device.id, event_type: "files." + operation + ".requested", outcome: "success", metadata: { command_id: row.id, client_name: client.client_name } }) });
@@ -271,7 +271,7 @@ function makeServer(client: McpClient) {
       const requiredScope = action.startsWith("pointer_") ? "input.pointer" : "input.keyboard";
       if (!client.scopes.includes(requiredScope)) return scopeError(requiredScope);
       const entitlement = await checkCommandEntitlement(client.user_id);
-      if (entitlement !== "allowed") return { content: [{ type: "text" as const, text: entitlement === "subscription_required" ? "An active McpOS subscription is required to request desktop commands. Manage your plan in the McpOS dashboard." : "Subscription verification is temporarily unavailable. No desktop command was queued." }], isError: true };
+      if (entitlement.status !== "allowed") return { content: [{ type: "text" as const, text: entitlement.status === "subscription_required" ? "An active McpOS subscription is required to request desktop commands. Manage your plan in the McpOS dashboard." : "Subscription verification is temporarily unavailable. No desktop command was queued." }], isError: true };
       if ((action === "pointer_click" || action === "pointer_move") && (x === undefined || y === undefined)) return { content: [{ type: "text", text: "Both x and y coordinates are required for a click." }], isError: true };
       if (action === "pointer_scroll" && steps === undefined) return { content: [{ type: "text", text: "Scroll steps are required." }], isError: true };
       if (action === "keyboard_type" && (!text || !text.length || /[\u0000-\u001f\u007f]/.test(text))) return { content: [{ type: "text", text: "Text must be 1–200 printable characters." }], isError: true };
@@ -283,7 +283,7 @@ function makeServer(client: McpClient) {
       if (!device) return { content: [{ type: "text", text: "No online Windows device is available." }], isError: true };
       const payload = action === "pointer_click" ? { x, y, button: button ?? "left" } : action === "pointer_move" ? { x, y } : action === "pointer_scroll" ? { steps, axis: axis ?? "vertical" } : action === "keyboard_type" ? { text } : { keys };
       const expiresAt = new Date(Date.now() + 60_000).toISOString();
-      const queued = await supabaseRest("mcpos_device_commands", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ user_id: client.user_id, mcp_client_id: client.id, device_id: device.id, command, payload, expires_at: expiresAt }) });
+      const queued = await supabaseRest("mcpos_device_commands", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ user_id: client.user_id, mcp_client_id: client.id, ...entitlement.billing, device_id: device.id, command, payload, expires_at: expiresAt }) });
       if (!queued.ok) return { content: [{ type: "text", text: "Could not queue the action. The database migration may not yet be deployed." }], isError: true };
       const [row] = await queued.json();
       await supabaseRest("mcpos_device_audit", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ user_id: client.user_id, device_id: device.id, event_type: command + ".requested", outcome: "success", metadata: { command_id: row.id, client_name: client.client_name } }) });
@@ -302,7 +302,7 @@ function makeServer(client: McpClient) {
     async ({ action, url, selector, text }) => {
       if (!client.scopes.includes("browser.control")) return scopeError("browser.control");
       const entitlement = await checkCommandEntitlement(client.user_id);
-      if (entitlement !== "allowed") return { content: [{ type: "text" as const, text: entitlement === "subscription_required" ? "An active McpOS subscription is required to request desktop commands. Manage your plan in the McpOS dashboard." : "Subscription verification is temporarily unavailable. No desktop command was queued." }], isError: true };
+      if (entitlement.status !== "allowed") return { content: [{ type: "text" as const, text: entitlement.status === "subscription_required" ? "An active McpOS subscription is required to request desktop commands. Manage your plan in the McpOS dashboard." : "Subscription verification is temporarily unavailable. No desktop command was queued." }], isError: true };
       if (action === "open") {
         if (!url) return { content: [{ type: "text", text: "A URL is required." }], isError: true };
         try { const parsed = new URL(url); if (parsed.protocol !== "https:" || !parsed.hostname || parsed.username || parsed.password || parsed.hostname === "localhost" || parsed.hostname.endsWith(".localhost") || parsed.hostname.endsWith(".local") || !parsed.hostname.includes(".") || /^\d+(?:\.\d+){3}$/.test(parsed.hostname) || parsed.hostname.includes(":") || parsed.hostname.endsWith(".internal") || parsed.hostname.endsWith(".home.arpa")) throw new Error("blocked"); }
@@ -318,7 +318,7 @@ function makeServer(client: McpClient) {
       const command = "browser." + action;
       const payload = action === "open" ? { url } : action === "click" ? { selector } : action === "type" ? { selector, text } : {};
       const expiresAt = new Date(Date.now() + 60_000).toISOString();
-      const queued = await supabaseRest("mcpos_device_commands", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ user_id: client.user_id, mcp_client_id: client.id, device_id: device.id, command, payload, expires_at: expiresAt }) });
+      const queued = await supabaseRest("mcpos_device_commands", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ user_id: client.user_id, mcp_client_id: client.id, ...entitlement.billing, device_id: device.id, command, payload, expires_at: expiresAt }) });
       if (!queued.ok) return { content: [{ type: "text", text: "Could not queue the browser request. The database migration may not yet be deployed." }], isError: true };
       const [row] = await queued.json();
       await supabaseRest("mcpos_device_audit", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ user_id: client.user_id, device_id: device.id, event_type: command + ".requested", outcome: "success", metadata: { command_id: row.id, client_name: client.client_name } }) });
