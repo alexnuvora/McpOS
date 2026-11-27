@@ -27,4 +27,51 @@ do $$
 begin
   if (select command_count from public.mcpos_daily_command_usage where user_id='11111111-1111-4111-8111-111111111111') <> 500 then raise exception 'Exempt command counted'; end if;
 end $$;
+-- Same-day plan transitions must share the same counter, not reset it.
+do $quota_test$
+declare
+  v_user constant uuid := '11111111-1111-4111-8111-111111111111';
+  v_device constant uuid := '33333333-3333-4333-8333-333333333333';
+  v_client constant uuid := '44444444-4444-4444-8444-444444444444';
+  v_day constant date := (now() at time zone 'UTC')::date;
+  v_plan text;
+  v_limit integer;
+begin
+  -- Upgrading from Personal immediately grants headroom on the existing daily count.
+  insert into public.mcpos_device_commands(user_id,device_id,mcp_client_id,command,billing_plan,billing_verified_until)
+    values (v_user,v_device,v_client,'desktop.status','professional',now()+interval '75 seconds');
+  if (select command_count from public.mcpos_daily_command_usage where user_id=v_user and usage_date=v_day) <> 501 then
+    raise exception 'Upgrade reset or miscounted daily usage';
+  end if;
+  for v_plan, v_limit in select * from (values ('professional',2000),('business',10000)) as plans(plan_name,quota) loop
+    update public.mcpos_daily_command_usage set command_count=v_limit-1 where user_id=v_user and usage_date=v_day;
+    insert into public.mcpos_device_commands(user_id,device_id,mcp_client_id,command,billing_plan,billing_verified_until)
+      values(v_user,v_device,v_client,'desktop.status',v_plan,now()+interval '75 seconds');
+    if (select command_count from public.mcpos_daily_command_usage where user_id=v_user and usage_date=v_day) <> v_limit then
+      raise exception 'Wrong quota boundary for %',v_plan;
+    end if;
+    begin
+      insert into public.mcpos_device_commands(user_id,device_id,mcp_client_id,command,billing_plan,billing_verified_until)
+        values(v_user,v_device,v_client,'desktop.status',v_plan,now()+interval '75 seconds');
+      raise exception 'Over-quota command accepted for %',v_plan;
+    exception when raise_exception then
+      if sqlerrm <> 'mcpos_daily_command_limit' then raise; end if;
+    end;
+    if (select command_count from public.mcpos_daily_command_usage where user_id=v_user and usage_date=v_day) <> v_limit then
+      raise exception 'Rejected command increased quota count';
+    end if;
+  end loop;
+  -- Downgrading after using more than Personal's quota denies further paid commands.
+  begin
+    insert into public.mcpos_device_commands(user_id,device_id,mcp_client_id,command,billing_plan,billing_verified_until)
+      values(v_user,v_device,v_client,'desktop.status','personal',now()+interval '75 seconds');
+    raise exception 'Downgrade bypassed existing daily usage';
+  exception when raise_exception then
+    if sqlerrm <> 'mcpos_daily_command_limit' then raise; end if;
+  end;
+  if (select command_count from public.mcpos_daily_command_usage where user_id=v_user and usage_date=v_day) <> 10000 then
+    raise exception 'Downgrade altered daily usage';
+  end if;
+  raise notice 'All three plan quota boundaries and same-day transitions passed';
+end $quota_test$;
 rollback;
