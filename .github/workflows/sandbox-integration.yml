@@ -30,22 +30,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
       - uses: supabase/setup-cli@v1
         with:
           version: latest
-      - name: Install application dependencies
-        run: |
-          if [ -f package-lock.json ]; then
-            npm ci
-          else
-            npm install --no-audit --no-fund
-          fi
-      - name: Preserve resolved dependency lockfile
-        uses: actions/upload-artifact@v4
-        with:
-          name: mcpos-integration-package-lock
-          path: package-lock.json
-          if-no-files-found: error
+      - run: npm ci
       - name: Start isolated Supabase stack
         run: supabase start
       - name: Configure loopback-only services
