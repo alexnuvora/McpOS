@@ -48,6 +48,6 @@ export function publicRegistrationEnabled() {
 }
 
 export function isMcpOSAccountAllowed(user: { email?: string | null; email_confirmed_at?: string | null; is_anonymous?: boolean; banned_until?: string | null }) {
-  if (!user.email || user.is_anonymous || (user.banned_until && Date.parse(user.banned_until) > Date.now())) return false;
-  return isAllowedMcpOSEmail(user.email) || (publicRegistrationEnabled() && Boolean(user.email_confirmed_at));
+  if (!user.email || !user.email_confirmed_at || user.is_anonymous || (user.banned_until && Date.parse(user.banned_until) > Date.now())) return false;
+  return isAllowedMcpOSEmail(user.email) || publicRegistrationEnabled();
 }
