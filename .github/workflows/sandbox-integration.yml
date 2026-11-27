@@ -1,0 +1,76 @@
+name: McpOS sandbox integration
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "supabase/**"
+      - "tests/integration/**"
+      - ".github/workflows/sandbox-integration.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  billing-http:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      MCPOS_TEST_USER_ID: "11111111-1111-4111-8111-111111111111"
+      MCPOS_TEST_PRICE: price_CIFixture
+      MCPOS_TEST_WEBHOOK_SECRET: whsec_ci_fixture_not_a_real_secret
+      MCPOS_TEST_APP_URL: http://127.0.0.1:3000
+      MCPOS_BILLING_ENABLED: "true"
+      MCPOS_ENFORCE_SUBSCRIPTIONS: "false"
+      STRIPE_SECRET_KEY: sk_test_ci_fixture_not_a_real_key
+      STRIPE_WEBHOOK_SECRET: whsec_ci_fixture_not_a_real_secret
+      STRIPE_PRICE_PERSONAL: price_CIFixture
+      NEXT_PUBLIC_APP_URL: http://127.0.0.1:3000
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+      - run: npm ci
+      - name: Start isolated Supabase stack
+        run: supabase start
+      - name: Configure loopback-only services
+        run: |
+          supabase status -o env > "$RUNNER_TEMP/mcpos-local.env"
+          source "$RUNNER_TEMP/mcpos-local.env"
+          test "$API_URL" = "http://127.0.0.1:54321"
+          test -n "$SERVICE_ROLE_KEY"
+          test -n "$ANON_KEY"
+          echo "::add-mask::$SERVICE_ROLE_KEY"
+          echo "::add-mask::$ANON_KEY"
+          {
+            echo "SUPABASE_URL=$API_URL"
+            echo "NEXT_PUBLIC_SUPABASE_URL=$API_URL"
+            echo "SUPABASE_SERVICE_ROLE_KEY=$SERVICE_ROLE_KEY"
+            echo "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=$ANON_KEY"
+            echo "MCPOS_TEST_SUPABASE_URL=$API_URL"
+            echo "MCPOS_TEST_SERVICE_ROLE_KEY=$SERVICE_ROLE_KEY"
+          } >> "$GITHUB_ENV"
+          rm "$RUNNER_TEMP/mcpos-local.env"
+          container="$(docker ps --filter name=supabase_db_ --format '{{.Names}}')"
+          test -n "$container"
+          docker exec "$container" psql -U postgres -d postgres -v ON_ERROR_STOP=1 -c "insert into auth.users(id) values ('$MCPOS_TEST_USER_ID')"
+      - name: Build production application
+        run: npm run build
+      - name: Run local HTTP integration tests
+        run: |
+          npm run start -- --hostname 127.0.0.1 > "$RUNNER_TEMP/mcpos-app.log" 2>&1 &
+          pid=$!
+          trap 'kill "$pid" || true' EXIT
+          for i in $(seq 1 40); do
+            if curl --fail --silent "$MCPOS_TEST_APP_URL/api/health" >/dev/null; then break; fi
+            sleep 1
+          done
+          curl --fail --silent "$MCPOS_TEST_APP_URL/api/health" >/dev/null
+          node --test tests/integration/billing-webhook.test.mjs
+      - name: Stop isolated stack
+        if: always()
+        run: supabase stop --no-backup
