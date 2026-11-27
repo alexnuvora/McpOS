@@ -1,5 +1,6 @@
 import * as z from "zod/v4";
 import { supabaseRest } from "@/lib/device-auth";
+import { resolveSubscription } from "@/lib/subscription-policy.mjs";
 
 const schema = z.object({
   id: z.string(), livemode: z.literal(false), customer: z.string(),
@@ -29,9 +30,8 @@ export async function getSandboxSubscriptions(userId: string) {
     const sub = schema.parse(await response.json());
     if (sub.id !== id || sub.metadata.mcpos_user_id !== userId) throw new Error("Account binding mismatch");
     const item = sub.items.data[0];
-    const plan = Object.entries(prices).find(([, price]) => price && item.price.id === price)?.[0] ?? null;
     const end = item.current_period_end ?? sub.current_period_end ?? null;
-    const active = Boolean(plan && end && end * 1000 > Date.now() && sub.status === "active");
+    const { plan, active } = resolveSubscription(prices, item.price.id, sub.status, end);
     return { id, plan, status: sub.status, currentPeriodEnd: end, cancelAtPeriodEnd: sub.cancel_at_period_end ?? false, active };
   }));
   return subscriptions;
