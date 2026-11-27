@@ -17,6 +17,7 @@ jobs:
       - uses: supabase/setup-cli@v1
         with:
           version: latest
+          github-token: ${{ github.token }}
       - name: Confirm validated migration
         run: cmp supabase/migrations/20261127024424_mcpos_billing_events.sql supabase/pending/mcpos_billing_events.sql
       - name: Confirm validated command authorization migration
