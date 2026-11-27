@@ -1,3 +1,4 @@
+import { sandboxBillingEnabled } from "@/lib/sandbox-billing";
 import * as z from "zod/v4";
 import { supabaseRest } from "@/lib/device-auth";
 import { resolveSubscription } from "@/lib/subscription-policy.mjs";
@@ -14,7 +15,7 @@ const schema = z.object({
 
 export async function getSandboxSubscriptions(userId: string) {
   const key = process.env.STRIPE_SECRET_KEY;
-  if (process.env.MCPOS_BILLING_ENABLED !== "true" || !key?.startsWith("sk_test_")) throw new Error("Sandbox billing unavailable");
+  if (!sandboxBillingEnabled() || !key?.startsWith("sk_test_")) throw new Error("Sandbox billing unavailable");
   const prices = { personal: process.env.STRIPE_PRICE_PERSONAL, professional: process.env.STRIPE_PRICE_PROFESSIONAL, business: process.env.STRIPE_PRICE_BUSINESS };
   const ledger = await supabaseRest("mcpos_billing_events?select=stripe_subscription_id&user_id=eq." + encodeURIComponent(userId) + "&order=event_created_at.desc&limit=1000");
   if (!ledger.ok) throw new Error("Ledger unavailable");
