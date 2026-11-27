@@ -5,7 +5,7 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import * as z from "zod/v4";
 import { isMcpOSAccountIdAllowed, supabaseRest } from "@/lib/device-auth";
 import { checkCommandEntitlement } from "@/lib/billing-entitlement";
-import { MCP_RESOURCE_URL } from "@/lib/mcp-oauth";
+import { MCP_RESOURCE_URL, MCP_ISSUER } from "@/lib/mcp-oauth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -36,7 +36,7 @@ function scopeError(scope: string) {
     isError: true,
     _meta: {
       "mcp/www_authenticate": [
-        'Bearer resource_metadata="https://mcpos-dashboard.netlify.app/.well-known/oauth-protected-resource", error="insufficient_scope", error_description="Additional McpOS permission required: ' + scope + '."'
+        'Bearer resource_metadata="' + MCP_ISSUER + '/.well-known/oauth-protected-resource", error="insufficient_scope", error_description="Additional McpOS permission required: ' + scope + '."'
       ],
     },
   };
@@ -435,7 +435,7 @@ async function handle(request: NextRequest) {
   if (!client) {
     return NextResponse.json(
       { error: "Unauthorized. Create an MCP client key in the McpOS dashboard." },
-      { status: 401, headers: { "WWW-Authenticate": 'Bearer resource_metadata="https://mcpos-dashboard.netlify.app/.well-known/oauth-protected-resource", error="invalid_token"' } },
+      { status: 401, headers: { "WWW-Authenticate": 'Bearer resource_metadata="' + MCP_ISSUER + '/.well-known/oauth-protected-resource", error="invalid_token"' } },
     );
   }
 

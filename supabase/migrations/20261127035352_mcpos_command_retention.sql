@@ -122,5 +122,6 @@ grant execute on function public.mcpos_purge_expired_command_data() to service_r
 
 -- Scheduled inside Postgres, no external endpoint or exposed credential.
 create extension if not exists pg_cron;
-select cron.schedule('mcpos-purge-expired-command-data', '* * * * *', 'select public.mcpos_purge_expired_command_data();');
+-- Historical cleanup deliberately not scheduled during migration.
+-- Activate via a separate reviewed migration after backup and retention approval.
 commit;

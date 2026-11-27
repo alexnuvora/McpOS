@@ -12,8 +12,13 @@ export const MCP_SCOPES = [
 ] as const;
 
 export type McpScope = typeof MCP_SCOPES[number];
-export const MCP_RESOURCE_URL = process.env.MCPOS_MCP_RESOURCE_URL || "https://mcpos-dashboard.netlify.app/api/mcp";
-export const MCP_ISSUER = "https://mcpos-dashboard.netlify.app";
+const configuredIssuer = process.env.NEXT_PUBLIC_APP_URL || "https://mcpos-dashboard.netlify.app";
+const issuerUrl = new URL(configuredIssuer);
+if (issuerUrl.origin !== configuredIssuer.replace(/\/$/, "") || (issuerUrl.protocol !== "https:" && !(issuerUrl.protocol === "http:" && ["localhost", "127.0.0.1"].includes(issuerUrl.hostname)))) {
+  throw new Error("NEXT_PUBLIC_APP_URL must be a canonical HTTPS origin (or local test origin)");
+}
+export const MCP_ISSUER = issuerUrl.origin;
+export const MCP_RESOURCE_URL = process.env.MCPOS_MCP_RESOURCE_URL || MCP_ISSUER + "/api/mcp";
 
 export function hashOAuthToken(value: string) {
   return createHash("sha256").update(value).digest("hex");

@@ -110,7 +110,7 @@ export default function IntegrationsPage() {
         <p className="text-sm leading-6 text-slate-400">ChatGPT connects using OAuth 2.1 + PKCE. It registers itself automatically, then asks you to sign in to McpOS and approve the requested permissions. You do not need to generate or paste a bearer key for ChatGPT.</p>
         <div className="mt-4 rounded-lg bg-[#0c121c] p-3">
           <div className="text-[11px] uppercase tracking-wider text-slate-500">Remote MCP endpoint</div>
-          <code className="mt-1 block break-all text-xs text-indigo-200">https://mcpos-dashboard.netlify.app/api/mcp</code>
+          <code className="mt-1 block break-all text-xs text-indigo-200">{(process.env.NEXT_PUBLIC_APP_URL || "https://mcpos-dashboard.netlify.app").replace(/\/$/, "") + "/api/mcp"}</code>
         </div>
         <ol className="mt-4 list-decimal space-y-2 pl-5 text-xs leading-5 text-slate-400">
           <li>In your Enterprise workspace, make sure your account has permission to create custom MCP connectors.</li>
@@ -151,7 +151,7 @@ export default function IntegrationsPage() {
       </section>
       <section className="mt-6 rounded-2xl border border-[#293345] bg-[#111824] p-5">
         <h2 className="font-semibold">MCP server address</h2>
-        <code className="mt-3 block break-all rounded-lg bg-[#080d14] p-3 text-sm text-indigo-200">https://mcpos-dashboard.netlify.app/api/mcp</code>
+        <code className="mt-3 block break-all rounded-lg bg-[#080d14] p-3 text-sm text-indigo-200">{(process.env.NEXT_PUBLIC_APP_URL || "https://mcpos-dashboard.netlify.app").replace(/\/$/, "") + "/api/mcp"}</code>
         <p className="mt-2 text-xs leading-5 text-slate-500">Use OAuth from ChatGPT Enterprise. For Claude Desktop, generate a separate bearer key above and follow the setup guide.</p>
       </section>
     </div>
