@@ -19,6 +19,7 @@ jobs:
       MCPOS_TEST_PRICE: price_CIFixture
       MCPOS_TEST_WEBHOOK_SECRET: whsec_ci_fixture_not_a_real_secret
       MCPOS_TEST_APP_URL: http://127.0.0.1:3000
+      MCPOS_ALLOWED_EMAILS: billing-ci@example.invalid
       MCPOS_BILLING_ENABLED: "true"
       MCPOS_ENFORCE_SUBSCRIPTIONS: "false"
       STRIPE_SECRET_KEY: sk_test_ci_fixture_not_a_real_key
