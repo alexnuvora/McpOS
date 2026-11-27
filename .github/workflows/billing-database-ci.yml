@@ -38,6 +38,12 @@ jobs:
           result="$(supabase db query --local --read-only --output json "select p.proname, p.prosecdef as security_definer, has_function_privilege('anon',p.oid,'EXECUTE') as anon_execute, has_function_privilege('authenticated',p.oid,'EXECUTE') as user_execute, has_function_privilege('service_role',p.oid,'EXECUTE') as server_execute from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname in ('claim_mcpos_device_command','authorize_mcpos_device_command')")"
           printf '%s\n' "$result"
           printf '%s' "$result" | jq -e 'length == 2 and all(.[]; (.security_definer | not) and (.anon_execute | not) and (.user_execute | not) and .server_execute)'
+      - name: Exercise command authorization fixtures
+        run: |
+          container="$(docker ps --filter name=supabase_db_ --format '{{.Names}}')"
+          test "$(printf '%s\n' "$container" | wc -l)" = 1
+          test -n "$container"
+          docker exec -i "$container" psql -U postgres -d postgres -v ON_ERROR_STOP=1 < supabase/tests/command_authorization.sql
       - name: Preserve generated migration
         uses: actions/upload-artifact@v4
         with:
