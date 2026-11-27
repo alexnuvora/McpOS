@@ -159,3 +159,15 @@ test("authenticated billing checks are scoped to the signed-in account", async (
     await admin.auth.admin.deleteUser(created.data.user.id);
   }
 });
+
+test("public OAuth endpoints reject oversized and ambiguous payloads before database access", async () => {
+  for (const path of ["/oauth/token","/oauth/revoke"]) {
+    const request = body => fetch(base+path,{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body});
+    assert.equal((await request("client_id="+ "a".repeat(17000))).status,413);
+    assert.equal((await request("client_id=a&client_id=b")).status,400);
+  }
+  const register = body => fetch(base+"/oauth/register",{method:"POST",headers:{"Content-Type":"application/json"},body});
+  assert.equal((await register(JSON.stringify({client_name:"x".repeat(50000)}))).status,413);
+  assert.equal((await register("null")).status,400);
+  assert.equal((await register("[]")).status,400);
+});
