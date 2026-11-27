@@ -76,6 +76,12 @@ test("authenticated billing checks are scoped to the signed-in account", async (
   try {
     const login = (payload, origin = base, cookie = "") => fetch(base+"/api/auth/login",{method:"POST",headers:{Origin:origin,"Content-Type":"application/json",Cookie:cookie},body:JSON.stringify(payload)});
     const credentials = {action:"password",email,password,next:"/billing"};
+    const missingRecovery = await fetch(base+"/auth/recovery?next=//evil.invalid",{redirect:"manual"});
+    assert.equal(missingRecovery.status,307);
+    assert.equal(missingRecovery.headers.get("location"),base+"/login?error=recovery");
+    const invalidRecovery = await fetch(base+"/auth/recovery?code=invalid&next=//evil.invalid",{redirect:"manual"});
+    assert.equal(invalidRecovery.status,307);
+    assert.equal(invalidRecovery.headers.get("location"),base+"/login?error=recovery");
     assert.equal((await login(credentials,"https://wrong-origin.invalid")).status,403);
     assert.equal((await login({...credentials,password:"incorrect-password"})).status,401);
     assert.equal((await login({...credentials,email:"not-allowed@example.invalid"})).status,401);
