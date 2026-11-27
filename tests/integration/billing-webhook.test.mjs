@@ -55,3 +55,36 @@ test("unauthenticated billing status and checkout are denied", async () => {
   assert.equal((await fetch(base+"/api/billing/status")).status,401);
   assert.equal((await fetch(base+"/api/billing/checkout",{method:"POST",headers:{"Content-Type":"application/json",Origin:base},body:JSON.stringify({plan:"personal"})})).status,401);
 });
+
+test("authenticated billing checks are scoped to the signed-in account", async () => {
+  const { createServerClient } = await import("@supabase/ssr");
+  const { createClient } = await import("@supabase/supabase-js");
+  const publishable = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+  assert.ok(publishable);
+  const admin = createClient(db, key, { auth: { persistSession: false, autoRefreshToken: false } });
+  const email = "billing-ci@example.invalid";
+  const password = "fixture-" + randomUUID();
+  const created = await admin.auth.admin.createUser({ email, password, email_confirm: true });
+  assert.ifError(created.error);
+  assert.ok(created.data.user);
+  const cookies = new Map();
+  const auth = createServerClient(db, publishable, { cookies: {
+    getAll: () => [...cookies].map(([name,value]) => ({ name,value })),
+    setAll: entries => entries.forEach(({name,value}) => cookies.set(name,value)),
+  } });
+  try {
+    const signed = await auth.auth.signInWithPassword({email,password});
+    assert.ifError(signed.error);
+    const cookie = [...cookies].map(([name,value]) => name + "=" + value).join("; ");
+    assert.ok(cookie);
+    const status = await fetch(base+"/api/billing/status",{headers:{Cookie:cookie}});
+    assert.equal(status.status,200);
+    assert.equal((await status.json()).subscriptions.length,0,"another account's ledger must not be visible");
+    const request = (path, payload, origin = base) => fetch(base+path,{method:"POST",headers:{Cookie:cookie,Origin:origin,"Content-Type":"application/json"},body:JSON.stringify(payload)});
+    assert.equal((await request("/api/billing/checkout",{plan:"personal"},"https://wrong-origin.invalid")).status,403);
+    assert.equal((await request("/api/billing/checkout",{plan:"invalid-plan"})).status,400);
+    assert.equal((await request("/api/billing/portal",{subscriptionId:stripeId})).status,404,"another account's subscription must not be accessible");
+  } finally {
+    await admin.auth.admin.deleteUser(created.data.user.id);
+  }
+});
