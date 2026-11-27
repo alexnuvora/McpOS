@@ -1,3 +1,4 @@
+import { sandboxBillingEnabled, sandboxBillingReadiness } from "@/lib/sandbox-billing";
 import { mcposAppOrigin } from "@/lib/app-origin";
 import { NextRequest, NextResponse } from "next/server";
 import * as z from "zod/v4";
@@ -31,7 +32,7 @@ export async function POST(request: NextRequest) {
   if ("response" in auth) return auth.response;
   const key = process.env.STRIPE_SECRET_KEY;
   const configuredUrl = mcposAppOrigin();
-  if (process.env.MCPOS_BILLING_ENABLED !== "true" || !key?.startsWith("sk_test_") || !configuredUrl) {
+  if (!sandboxBillingEnabled() || !key?.startsWith("sk_test_") || !configuredUrl) {
     return NextResponse.json({ error: "Sandbox billing is unavailable." }, { status: 503, headers });
   }
   const base = new URL(configuredUrl);
@@ -43,6 +44,11 @@ export async function POST(request: NextRequest) {
   const price = prices[plan as keyof typeof prices];
   if (!price?.startsWith("price_")) return NextResponse.json({ error: "Plan not configured." }, { status: 503, headers });
 
+  // Hosted checkout requires real sandbox account/price/portal and schema verification.
+  // Local integration uses only loopback fixtures and never needs remote credentials.
+  if (base.hostname !== "127.0.0.1" && !(await sandboxBillingReadiness()).readyForPreviewCheckout) {
+    return NextResponse.json({ error: "Sandbox readiness checks have not passed." }, { status: 503, headers });
+  }
   const userId = auth.account.userId;
   const userFilter = "mcpos_checkout_attempts?user_id=eq." + encodeURIComponent(userId);
   const stripeHeaders = { Authorization: "Bearer " + key };
