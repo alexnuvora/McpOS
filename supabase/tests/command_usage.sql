@@ -28,7 +28,7 @@ begin
   if (select command_count from public.mcpos_daily_command_usage where user_id='11111111-1111-4111-8111-111111111111') <> 500 then raise exception 'Exempt command counted'; end if;
 end $$;
 -- Same-day plan transitions must share the same counter, not reset it.
-do $
+do $quota_test$
 declare
   v_user constant uuid := '11111111-1111-4111-8111-111111111111';
   v_device constant uuid := '33333333-3333-4333-8333-333333333333';
@@ -73,5 +73,5 @@ begin
     raise exception 'Downgrade altered daily usage';
   end if;
   raise notice 'All three plan quota boundaries and same-day transitions passed';
-end $;
+end $quota_test$;
 rollback;
