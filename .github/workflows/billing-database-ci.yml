@@ -23,6 +23,13 @@ jobs:
         run: cmp supabase/migrations/20261127030852_mcpos_command_authorization.sql supabase/pending/mcpos_command_authorization.sql
       - name: Confirm validated checkout reservation migration
         run: cmp supabase/migrations/20261127031522_mcpos_checkout_attempts.sql supabase/pending/mcpos_checkout_attempts.sql
+      - name: Generate staged usage migration
+        run: |
+          supabase migration new mcpos_command_usage < supabase/pending/mcpos_command_usage.sql
+          file="$(find supabase/migrations -name '*_mcpos_command_usage.sql' -print)"
+          test -f "$file"
+          cmp "$file" supabase/pending/mcpos_command_usage.sql
+          echo "Generated migration: $file"
       - name: Start isolated local database
         run: supabase db start
       - name: Verify private billing ledger privileges
@@ -54,6 +61,7 @@ jobs:
             supabase/migrations/*_mcpos_billing_events.sql
             supabase/migrations/*_mcpos_command_authorization.sql
             supabase/migrations/*_mcpos_checkout_attempts.sql
+            supabase/migrations/*_mcpos_command_usage.sql
       - name: Stop local database
         if: always()
         run: supabase stop --no-backup
