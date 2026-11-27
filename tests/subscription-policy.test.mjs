@@ -17,3 +17,20 @@ test("denies unknown or unconfigured prices", () => {
   assert.deepEqual(resolveSubscription(prices,"price_other","active",future,now),{plan:null,active:false});
   assert.equal(resolveSubscription(prices,"","active",future,now).active,false);
 });
+
+test("renewal extends access only with a verified active subscription and a future period", () => {
+  const originalEnd = now / 1000 + 86400;
+  const renewedEnd = originalEnd + 30 * 86400;
+  const afterRenewal = (originalEnd + 1) * 1000;
+  assert.equal(resolveSubscription(prices,"price_pro","active",originalEnd,afterRenewal).active,false);
+  assert.equal(resolveSubscription(prices,"price_pro","active",renewedEnd,afterRenewal).active,true);
+  for (const status of ["past_due","unpaid","incomplete","canceled"]) {
+    assert.equal(resolveSubscription(prices,"price_pro",status,renewedEnd,afterRenewal).active,false);
+  }
+});
+test("recovery from failed renewal restores only valid paid access", () => {
+  const end = now / 1000 + 30 * 86400;
+  assert.equal(resolveSubscription(prices,"price_personal","past_due",end,now).active,false);
+  assert.equal(resolveSubscription(prices,"price_personal","active",end,now).active,true);
+  assert.equal(resolveSubscription(prices,"price_other","active",end,now).active,false);
+});
