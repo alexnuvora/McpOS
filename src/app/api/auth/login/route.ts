@@ -1,3 +1,4 @@
+import { mcposAppOrigin } from "@/lib/app-origin";
 import { NextRequest, NextResponse } from "next/server";
 import * as z from "zod/v4";
 import { createServerSupabaseClient, isAllowedMcpOSEmail, publicRegistrationEnabled } from "@/lib/supabase/server";
@@ -12,7 +13,8 @@ export function GET() {
 
 export async function POST(request: NextRequest) {
   try {
-    const origin = new URL(process.env.NEXT_PUBLIC_APP_URL || request.nextUrl.origin).origin;
+    const origin = mcposAppOrigin();
+    if (!origin) return NextResponse.json({ error: "Sign-in service unavailable." }, { status: 503, headers });
     if (request.headers.get("origin") !== origin) return NextResponse.json({ error: "Origin not allowed." }, { status: 403, headers });
     const input = schema.safeParse(await request.json().catch(() => null));
     if (!input.success) return NextResponse.json({ error: "Enter a valid email address." }, { status: 400, headers });
