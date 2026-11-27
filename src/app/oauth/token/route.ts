@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { isMcpOSAccountIdAllowed, supabaseRest } from "@/lib/device-auth";
-import { hashOAuthToken, MCP_RESOURCE_URL, newOAuthToken, oauthError } from "@/lib/mcp-oauth";
+import { hashOAuthToken, MCP_RESOURCE_URL, newOAuthToken, oauthError, readOAuthBody } from "@/lib/mcp-oauth";
 
 export const dynamic = "force-dynamic";
 
@@ -22,7 +22,10 @@ function tokenResponse(accessToken: string, refreshToken: string, scopes: string
 }
 
 export async function POST(request: NextRequest) {
-  const form = new URLSearchParams(await request.text());
+  const raw = await readOAuthBody(request);
+  if (raw === null) return oauthError("invalid_request", "Request body is too large or invalid.", 413);
+  const form = new URLSearchParams(raw);
+  for (const name of new Set(form.keys())) if (form.getAll(name).length !== 1) return oauthError("invalid_request", "Duplicate parameters are not allowed.");
   const grantType = form.get("grant_type") || "";
   const clientId = form.get("client_id") || "";
   const resource = form.get("resource") || "";
