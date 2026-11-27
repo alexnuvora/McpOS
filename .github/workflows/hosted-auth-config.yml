@@ -19,5 +19,7 @@ jobs:
           test "$PROJECT" = "kvwwabuqydwsbhlcqxwz"
           config="$(curl --fail --silent --show-error --max-time 20 -H "Authorization: Bearer $TOKEN" "https://api.supabase.com/v1/projects/$PROJECT/config/auth")"
           printf '%s' "$config" | jq '{site_url, uri_allow_list, mailer_autoconfirm, external_email_enabled, disable_signup, recovery_template_default: ((.mailer_templates_recovery_content // "") == ""), recovery_template_uses_confirmation_url: ((.mailer_templates_recovery_content // "") | contains("ConfirmationURL")), recovery_template_uses_redirect_to: ((.mailer_templates_recovery_content // "") | contains("RedirectTo")), recovery_template_uses_site_url: ((.mailer_templates_recovery_content // "") | contains("SiteURL"))}'
+          # Only emit nonsecret settings; never print raw auth configuration.
+          printf '%s' "$config" | jq '{security_captcha_enabled,security_captcha_provider,external_anonymous_users_enabled,password_min_length,password_required_characters,rate_limits: (to_entries | map(select((.key | startswith("rate_limit_")) and (.value | type == "number"))) | from_entries)}'
           required='["https://mcpos-dashboard.netlify.app/auth/callback","https://mcpos-dashboard.netlify.app/auth/recovery","https://deploy-preview-12--mcpos-dashboard.netlify.app/auth/recovery","https://deploy-preview-12--mcpos-dashboard.netlify.app/auth/callback"]'
           printf '%s' "$config" | jq -e --argjson required "$required" '(.uri_allow_list | split(",")) as $actual | all($required[]; . as $url | $actual | index($url) != null)'
