@@ -19,13 +19,8 @@ jobs:
           version: latest
       - name: Confirm validated migration
         run: cmp supabase/migrations/20261127024424_mcpos_billing_events.sql supabase/pending/mcpos_billing_events.sql
-      - name: Generate staged command authorization migration
-        run: |
-          supabase migration new mcpos_command_authorization < supabase/pending/mcpos_command_authorization.sql
-          file="$(find supabase/migrations -name '*_mcpos_command_authorization.sql' -print)"
-          test -f "$file"
-          cmp "$file" supabase/pending/mcpos_command_authorization.sql
-          echo "Generated migration: $file"
+      - name: Confirm validated command authorization migration
+        run: cmp supabase/migrations/20261127030852_mcpos_command_authorization.sql supabase/pending/mcpos_command_authorization.sql
       - name: Start isolated local database
         run: supabase db start
       - name: Verify private billing ledger privileges
