@@ -120,8 +120,39 @@ test("authenticated billing checks are scoped to the signed-in account", async (
     assert.equal((await request("/api/billing/checkout",{plan:"personal"},"https://wrong-origin.invalid")).status,403);
     assert.equal((await request("/api/billing/checkout",{plan:"invalid-plan"})).status,400);
     assert.equal((await request("/api/billing/portal",{subscriptionId:stripeId})).status,404,"another account's subscription must not be accessible");
+    // Full PKCE recovery with an actual email captured in the isolated local SMTP inbox.
+    const recovery = await login({action:"recovery",email});
+    assert.equal(recovery.status,200);
+    const recoveryCookie = recovery.headers.getSetCookie().map(value=>value.split(";")[0]).join("; ");
+    assert.ok(recoveryCookie,"PKCE verifier cookie must be set");
+    let mail;
+    for (let i=0; i<20 && !mail; i++) {
+      const inbox = await fetch("http://127.0.0.1:54324/api/v1/messages");
+      assert.equal(inbox.status,200);
+      const messages = (await inbox.json()).messages;
+      mail = messages?.find(m=>m.To?.some(to=>to.Address===email) && /reset|recovery/i.test(m.Subject));
+      if (!mail) await new Promise(resolve=>setTimeout(resolve,500));
+    }
+    assert.ok(mail,"Recovery email must arrive in the local inbox");
+    const detail = await fetch("http://127.0.0.1:54324/api/v1/message/"+encodeURIComponent(mail.ID));
+    assert.equal(detail.status,200);
+    const message = await detail.json();
+    const hrefs = [...(message.HTML || "").matchAll(/href=["']([^"']+)["']/gi)].map(m=>m[1].replaceAll("&amp;","&"));
+    const link = hrefs.map(href=>{try{return new URL(href)}catch{return null}}).find(url=>url?.origin===db && url.pathname==="/auth/v1/verify" && url.searchParams.get("type")==="recovery");
+    assert.ok(link,"Recovery mail must link to local Supabase verification");
+    assert.equal(link.searchParams.get("redirect_to"),base+"/auth/recovery");
+    const verified = await fetch(link,{redirect:"manual"});
+    assert.ok([302,303,307].includes(verified.status));
+    const callback = new URL(verified.headers.get("location"));
+    assert.ok(callback.origin===base && callback.pathname==="/auth/recovery" && callback.searchParams.has("code"),"Verification must return a local PKCE callback");
+    const recovered = await fetch(callback,{redirect:"manual",headers:{Cookie:recoveryCookie}});
+    assert.equal(recovered.status,307);
+    assert.equal(recovered.headers.get("location"),base+"/reset-password");
+    const recoverySession = recovered.headers.getSetCookie().map(value=>value.split(";")[0]).join("; ");
+    assert.ok(recoverySession,"Verified recovery must create a session");
+    assert.equal((await fetch(base+"/reset-password",{headers:{Cookie:recoverySession}})).status,200);
     const replacement = "replacement-" + randomUUID();
-    assert.equal((await updatePassword({password:replacement},cookie)).status,200);
+    assert.equal((await updatePassword({password:replacement},recoverySession)).status,200);
     assert.equal((await login(credentials)).status,401);
     assert.equal((await login({...credentials,password:replacement})).status,200);
   } finally {
