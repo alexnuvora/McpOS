@@ -1,3 +1,4 @@
+import { sandboxBillingEnabled } from "@/lib/sandbox-billing";
 import { NextRequest, NextResponse } from "next/server";
 import * as z from "zod/v4";
 import { supabaseRest } from "@/lib/device-auth";
@@ -29,7 +30,7 @@ const subscriptionSchema = z.object({
 
 export async function POST(request: NextRequest) {
   const secret = process.env.STRIPE_WEBHOOK_SECRET;
-  if (process.env.MCPOS_BILLING_ENABLED !== "true" || !secret || !process.env.STRIPE_SECRET_KEY?.startsWith("sk_test_")) {
+  if (!sandboxBillingEnabled() || !secret || !process.env.STRIPE_SECRET_KEY?.startsWith("sk_test_")) {
     return NextResponse.json({ error: "Sandbox billing is unavailable." }, { status: 503 });
   }
   const length = Number(request.headers.get("content-length") || "0");
