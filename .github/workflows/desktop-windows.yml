@@ -6,8 +6,7 @@ on:
     paths:
       - "desktop/**"
       - ".github/workflows/desktop-windows.yml"
-    tags:
-      - "v*"
+    tags: ["v*"]
   pull_request:
     paths:
       - "desktop/**"
@@ -24,57 +23,56 @@ concurrency:
 jobs:
   windows-build:
     runs-on: windows-latest
-    permissions:
-      contents: read
+    timeout-minutes: 45
     environment: ${{ startsWith(github.ref, 'refs/tags/v') && 'windows-release' || 'windows-ci' }}
     defaults:
       run:
         working-directory: desktop
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate release tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          git fetch origin main
+          git merge-base --is-ancestor HEAD origin/main
+          version="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          test "$GITHUB_REF_NAME" = "v$version"
+      - uses: actions/setup-node@v4
         with:
           node-version: 22
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.x"
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Resolve Supabase publishable API key
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Resolve public API key
         env:
           PUBLIC_KEY: ${{ vars.MCPOS_SUPABASE_PUBLISHABLE_KEY }}
         shell: bash
         run: |
-          if [ -n "$PUBLIC_KEY" ]; then
-            echo "SUPABASE_ANON_KEY=$PUBLIC_KEY" >> "$GITHUB_ENV"
-          elif [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
-            echo "::notice::PR builds are compile-only without a configured public API key"
+          if [ -z "$PUBLIC_KEY" ]; then
+            if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+              echo "::error::Release requires MCPOS_SUPABASE_PUBLISHABLE_KEY"
+              exit 1
+            fi
+            echo "::notice::Compile-only build without a relay key"
           else
-            echo "::error::Configure MCPOS_SUPABASE_PUBLISHABLE_KEY as a repository variable (publishable or anon key only)"
-            exit 1
+            node -e 'const k=process.env.PUBLIC_KEY;if(!k.startsWith("sb_publishable_")){let p;try{p=JSON.parse(Buffer.from(k.split(".")[1],"base64url").toString())}catch{};if(p?.role!=="anon")process.exit(1)}'
+            echo "SUPABASE_ANON_KEY=$PUBLIC_KEY" >> "$GITHUB_ENV"
           fi
-
       - name: Install frontend dependencies
         run: npm install
-
-      - name: Generate Windows application icon
+      - name: Generate Windows icon
         run: python scripts/generate_icon.py
-
       - name: Build unsigned CI installers
         if: "!startsWith(github.ref, 'refs/tags/v')"
         run: npm run tauri:build
-
       - name: Install Azure Artifact Signing CLI
         if: startsWith(github.ref, 'refs/tags/v')
         run: cargo install artifact-signing-cli --locked
-
       - name: Build signed Windows installers
         if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
@@ -87,44 +85,38 @@ jobs:
           SIGNING_PROFILE: ${{ vars.MCPOS_SIGNING_PROFILE }}
         run: |
           if (-not $env:AZURE_CLIENT_ID -or -not $env:AZURE_CLIENT_SECRET -or -not $env:AZURE_TENANT_ID) { throw "Release signing credentials are missing" }
-          if ($env:SIGNING_ENDPOINT -notmatch '^https://[a-z0-9]+\.codesigning\.azure\.net/?
-
-      - name: Upload Windows installers
+          if ($env:SIGNING_ENDPOINT -notmatch '^https://[a-z0-9]+\.codesigning\.azure\.net/?$' -or $env:SIGNING_ACCOUNT -notmatch '^[a-zA-Z0-9-]+$' -or $env:SIGNING_PROFILE -notmatch '^[a-zA-Z0-9-]+$') { throw "Invalid signing configuration" }
+          $command = "artifact-signing-cli -e $env:SIGNING_ENDPOINT -a $env:SIGNING_ACCOUNT -c $env:SIGNING_PROFILE -d McpOS %1"
+          @{ bundle = @{ windows = @{ signCommand = $command } } } | ConvertTo-Json -Depth 5 -Compress | Set-Content -Encoding utf8 src-tauri/tauri.release.conf.json
+          npm run tauri:build -- --config src-tauri/tauri.release.conf.json
+          if ($LASTEXITCODE -ne 0) { throw "Signed build failed" }
+      - name: Upload CI installers (not for distribution)
         if: "!startsWith(github.ref, 'refs/tags/v')"
         uses: actions/upload-artifact@v4
         with:
-          name: McpOS-Windows-Installers
+          name: McpOS-Windows-CI-Unsigned
           path: |
             desktop/src-tauri/target/release/bundle/nsis/*.exe
             desktop/src-tauri/target/release/bundle/msi/*.msi
           if-no-files-found: error
-          retention-days: 30
-
-      - name: Verify release signatures
+          retention-days: 7
+      - name: Verify release signatures and checksums
         if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
         env:
           EXPECTED_PUBLISHER: ${{ vars.MCPOS_SIGNING_PUBLISHER_SUBJECT }}
         run: |
-          if (-not $env:EXPECTED_PUBLISHER) { throw "Expected certificate publisher is not configured" }
-          $files = @(Get-ChildItem src-tauri/target/release/bundle/nsis/*.exe, src-tauri/target/release/bundle/msi/*.msi -ErrorAction SilentlyContinue)
-          if ($files.Count -lt 2) { throw "Expected NSIS and MSI installers" }
+          if (-not $env:EXPECTED_PUBLISHER) { throw "Expected publisher is missing" }
+          $nsis = @(Get-ChildItem src-tauri/target/release/bundle/nsis/*.exe)
+          $msi = @(Get-ChildItem src-tauri/target/release/bundle/msi/*.msi)
+          if ($nsis.Count -ne 1 -or $msi.Count -ne 1) { throw "Expected exactly one NSIS and one MSI installer" }
+          $files = $nsis + $msi
           $app = Get-Item src-tauri/target/release/mcpos-desktop.exe
           foreach ($file in @($app) + $files) {
             $sig = Get-AuthenticodeSignature $file.FullName
-            if ($sig.Status -ne 'Valid' -or -not $sig.TimeStamperCertificate) { throw "Unsigned, untrusted or untimestamped release file: $($file.Name)" }
-            if ($sig.SignerCertificate.Subject -ne $env:EXPECTED_PUBLISHER) { throw "Unexpected publisher: $($file.Name)" }
-            Write-Host "Verified: $($file.Name)"
+            if ($sig.Status -ne 'Valid' -or -not $sig.TimeStamperCertificate -or $sig.SignerCertificate.Subject -ne $env:EXPECTED_PUBLISHER) { throw "Invalid signature or publisher: $($file.Name)" }
           }
-
-      - name: Generate installer checksums
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: pwsh
-        run: |
-          Get-ChildItem src-tauri/target/release/bundle/nsis/*.exe, src-tauri/target/release/bundle/msi/*.msi | ForEach-Object {
-            "$( (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() )  $($_.Name)"
-          } | Set-Content -Encoding ascii SHA256SUMS.txt
-
+          $files | ForEach-Object { "$( (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() )  $($_.Name)" } | Set-Content -Encoding ascii SHA256SUMS.txt
       - name: Upload verified release assets
         if: startsWith(github.ref, 'refs/tags/v')
         uses: actions/upload-artifact@v4
@@ -147,209 +139,7 @@ jobs:
         with:
           name: McpOS-Verified-Release
           path: release
-      - name: Publish GitHub release
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          generate_release_notes: true
-          draft: true
-          files: |
-            release/**/*.exe
-            release/**/*.msi
-            release/**/SHA256SUMS.txt
- -or $env:SIGNING_ACCOUNT -notmatch '^[a-zA-Z0-9-]+
-
-      - name: Upload Windows installers
-        uses: actions/upload-artifact@v4
-        with:
-          name: McpOS-Windows-Installers
-          path: |
-            desktop/src-tauri/target/release/bundle/nsis/*.exe
-            desktop/src-tauri/target/release/bundle/msi/*.msi
-          if-no-files-found: error
-          retention-days: 30
-
-      - name: Verify release signatures
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: pwsh
-        run: |
-          $files = @(Get-ChildItem src-tauri/target/release/bundle/nsis/*.exe, src-tauri/target/release/bundle/msi/*.msi -ErrorAction SilentlyContinue)
-          if ($files.Count -lt 2) { throw "Expected NSIS and MSI installers" }
-          $app = Get-Item src-tauri/target/release/mcpos-desktop.exe
-          foreach ($file in @($app) + $files) {
-            $sig = Get-AuthenticodeSignature $file.FullName
-            if ($sig.Status -ne 'Valid' -or -not $sig.TimeStamperCertificate) { throw "Unsigned, untrusted or untimestamped release file: $($file.Name)" }
-            Write-Host "Verified: $($file.Name)"
-          }
-
-      - name: Generate installer checksums
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: pwsh
-        run: |
-          Get-ChildItem src-tauri/target/release/bundle/nsis/*.exe, src-tauri/target/release/bundle/msi/*.msi | ForEach-Object {
-            "$( (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() )  $($_.Name)"
-          } | Set-Content -Encoding ascii SHA256SUMS.txt
-
-      - name: Upload verified release assets
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: actions/upload-artifact@v4
-        with:
-          name: McpOS-Verified-Release
-          path: |
-            desktop/src-tauri/target/release/bundle/nsis/*.exe
-            desktop/src-tauri/target/release/bundle/msi/*.msi
-            desktop/SHA256SUMS.txt
-          if-no-files-found: error
-
-  publish:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: windows-build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: McpOS-Verified-Release
-          path: release
-      - name: Publish GitHub release
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          generate_release_notes: true
-          draft: true
-          files: |
-            release/**/*.exe
-            release/**/*.msi
-            release/**/SHA256SUMS.txt
- -or $env:SIGNING_PROFILE -notmatch '^[a-zA-Z0-9-]+
-
-      - name: Upload Windows installers
-        uses: actions/upload-artifact@v4
-        with:
-          name: McpOS-Windows-Installers
-          path: |
-            desktop/src-tauri/target/release/bundle/nsis/*.exe
-            desktop/src-tauri/target/release/bundle/msi/*.msi
-          if-no-files-found: error
-          retention-days: 30
-
-      - name: Verify release signatures
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: pwsh
-        run: |
-          $files = @(Get-ChildItem src-tauri/target/release/bundle/nsis/*.exe, src-tauri/target/release/bundle/msi/*.msi -ErrorAction SilentlyContinue)
-          if ($files.Count -lt 2) { throw "Expected NSIS and MSI installers" }
-          $app = Get-Item src-tauri/target/release/mcpos-desktop.exe
-          foreach ($file in @($app) + $files) {
-            $sig = Get-AuthenticodeSignature $file.FullName
-            if ($sig.Status -ne 'Valid' -or -not $sig.TimeStamperCertificate) { throw "Unsigned, untrusted or untimestamped release file: $($file.Name)" }
-            Write-Host "Verified: $($file.Name)"
-          }
-
-      - name: Generate installer checksums
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: pwsh
-        run: |
-          Get-ChildItem src-tauri/target/release/bundle/nsis/*.exe, src-tauri/target/release/bundle/msi/*.msi | ForEach-Object {
-            "$( (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() )  $($_.Name)"
-          } | Set-Content -Encoding ascii SHA256SUMS.txt
-
-      - name: Upload verified release assets
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: actions/upload-artifact@v4
-        with:
-          name: McpOS-Verified-Release
-          path: |
-            desktop/src-tauri/target/release/bundle/nsis/*.exe
-            desktop/src-tauri/target/release/bundle/msi/*.msi
-            desktop/SHA256SUMS.txt
-          if-no-files-found: error
-
-  publish:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: windows-build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: McpOS-Verified-Release
-          path: release
-      - name: Publish GitHub release
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          generate_release_notes: true
-          draft: true
-          files: |
-            release/**/*.exe
-            release/**/*.msi
-            release/**/SHA256SUMS.txt
-) { throw "Invalid signing configuration" }
-          $command = "artifact-signing-cli -e $env:SIGNING_ENDPOINT -a $env:SIGNING_ACCOUNT -c $env:SIGNING_PROFILE -d McpOS %1"
-          $config = @{ bundle = @{ windows = @{ signCommand = $command } } } | ConvertTo-Json -Depth 5 -Compress
-          $config | Set-Content -Encoding utf8 src-tauri/tauri.release.conf.json
-          npm run tauri:build -- --config src-tauri/tauri.release.conf.json
-          if ($LASTEXITCODE -ne 0) { throw "Signed build failed" }
-
-      - name: Upload Windows installers
-        uses: actions/upload-artifact@v4
-        with:
-          name: McpOS-Windows-Installers
-          path: |
-            desktop/src-tauri/target/release/bundle/nsis/*.exe
-            desktop/src-tauri/target/release/bundle/msi/*.msi
-          if-no-files-found: error
-          retention-days: 30
-
-      - name: Verify release signatures
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: pwsh
-        run: |
-          $files = @(Get-ChildItem src-tauri/target/release/bundle/nsis/*.exe, src-tauri/target/release/bundle/msi/*.msi -ErrorAction SilentlyContinue)
-          if ($files.Count -lt 2) { throw "Expected NSIS and MSI installers" }
-          $app = Get-Item src-tauri/target/release/mcpos-desktop.exe
-          foreach ($file in @($app) + $files) {
-            $sig = Get-AuthenticodeSignature $file.FullName
-            if ($sig.Status -ne 'Valid' -or -not $sig.TimeStamperCertificate) { throw "Unsigned, untrusted or untimestamped release file: $($file.Name)" }
-            Write-Host "Verified: $($file.Name)"
-          }
-
-      - name: Generate installer checksums
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: pwsh
-        run: |
-          Get-ChildItem src-tauri/target/release/bundle/nsis/*.exe, src-tauri/target/release/bundle/msi/*.msi | ForEach-Object {
-            "$( (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() )  $($_.Name)"
-          } | Set-Content -Encoding ascii SHA256SUMS.txt
-
-      - name: Upload verified release assets
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: actions/upload-artifact@v4
-        with:
-          name: McpOS-Verified-Release
-          path: |
-            desktop/src-tauri/target/release/bundle/nsis/*.exe
-            desktop/src-tauri/target/release/bundle/msi/*.msi
-            desktop/SHA256SUMS.txt
-          if-no-files-found: error
-
-  publish:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: windows-build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: McpOS-Verified-Release
-          path: release
-      - name: Publish GitHub release
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
           draft: true
