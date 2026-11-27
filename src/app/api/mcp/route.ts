@@ -4,6 +4,7 @@ import { McpServer } from "@modelcontextprotocol/server";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/server";
 import * as z from "zod/v4";
 import { supabaseRest } from "@/lib/device-auth";
+import { checkCommandEntitlement } from "@/lib/billing-entitlement";
 import { MCP_RESOURCE_URL } from "@/lib/mcp-oauth";
 
 export const runtime = "nodejs";
@@ -120,6 +121,8 @@ function makeServer(client: McpClient) {
     },
     async ({ deviceId }) => {
       if (!client.scopes.includes("desktop.status")) return scopeError("desktop.status");
+      const entitlement = await checkCommandEntitlement(client.user_id);
+      if (entitlement !== "allowed") return { content: [{ type: "text" as const, text: entitlement === "subscription_required" ? "An active McpOS subscription is required to request desktop commands. Manage your plan in the McpOS dashboard." : "Subscription verification is temporarily unavailable. No desktop command was queued." }], isError: true };
       const filter = deviceId ? `&id=eq.${deviceId}` : "";
       const recentCutoff = new Date(Date.now() - 90_000).toISOString();
       const devicesResponse = await supabaseRest(
@@ -170,6 +173,8 @@ function makeServer(client: McpClient) {
     },
     async ({ deviceId }) => {
       if (!client.scopes.includes("screen.capture")) return scopeError("screen.capture");
+      const entitlement = await checkCommandEntitlement(client.user_id);
+      if (entitlement !== "allowed") return { content: [{ type: "text" as const, text: entitlement === "subscription_required" ? "An active McpOS subscription is required to request desktop commands. Manage your plan in the McpOS dashboard." : "Subscription verification is temporarily unavailable. No desktop command was queued." }], isError: true };
       const filter = deviceId ? `&id=eq.${deviceId}` : "";
       const recentCutoff = new Date(Date.now() - 90_000).toISOString();
       const devicesResponse = await supabaseRest(`mcpos_devices?select=id,device_name,status,last_seen_at&user_id=eq.${client.user_id}&status=eq.online&last_seen_at=gte.${recentCutoff}${filter}&order=last_seen_at.desc&limit=1`);
@@ -201,6 +206,8 @@ function makeServer(client: McpClient) {
     },
     async ({ deviceId }) => {
       if (!client.scopes.includes("screen.accessibility")) return scopeError("screen.accessibility");
+      const entitlement = await checkCommandEntitlement(client.user_id);
+      if (entitlement !== "allowed") return { content: [{ type: "text" as const, text: entitlement === "subscription_required" ? "An active McpOS subscription is required to request desktop commands. Manage your plan in the McpOS dashboard." : "Subscription verification is temporarily unavailable. No desktop command was queued." }], isError: true };
       const filter = deviceId ? `&id=eq.${deviceId}` : "";
       const recentCutoff = new Date(Date.now() - 90_000).toISOString();
       const devicesResponse = await supabaseRest(`mcpos_devices?select=id,device_name,status,last_seen_at&user_id=eq.${client.user_id}&status=eq.online&last_seen_at=gte.${recentCutoff}${filter}&order=last_seen_at.desc&limit=1`);
@@ -232,6 +239,8 @@ function makeServer(client: McpClient) {
     },
     async ({ operation, path }) => {
       if (!client.scopes.includes("files.read")) return scopeError("files.read");
+      const entitlement = await checkCommandEntitlement(client.user_id);
+      if (entitlement !== "allowed") return { content: [{ type: "text" as const, text: entitlement === "subscription_required" ? "An active McpOS subscription is required to request desktop commands. Manage your plan in the McpOS dashboard." : "Subscription verification is temporarily unavailable. No desktop command was queued." }], isError: true };
       if (operation !== "list_folders" && !path?.trim()) return { content: [{ type: "text", text: "A path is required for this operation." }], isError: true };
       const recentCutoff = new Date(Date.now() - 90_000).toISOString();
       const devicesResponse = await supabaseRest(`mcpos_devices?select=id,device_name&user_id=eq.${client.user_id}&status=eq.online&last_seen_at=gte.${recentCutoff}&order=last_seen_at.desc&limit=1`);
@@ -261,6 +270,8 @@ function makeServer(client: McpClient) {
       const command = action === "pointer_click" ? "input.pointer.click" : action === "pointer_move" ? "input.pointer.move" : action === "pointer_scroll" ? "input.pointer.scroll" : action === "keyboard_type" ? "input.keyboard.type" : "input.keyboard.shortcut";
       const requiredScope = action.startsWith("pointer_") ? "input.pointer" : "input.keyboard";
       if (!client.scopes.includes(requiredScope)) return scopeError(requiredScope);
+      const entitlement = await checkCommandEntitlement(client.user_id);
+      if (entitlement !== "allowed") return { content: [{ type: "text" as const, text: entitlement === "subscription_required" ? "An active McpOS subscription is required to request desktop commands. Manage your plan in the McpOS dashboard." : "Subscription verification is temporarily unavailable. No desktop command was queued." }], isError: true };
       if ((action === "pointer_click" || action === "pointer_move") && (x === undefined || y === undefined)) return { content: [{ type: "text", text: "Both x and y coordinates are required for a click." }], isError: true };
       if (action === "pointer_scroll" && steps === undefined) return { content: [{ type: "text", text: "Scroll steps are required." }], isError: true };
       if (action === "keyboard_type" && (!text || !text.length || /[\u0000-\u001f\u007f]/.test(text))) return { content: [{ type: "text", text: "Text must be 1–200 printable characters." }], isError: true };
@@ -290,6 +301,8 @@ function makeServer(client: McpClient) {
     },
     async ({ action, url, selector, text }) => {
       if (!client.scopes.includes("browser.control")) return scopeError("browser.control");
+      const entitlement = await checkCommandEntitlement(client.user_id);
+      if (entitlement !== "allowed") return { content: [{ type: "text" as const, text: entitlement === "subscription_required" ? "An active McpOS subscription is required to request desktop commands. Manage your plan in the McpOS dashboard." : "Subscription verification is temporarily unavailable. No desktop command was queued." }], isError: true };
       if (action === "open") {
         if (!url) return { content: [{ type: "text", text: "A URL is required." }], isError: true };
         try { const parsed = new URL(url); if (parsed.protocol !== "https:" || !parsed.hostname || parsed.username || parsed.password || parsed.hostname === "localhost" || parsed.hostname.endsWith(".localhost") || parsed.hostname.endsWith(".local") || !parsed.hostname.includes(".") || /^\d+(?:\.\d+){3}$/.test(parsed.hostname) || parsed.hostname.includes(":") || parsed.hostname.endsWith(".internal") || parsed.hostname.endsWith(".home.arpa")) throw new Error("blocked"); }
