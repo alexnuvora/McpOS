@@ -17,13 +17,8 @@ jobs:
       - uses: supabase/setup-cli@v1
         with:
           version: latest
-      - name: Generate staged migration
-        run: |
-          supabase migration new mcpos_billing_events < supabase/pending/mcpos_billing_events.sql
-          file="$(find supabase/migrations -name '*_mcpos_billing_events.sql' -print)"
-          test -f "$file"
-          cmp "$file" supabase/pending/mcpos_billing_events.sql
-          echo "Generated migration: $file"
+      - name: Confirm validated migration
+        run: cmp supabase/migrations/20261127024424_mcpos_billing_events.sql supabase/pending/mcpos_billing_events.sql
       - name: Start isolated local database
         run: supabase db start
       - name: Verify private billing ledger privileges
