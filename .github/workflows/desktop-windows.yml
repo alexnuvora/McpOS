@@ -66,6 +66,9 @@ jobs:
         run: npm install
       - name: Generate Windows icon
         run: python scripts/generate_icon.py
+      - name: Test native browser navigation policy
+        if: "!startsWith(github.ref, 'refs/tags/v')"
+        run: cargo test --manifest-path src-tauri/Cargo.toml browser_policy_tests
       - name: Build unsigned CI installers
         if: "!startsWith(github.ref, 'refs/tags/v')"
         run: npm run tauri:build
