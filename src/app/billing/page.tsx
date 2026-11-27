@@ -3,15 +3,16 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 
 const plans = [
-  { id: "personal", name: "Personal", price: "9.99" },
-  { id: "professional", name: "Professional", price: "19.99" },
-  { id: "business", name: "Business", price: "49.99" },
+  { id: "personal", name: "Personal", price: "9.99", commands: 500 },
+  { id: "professional", name: "Professional", price: "19.99", commands: 2000 },
+  { id: "business", name: "Business", price: "49.99", commands: 10000 },
 ] as const;
 
 export default function BillingPage() {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [subscriptions, setSubscriptions] = useState<Array<{ id: string; plan: string | null; status: string; currentPeriodEnd: number | null; cancelAtPeriodEnd: boolean; active: boolean }>>([]);
+  const [usage, setUsage] = useState<{used: number; limit: number; date: string} | null>(null);
   const [statusMessage, setStatusMessage] = useState("Checking subscriptions…");
   useEffect(() => {
     let stopped = false;
@@ -22,6 +23,7 @@ export default function BillingPage() {
         const result = await response.json();
         if (!stopped) {
           setSubscriptions(result.subscriptions);
+          setUsage(result.usage ?? null);
           setStatusMessage(result.enabled ? (result.subscriptions.length ? "" : "No subscriptions found. Recent payments may take a moment to appear; refresh to check.") : "Sandbox billing is disabled.");
         }
       } catch (err) { if (!stopped) setStatusMessage(err instanceof Error ? err.message : "Subscription status unavailable."); }
@@ -61,14 +63,21 @@ export default function BillingPage() {
       <Link href="/" className="text-sm text-indigo-300 hover:underline">Back to dashboard</Link>
       <h1 className="mt-8 text-3xl font-semibold">McpOS subscriptions</h1>
       <p className="mt-3 text-slate-400">Development preview — sandbox payments only. Plans are not yet commercially available.</p>
-      <p className="mt-2 text-sm text-slate-400">Completing checkout does not currently activate desktop access.</p>
+      <p className="mt-2 text-sm text-slate-400">Desktop access requires a verified subscription when sandbox enforcement is enabled.</p>
       <div className="mt-8 grid gap-5 md:grid-cols-3">
         {plans.map(plan => <section key={plan.id} className="rounded-xl border border-slate-700 bg-[#101722] p-6">
           <h2 className="text-lg font-semibold">{plan.name}</h2>
           <p className="mt-4 text-3xl font-semibold">£{plan.price}<span className="text-sm font-normal text-slate-400"> / month</span></p>
-          <button type="button" disabled={busy !== null} onClick={() => void checkout(plan.id)} className="mt-6 w-full rounded-lg bg-indigo-500 px-4 py-3 text-sm font-semibold disabled:opacity-50">{busy === plan.id ? "Opening checkout…" : "Test checkout"}</button>
+          <p className="mt-3 text-sm text-slate-400">{plan.commands.toLocaleString("en-GB")} commands per day (provisional)</p>
+          <button type="button" disabled={busy !== null || subscriptions.some(s => !["canceled", "incomplete_expired"].includes(s.status))} onClick={() => void checkout(plan.id)} className="mt-6 w-full rounded-lg bg-indigo-500 px-4 py-3 text-sm font-semibold disabled:opacity-50">{busy === plan.id ? "Opening checkout…" : "Test checkout"}</button>
         </section>)}
       </div>
+      {usage && <section className="mt-10 rounded-xl border border-slate-700 p-6">
+        <h2 className="text-xl font-semibold">Daily command usage</h2>
+        <p className="mt-3 text-sm text-slate-300">{usage.used.toLocaleString("en-GB")} of {usage.limit.toLocaleString("en-GB")} used</p>
+        <progress className="mt-3 w-full" aria-label="Daily command usage" max={usage.limit} value={Math.min(usage.used, usage.limit)} />
+        <p className="mt-2 text-xs text-slate-400">Resets at midnight UTC · {usage.date}</p>
+      </section>}
       <section className="mt-10 rounded-xl border border-slate-700 p-6">
         <h2 className="text-xl font-semibold">Your subscriptions</h2>
         {statusMessage && <p className="mt-3 text-sm text-slate-400">{statusMessage}</p>}
