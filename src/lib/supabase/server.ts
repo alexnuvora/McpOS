@@ -41,7 +41,9 @@ export function publicRegistrationEnabled() {
   return process.env.MCPOS_PUBLIC_REGISTRATION === "true"
     && process.env.MCPOS_BILLING_ENABLED === "true"
     && process.env.MCPOS_ENFORCE_SUBSCRIPTIONS === "true"
-    && Boolean(process.env.STRIPE_SECRET_KEY?.startsWith("sk_test_"));
+    && Boolean(process.env.STRIPE_SECRET_KEY?.startsWith("sk_test_"))
+    && Boolean(process.env.MCPOS_TURNSTILE_SITE_KEY)
+    && process.env.MCPOS_AUTH_CAPTCHA_VERIFIED === "true";
 }
 
 export function isMcpOSAccountAllowed(user: { email?: string | null; email_confirmed_at?: string | null; is_anonymous?: boolean; banned_until?: string | null }) {
