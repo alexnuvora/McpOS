@@ -17,15 +17,16 @@ concurrency:
 
 jobs:
   deploy:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Install Supabase CLI
-        run: |
-          npm install --global supabase
-          supabase --version
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
 
       - name: Validate required configuration
         env:
@@ -35,7 +36,7 @@ jobs:
         run: |
           test -n "$SUPABASE_ACCESS_TOKEN" || (echo "::error::Missing SUPABASE_ACCESS_TOKEN secret" && exit 1)
           test -n "$SUPABASE_DB_PASSWORD" || (echo "::error::Missing SUPABASE_DB_PASSWORD secret" && exit 1)
-          test -n "$SUPABASE_PROJECT_REF" || (echo "::error::Missing SUPABASE_PROJECT_REF variable" && exit 1)
+          test "$SUPABASE_PROJECT_REF" = "kvwwabuqydwsbhlcqxwz" || (echo "::error::Unexpected McpOS Supabase project reference" && exit 1)
 
       - name: Link Supabase project
         env:
