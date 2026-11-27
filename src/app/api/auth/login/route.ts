@@ -1,4 +1,5 @@
 import { mcposAppOrigin } from "@/lib/app-origin";
+import { readOAuthBody } from "@/lib/mcp-oauth";
 import { NextRequest, NextResponse } from "next/server";
 import * as z from "zod/v4";
 import { createServerSupabaseClient, isAllowedMcpOSEmail, isMcpOSAccountAllowed, publicRegistrationEnabled } from "@/lib/supabase/server";
@@ -22,7 +23,11 @@ export async function POST(request: NextRequest) {
     const origin = mcposAppOrigin();
     if (!origin) return NextResponse.json({ error: "Sign-in service unavailable." }, { status: 503, headers });
     if (request.headers.get("origin") !== origin) return NextResponse.json({ error: "Origin not allowed." }, { status: 403, headers });
-    const input = schema.safeParse(await request.json().catch(() => null));
+    const raw = await readOAuthBody(request, 16384);
+    if (raw === null) return NextResponse.json({ error: "Request too large or invalid." }, { status: 413, headers });
+    let body: unknown;
+    try { body = JSON.parse(raw); } catch { return NextResponse.json({ error: "Check your email and form details." }, { status: 400, headers }); }
+    const input = schema.safeParse(body);
     if (!input.success) return NextResponse.json({ error: "Check your email and form details." }, { status: 400, headers });
     const { action, password, captchaToken } = input.data;
     const email = input.data.email.toLowerCase();
