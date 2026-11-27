@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getDeviceAccount } from "@/lib/device-auth";
+import { getSandboxSubscriptions } from "@/lib/billing-entitlement";
+import { createHash } from "node:crypto";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -32,9 +34,13 @@ export async function POST(request: NextRequest) {
     cancel_url: new URL("/billing?checkout=cancelled", base).href,
   });
   try {
+    const existing = await getSandboxSubscriptions(auth.account.userId);
+    if (existing.some(sub => !["canceled", "incomplete_expired"].includes(sub.status))) return NextResponse.json({ error: "An existing subscription must be managed before starting another checkout." }, { status: 409 });
+    // Deduplicate repeated clicks in the same short window. Full cross-window checkout locking is a separate rollout requirement.
+    const idempotency = createHash("sha256").update(auth.account.userId + ":" + plan + ":" + Math.floor(Date.now() / 300_000)).digest("hex");
     const response = await fetch("https://api.stripe.com/v1/checkout/sessions", {
       method: "POST",
-      headers: { Authorization: "Bearer " + key, "Content-Type": "application/x-www-form-urlencoded" },
+      headers: { Authorization: "Bearer " + key, "Content-Type": "application/x-www-form-urlencoded", "Idempotency-Key": "mcpos-checkout-" + idempotency },
       body: params,
       cache: "no-store",
       signal: AbortSignal.timeout(15000),
