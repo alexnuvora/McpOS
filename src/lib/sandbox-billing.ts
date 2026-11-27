@@ -7,7 +7,7 @@ export function sandboxBillingEnabled(): boolean {
   if (process.env.MCPOS_BILLING_ENABLED === "false") return false;
   // The trusted build marker is only set for this Netlify deploy preview.
   return process.env.MCPOS_BUILD_PREVIEW_ORIGIN === previewOrigin ||
-    process.env.MCPOS_BILLING_ENABLED === "true";
+    (mcposAppOrigin()?.startsWith("http://127.0.0.1:") === true && process.env.MCPOS_BILLING_ENABLED === "true");
 }
 
 const sandboxAccount = "acct_1TNzE92NnZDbZsO0";
