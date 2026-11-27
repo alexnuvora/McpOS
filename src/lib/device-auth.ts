@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient, isAllowedMcpOSEmail } from "@/lib/supabase/server";
+import { createServerSupabaseClient, isMcpOSAccountAllowed } from "@/lib/supabase/server";
 
 const supabaseUrl = () => (process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "").replace(/\/$/, "");
 const serviceKey = () => process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -28,7 +28,7 @@ export async function getDeviceAccount(_request: NextRequest): Promise<AccountRe
   try {
     const supabase = await createServerSupabaseClient();
     const { data: { user }, error } = await supabase.auth.getUser();
-    if (error || !user || !isAllowedMcpOSEmail(user.email)) {
+    if (error || !user || !isMcpOSAccountAllowed(user)) {
       return { response: NextResponse.json({ error: "Sign in with an authorised McpOS email address first." }, { status: 401 }) };
     }
     return { account: { userId: user.id, email: user.email! } };
