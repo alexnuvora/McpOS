@@ -86,7 +86,7 @@ export async function DELETE(request: NextRequest) {
     body: JSON.stringify({ status: "denied", error_message: "AI client session revoked before execution.", completed_at: revokedAt }),
   });
   await supabaseRest(`mcpos_device_commands?user_id=eq.${auth.account.userId}&mcp_client_id=eq.${body.client_id}&status=eq.completed`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ result: { consumed: true } }) });
-  await supabaseRest(`mcpos_oauth_refresh_tokens?mcp_client_id=eq.${body.client_id}&revoked_at=is.null`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ revoked_at: revokedAt }) });
+  await supabaseRest(`mcpos_oauth_refresh_tokens?mcp_client_id=eq.${body.client_id}&user_id=eq.${auth.account.userId}&revoked_at=is.null`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ revoked_at: revokedAt }) });
   await supabaseRest("mcpos_device_audit", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ user_id: auth.account.userId, event_type: "mcp.client.revoked", outcome: "success", metadata: { client_id: body.client_id } }) });
   return NextResponse.json({ ok: true });
 }
