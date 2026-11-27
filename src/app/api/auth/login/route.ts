@@ -7,9 +7,10 @@ import { createServerSupabaseClient, isAllowedMcpOSEmail, isMcpOSAccountAllowed,
 export const dynamic = "force-dynamic";
 const headers = { "Cache-Control": "no-store" };
 const schema = z.object({
-  action: z.enum(["password","register","magic","recovery"]).default("magic"),
+  action: z.enum(["password","register","magic","recovery","recovery-code"]).default("magic"),
   email: z.string().trim().email().max(254),
   password: z.string().max(1024).optional(),
+  recoveryCode: z.string().regex(/^\d{6,10}$/).optional(),
   next: z.string().max(4096).optional(),
   captchaToken: z.string().max(4096).optional(),
 });
@@ -29,9 +30,10 @@ export async function POST(request: NextRequest) {
     try { body = JSON.parse(raw); } catch { return NextResponse.json({ error: "Check your email and form details." }, { status: 400, headers }); }
     const input = schema.safeParse(body);
     if (!input.success) return NextResponse.json({ error: "Check your email and form details." }, { status: 400, headers });
-    const { action, password, captchaToken } = input.data;
+    const { action, password, captchaToken, recoveryCode } = input.data;
     const email = input.data.email.toLowerCase();
     const loginFailure = () => NextResponse.json({ error: "Unable to sign in. Check your credentials or verify your email." }, { status: 401, headers });
+    const recoveryFailure = () => NextResponse.json({ error: "Invalid or expired recovery code. Request a new email if needed." }, { status: 401, headers });
     const genericSuccess = () => NextResponse.json({ ok: true }, { headers });
     if (process.env.MCPOS_TURNSTILE_SITE_KEY && !captchaToken) return NextResponse.json({ error: "Complete the security check." }, { status: 400, headers });
     if (action === "password" && !password) return loginFailure();
@@ -39,7 +41,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Choose a password of at least 12 characters and no more than 72 UTF-8 bytes." }, { status: 400, headers });
     }
     // No account membership or existence disclosure to unauthorised callers.
-    if (!publicRegistrationEnabled() && !isAllowedMcpOSEmail(email)) return action === "password" ? loginFailure() : genericSuccess();
+    if (!publicRegistrationEnabled() && !isAllowedMcpOSEmail(email)) return action === "password" ? loginFailure() : action === "recovery-code" ? recoveryFailure() : genericSuccess();
     let next = "/";
     const requested = input.data.next || "/";
     if (requested.startsWith("/") && !requested.startsWith("//") && !requested.includes("\\")) {
@@ -49,6 +51,16 @@ export async function POST(request: NextRequest) {
     const callback = new URL(action === "recovery" ? "/auth/recovery" : "/auth/callback", origin);
     if (action !== "recovery") callback.searchParams.set("next", next);
     const supabase = await createServerSupabaseClient();
+    if (action === "recovery-code") {
+      if (!recoveryCode) return recoveryFailure();
+      const { data, error } = await supabase.auth.verifyOtp({ email, token: recoveryCode, type: "recovery", options: { captchaToken } });
+      if (error?.status === 429) return NextResponse.json({ error: "Too many requests. Please try again later." }, { status: 429, headers });
+      if (error || !data.user || !data.session || !isMcpOSAccountAllowed(data.user)) {
+        if (data.session) await supabase.auth.signOut({ scope: "local" });
+        return recoveryFailure();
+      }
+      return NextResponse.json({ ok: true, next: "/reset-password" }, { headers });
+    }
     if (action === "password") {
       const { data, error } = await supabase.auth.signInWithPassword({ email, password: password!, options: { captchaToken } });
       if (error?.status === 429) return NextResponse.json({ error: "Too many requests. Please try again later." }, { status: 429, headers });
