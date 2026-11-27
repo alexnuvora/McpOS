@@ -11,6 +11,7 @@ type Turnstile = { render: (container: HTMLElement, options: { sitekey: string; 
 function turnstile() { return (window as Window & { turnstile?: Turnstile }).turnstile; }
 
 export default function LoginPage() {
+  const [error, setError] = useState("");
   const [config, setConfig] = useState<{ captchaSiteKey: string | null } | null>(null);
   const [scriptReady, setScriptReady] = useState(false);
   const [captchaToken, setCaptchaToken] = useState("");
@@ -39,7 +40,6 @@ export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [busy, setBusy] = useState(false);
   const [sent, setSent] = useState(false);
-  const [error, setError] = useState("");
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
