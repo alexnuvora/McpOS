@@ -8,6 +8,12 @@ Status on 2026-11-27: hosted auth verification observed CAPTCHA disabled, six-ch
 - Set MCPOS_TURNSTILE_SITE_KEY through Netlify's environment settings for the corresponding deployment contexts. The site key is public; the secret key belongs only in the Supabase Auth provider settings, never in Git, logs, or the frontend.
 - Both deployments currently share hosted Auth. Stage and verify a compatible login build on both origins before enabling provider-wide CAPTCHA, or create a separate staging Auth project. A single shared Auth provider must accept the widget tokens from both origins; do not assume separate widget secrets will work against one provider. Prefer a single production widget with explicitly authorised hostnames while the shared project is retained.
 
+## Staged configuration (2026-11-27)
+- Cloudflare managed widget "McpOS Authentication" created with both exact hostnames and no clearance cookie.
+- Netlify MCPOS_TURNSTILE_SITE_KEY configured for deploy previews only. A fresh preview build is required to verify frontend rendering.
+- Production key configuration and a compatible production login build are still required before enabling CAPTCHA on the shared Supabase Auth project.
+- Provider CAPTCHA remains disabled until the owner completes the coordinated activation and tests. Do not mark CAPTCHA verified on the basis of frontend rendering.
+
 ## Controlled rollout
 1. Verify current beta login and recovery; retain an authenticated owner session.
 2. Set hosted password minimum to 12 characters (matching app registration/reset). Keep email confirmation and anonymous-sign-in restrictions enabled.
