@@ -41,6 +41,7 @@ export async function sandboxBillingReadiness() {
     tableReady("mcpos_billing_events"), tableReady("mcpos_checkout_attempts"), tableReady("mcpos_daily_command_usage"),
   ]);
   let stripeAccountVerified = false;
+  let stripeAccountDiagnostic: "not_checked" | "matched" | "account_mismatch" | "invalid_key" | "permission_denied" | "rate_limited" | "provider_error" | "network_error" = "not_checked";
   let stripePricesVerified = false;
   let stripePortalVerified = false;
   // Do not send a live-mode key to Stripe. No remote writes or customer data reads.
@@ -50,8 +51,14 @@ export async function sandboxBillingReadiness() {
       return r.ok ? await r.json() : null;
     };
     try {
-      const account = await read("account");
-      stripeAccountVerified = account?.id === sandboxAccount;
+      const response = await fetch("https://api.stripe.com/v1/account", { headers: { Authorization: "Bearer " + key }, cache: "no-store", signal: AbortSignal.timeout(8000) });
+      if (response.ok) {
+        const account = await response.json();
+        stripeAccountVerified = account?.id === sandboxAccount;
+        stripeAccountDiagnostic = stripeAccountVerified ? "matched" : "account_mismatch";
+      } else {
+        stripeAccountDiagnostic = response.status === 401 ? "invalid_key" : response.status === 403 ? "permission_denied" : response.status === 429 ? "rate_limited" : "provider_error";
+      }
       if (stripeAccountVerified) {
         const [prices, portal] = await Promise.all([
           Promise.all(priceIds.map(id => read("prices/" + encodeURIComponent(id!)))),
@@ -60,8 +67,8 @@ export async function sandboxBillingReadiness() {
         stripePricesVerified = prices.every((price, i) => price?.id === priceIds[i] && price.livemode === false && price.active === true && price.currency === "gbp" && price.unit_amount === plans[i].amount && price.recurring?.interval === "month" && price.recurring?.interval_count === 1);
         stripePortalVerified = portal?.id === portalId && portal.livemode === false && portal.active === true;
       }
-    } catch { /* Report only booleans; never expose provider responses or keys. */ }
+    } catch { if (stripeAccountDiagnostic === "not_checked") stripeAccountDiagnostic = "network_error"; }
   }
   const checks = { keyConfigured, webhookSecretConfigured, pricesConfigured, portalConfigured, previewOriginConfigured, ledgerReady, reservationsReady, quotasReady, stripeAccountVerified, stripePricesVerified, stripePortalVerified, enforcementDisabled, publicRegistrationDisabled };
-  return { readyForPreviewCheckout: Object.values(checks).every(Boolean) && enabled, enabled, checks, webhookDeliveryVerified: false };
+  return { readyForPreviewCheckout: Object.values(checks).every(Boolean) && enabled, enabled, checks, stripeAccountDiagnostic, webhookDeliveryVerified: false };
 }
