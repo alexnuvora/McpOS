@@ -37,4 +37,49 @@ jobs:
               recovery_code_template: ((.mailer_templates_recovery_content // "") | contains("{{ .Token }}"))
             }')"
           printf '%s\n' "$checks"
-          printf '%s' "$checks" | jq -e 'all(.[]; . == true)' >/dev/null
+          # Preserve the email readiness gate: built-in email is fine for the closed beta,
+          # but cannot be assumed suitable for public registration or recovery.
+          printf '%s' "$checks" | jq -e 'del(.custom_smtp_configured, .recovery_code_template) | all(.[]; . == true)' >/dev/null
+      - name: Prove Auth rejects missing and invalid CAPTCHA tokens
+        env:
+          TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          PROJECT: ${{ vars.SUPABASE_PROJECT_REF }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$PROJECT" = "kvwwabuqydwsbhlcqxwz"
+          response="$(curl --fail --silent --show-error --max-time 20 "https://api.supabase.com/v1/projects/$PROJECT/api-keys?reveal=true" -H "Authorization: Bearer $TOKEN")"
+          key="$(printf '%s' "$response" | jq -er '[.[] | select(.type == "publishable" or .name == "anon") | (.api_key // .key)] | map(select(. != null and . != "")) | .[0] // empty')"
+          test -n "$key"
+          echo "::add-mask::$key"
+          unset response
+          # Password grant never sends email or creates an account. Use a unique synthetic identity.
+          email="mcpos-captcha-probe-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}@example.org"
+          for variant in missing invalid; do
+            payload="$(jq -nc --arg email "$email" --arg password "$(openssl rand -hex 24)" '{email:$email,password:$password}')"
+            if [ "$variant" = invalid ]; then
+              payload="$(printf '%s' "$payload" | jq '. + {gotrue_meta_security:{captcha_token:"invalid-test-token"}}')"
+            fi
+            body="$(mktemp)"
+            status="$(curl --silent --show-error --max-time 20 -o "$body" -w '%{http_code}' -X POST "https://$PROJECT.supabase.co/auth/v1/token?grant_type=password" -H "apikey: $key" -H "Content-Type: application/json" --data "$payload")"
+            code="$(jq -r '.error_code // .code // "unknown"' "$body")"
+            rm -f "$body"
+            if [[ "$status" =~ ^4[0-9][0-9]$ ]] && [ "$code" = captcha_failed ]; then
+              echo "$variant CAPTCHA token rejected: true"
+            else
+              echo "::error::$variant CAPTCHA token not independently verified (HTTP $status)"
+              exit 1
+            fi
+          done
+      - name: Report public email readiness separately
+        env:
+          TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          PROJECT: ${{ vars.SUPABASE_PROJECT_REF }}
+        run: |
+          set -euo pipefail
+          test "$PROJECT" = "kvwwabuqydwsbhlcqxwz"
+          config="$(curl --fail --silent --show-error --max-time 20 -H "Authorization: Bearer $TOKEN" "https://api.supabase.com/v1/projects/$PROJECT/config/auth")"
+          if ! printf '%s' "$config" | jq -e '((.smtp_host // "") | length) > 0 and ((.smtp_user // "") | length) > 0' >/dev/null; then
+            echo "::warning::Built-in email retained for closed beta. Public email delivery and recovery remain unverified. Do not enable public registration."
+          fi
+
