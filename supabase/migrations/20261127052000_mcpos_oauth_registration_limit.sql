@@ -18,10 +18,14 @@ declare
   minute_now timestamptz := date_trunc('minute',statement_timestamp());
   day_now date := (statement_timestamp() at time zone 'UTC')::date;
   budget public.mcpos_oauth_registration_budget%rowtype;
+  checked_at timestamptz;
 begin
   insert into public.mcpos_oauth_registration_budget(singleton,minute_start,minute_count,day_start,day_count)
     values(true,minute_now,0,day_now,0) on conflict(singleton) do nothing;
   select * into budget from public.mcpos_oauth_registration_budget where singleton for update;
+  checked_at := clock_timestamp();
+  minute_now := date_trunc('minute',checked_at);
+  day_now := (checked_at at time zone 'UTC')::date;
   if budget.minute_start <> minute_now then budget.minute_count := 0; end if;
   if budget.day_start <> day_now then budget.day_count := 0; end if;
   if budget.minute_count >= 60 or budget.day_count >= 1000 then return false; end if;
