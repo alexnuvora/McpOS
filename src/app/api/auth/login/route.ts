@@ -41,8 +41,8 @@ export async function POST(request: NextRequest) {
       const target = new URL(requested, origin);
       if (target.origin === origin) next = target.pathname + target.search + target.hash;
     }
-    const callback = new URL("/auth/callback", origin);
-    callback.searchParams.set("next", action === "recovery" ? "/reset-password" : next);
+    const callback = new URL(action === "recovery" ? "/auth/recovery" : "/auth/callback", origin);
+    if (action !== "recovery") callback.searchParams.set("next", next);
     const supabase = await createServerSupabaseClient();
     if (action === "password") {
       const { data, error } = await supabase.auth.signInWithPassword({ email, password: password!, options: { captchaToken } });
