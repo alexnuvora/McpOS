@@ -224,12 +224,12 @@ function makeServer(client: McpClient) {
     "mcpos_get_accessibility_snapshot",
     {
       title: "Understand open Windows applications",
-      description: "Read a bounded Windows UI Automation snapshot of windows and the focused application’s control labels on updated companions. Requires the screen.accessibility scope on this AI client and the visible local application-understanding switch to be ON. Password control labels are excluded.",
+      description: "Read a bounded Windows UI Automation snapshot of windows and the focused or explicitly targeted application’s control labels on updated companions. Requires the screen.accessibility scope on this AI client and the visible local application-understanding switch to be ON. Password control labels are excluded.",
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       _meta: { securitySchemes: [{ type: "oauth2", scopes: ["screen.accessibility"] }] },
-      inputSchema: z.object({ deviceId: z.string().uuid().optional() }),
+      inputSchema: z.object({ deviceId: z.string().uuid().optional(), windowId: z.array(z.number().int()).min(1).max(32).optional() }),
     },
-    async ({ deviceId }) => {
+    async ({ deviceId, windowId }) => {
       if (!client.scopes.includes("screen.accessibility")) return scopeError("screen.accessibility");
       const entitlement = await checkCommandEntitlement(client.user_id);
       if (entitlement.status !== "allowed") return { content: [{ type: "text" as const, text: entitlement.status === "subscription_required" ? "An active McpOS subscription is required to request desktop commands. Manage your plan in the McpOS dashboard." : "Subscription verification is temporarily unavailable. No desktop command was queued." }], isError: true };
@@ -242,7 +242,7 @@ function makeServer(client: McpClient) {
       const expiresAt = new Date(Date.now() + 45_000).toISOString();
       const commandResponse = await supabaseRest("mcpos_device_commands", {
         method: "POST", headers: { Prefer: "return=representation" },
-        body: JSON.stringify({ user_id: client.user_id, mcp_client_id: client.id, ...entitlement.billing, device_id: device.id, command: "desktop.accessibility", payload: { scope: "top_level_windows", max_items: 40 }, expires_at: expiresAt }),
+        body: JSON.stringify({ user_id: client.user_id, mcp_client_id: client.id, ...entitlement.billing, device_id: device.id, command: "desktop.accessibility", payload: { scope: "top_level_windows", max_items: 40, ...(windowId ? { windowId } : {}) }, expires_at: expiresAt }),
       });
       if (!commandResponse.ok) return queueError(commandResponse);
       const [command] = await commandResponse.json();
@@ -442,7 +442,7 @@ function makeServer(client: McpClient) {
     z.object({ command: z.literal("browser.type"), selector, text: printable, windowId: z.string().max(80).optional() }),
     z.object({ command: z.literal("browser.snapshot") }),
     z.object({ command: z.literal("screen.capture"), displayId: z.number().int().nonnegative().optional() }),
-    z.object({ command: z.literal("desktop.accessibility") }),
+    z.object({ command: z.literal("desktop.accessibility"), windowId: runtimeId.optional() }),
     z.object({ command: z.literal("desktop.launch"), application: z.enum(["chrome","calculator","notepad"]) }),
     z.object({ command: z.literal("desktop.focus"), windowId: runtimeId }),
     z.object({ command: z.literal("native.invoke"), windowId: runtimeId, controlId: runtimeId }),
