@@ -305,12 +305,12 @@ function makeServer(client: McpClient) {
     "mcpos_browser_automation",
     {
       title: "Automate the isolated browser",
-      description: "Open an HTTPS website, read a bounded page snapshot, click a CSS selector, or enter text into a selected field in the separate McpOS browser profile. Requires browser.control scope and the local browser consent switch. The Windows computer enforces its local Manual, Selected or Auto-approve-all policy. Browser automation always retains its separate local consent switch.",
+      description: "Open an HTTPS website (newWindow optionally opens another window on supported companions), read a bounded page snapshot, click a CSS selector, or enter text into a selected field in the separate McpOS browser profile. Focus the intended isolated window when several are open. Requires browser.control scope and the local browser consent switch. The Windows computer enforces its local Manual, Selected or Auto-approve-all policy. Browser automation always retains its separate local consent switch.",
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
       _meta: { securitySchemes: [{ type: "oauth2", scopes: ["browser.control"] }] },
-      inputSchema: z.object({ action: z.enum(["open", "snapshot", "click", "type"]), url: z.string().max(2048).optional(), selector: z.string().max(256).optional(), text: z.string().max(200).optional() }),
+      inputSchema: z.object({ action: z.enum(["open", "snapshot", "click", "type"]), url: z.string().max(2048).optional(), selector: z.string().max(256).optional(), text: z.string().max(200).optional(), newWindow: z.boolean().optional() }),
     },
-    async ({ action, url, selector, text }) => {
+    async ({ action, url, selector, text, newWindow }) => {
       if (!client.scopes.includes("browser.control")) return scopeError("browser.control");
       const entitlement = await checkCommandEntitlement(client.user_id);
       if (entitlement.status !== "allowed") return { content: [{ type: "text" as const, text: entitlement.status === "subscription_required" ? "An active McpOS subscription is required to request desktop commands. Manage your plan in the McpOS dashboard." : "Subscription verification is temporarily unavailable. No desktop command was queued." }], isError: true };
@@ -335,7 +335,7 @@ function makeServer(client: McpClient) {
       const [device] = await devicesResponse.json();
       if (!device) return { content: [{ type: "text", text: "No online Windows device is available." }], isError: true };
       const command = "browser." + action;
-      const payload = action === "open" ? { url } : action === "click" ? { selector } : action === "type" ? { selector, text } : {};
+      const payload = action === "open" ? { url, ...(newWindow === true ? { newWindow: true } : {}) } : action === "click" ? { selector } : action === "type" ? { selector, text } : {};
       const expiresAt = new Date(Date.now() + 60_000).toISOString();
       const queued = await supabaseRest("mcpos_device_commands", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ user_id: client.user_id, mcp_client_id: client.id, ...entitlement.billing, device_id: device.id, command, payload, expires_at: expiresAt }) });
       if (!queued.ok) return queueError(queued);

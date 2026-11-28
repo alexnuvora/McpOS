@@ -26,13 +26,13 @@ The desktop companion polls the Supabase queue over outbound HTTPS every 10 seco
 | `files.read` | Native folder picker; canonical-path containment; 100-entry listing cap; 512 KB UTF-8 text reads; extension allowlist; no writes/deletes |
 | `input.pointer` | One left/right click within primary display bounds; exact action shown in local approval prompt |
 | `input.keyboard` | Text entry limited to 200 printable characters; exact text shown in local approval prompt |
-| `browser.control` | Dedicated WebView2 data directory; public HTTPS only; pop-ups and downloads blocked; bounded text snapshot; selector click/text entry each require local approval |
+| `browser.control` | Dedicated WebView2 data directory; public HTTPS navigation; bounded permitted popups on supported companions; downloads blocked; bounded text snapshot; selector click/text entry each require local approval |
 
 All optional scopes are unchecked when creating an AI client key. Local screen, accessibility and browser switches default OFF and reset to OFF on restart. Folder grants reset to an empty list on restart. Pointer/keyboard and browser navigation/click/type requests require a fresh one-time local approval.
 
 ## Browser isolation
 
-The isolated browser is a separate WebView2 window with its own data directory, not the user's normal Edge/Chrome profile. It rejects non-HTTPS navigation, embedded credentials, localhost, `.local` and literal private/loopback IP addresses. Pop-up windows and downloads are blocked. A loopback-only, ephemeral-port bridge with one-time random nonces returns bounded page snapshots and action results; sites with restrictive Content Security Policy or browser private-network policy may block that bridge.
+The isolated browser is a separate WebView2 window with its own data directory, not the user's normal Edge/Chrome profile. It rejects non-HTTPS navigation, embedded credentials, localhost, `.local` and literal private/loopback IP addresses. On companions supporting multiple windows, permitted HTTPS popups and an inert about:blank bootstrap are accepted within a maximum of six isolated windows; each child uses the opener's WebView2 environment and the same navigation/download restrictions. Downloads remain blocked. Explicit newWindow navigation can open another window. Focus the intended isolated window when multiple windows exist; turning off local browser consent closes all of them. This is not network-level isolation; DNS and subresource egress remain a launch blocker. A loopback-only, ephemeral-port bridge with one-time random nonces returns bounded page snapshots and action results; sites with restrictive Content Security Policy or browser private-network policy may block that bridge.
 
 ## File-access boundary
 
