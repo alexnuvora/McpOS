@@ -28,3 +28,5 @@ tiny_http = "0.12"
 url = "2.5"
 
 uuid = { version = "1", features = ["v4"] }
+
+arboard = { version = "3", default-features = false }

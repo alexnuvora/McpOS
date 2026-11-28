@@ -91,6 +91,7 @@ struct AutomationPolicy {
     auto_keyboard: bool,
     auto_browser: bool,
     auto_screen: bool,
+    task_grant: Option<(String, String, u64)>,
 }
 struct AutomationPolicyState(Arc<Mutex<AutomationPolicy>>);
 fn now_epoch() -> u64 {
@@ -125,6 +126,7 @@ fn set_automation_policy(mode: String, expiry_minutes: u64, auto_pointer: bool, 
     if !matches!(mode.as_str(), "manual" | "selected" | "all") { return Err("Invalid automation mode.".into()); }
     if !matches!(expiry_minutes, 15 | 60 | 240 | 480) { return Err("Choose a supported session expiry.".into()); }
     let mut p = policy.0.lock().map_err(|_| "Automation policy unavailable.".to_string())?;
+    p.task_grant = None;
     p.mode = mode.clone();
     p.paused = false;
     p.expires_at = if mode == "manual" { None } else { Some(now_epoch() + expiry_minutes * 60) };
@@ -138,6 +140,7 @@ fn set_automation_policy(mode: String, expiry_minutes: u64, auto_pointer: bool, 
 async fn pause_automation(policy: tauri::State<'_, AutomationPolicyState>, pending: tauri::State<'_, PendingAction>) -> Result<serde_json::Value, String> {
     {
         let mut p = policy.0.lock().map_err(|_| "Automation policy unavailable.".to_string())?;
+        p.task_grant = None;
         p.paused = true;
     }
     let command = {
@@ -177,25 +180,45 @@ fn set_accessibility_consent(enabled: bool, consent: tauri::State<'_, Accessibil
     enabled
 }
 
+fn describe_controls(walker: &uiautomation::UITreeWalker, parent: &uiautomation::UIElement, depth: usize, controls: &mut Vec<serde_json::Value>) {
+    if depth > 5 || controls.len() >= 100 { return; }
+    let mut next = walker.get_first_child(parent).ok();
+    while let Some(element) = next {
+        if controls.len() >= 100 { break; }
+        next = walker.get_next_sibling(&element).ok();
+        let sensitive = element.is_password().unwrap_or(true);
+        controls.push(serde_json::json!({
+            "depth": depth,
+            "role": element.get_localized_control_type().unwrap_or_default(),
+            "label": if sensitive { String::new() } else { element.get_name().unwrap_or_default().chars().take(120).collect() }
+        }));
+        if !sensitive { describe_controls(walker, &element, depth + 1, controls); }
+    }
+}
+
 fn get_accessibility_snapshot() -> Result<serde_json::Value, String> {
     let automation = UIAutomation::new().map_err(|_| "Windows UI Automation could not start.".to_string())?;
     let root = automation.get_root_element().map_err(|_| "Windows desktop accessibility tree is unavailable.".to_string())?;
     let walker = automation.get_control_view_walker().map_err(|_| "Windows accessibility control view is unavailable.".to_string())?;
     let children = walker.get_children(&root).unwrap_or_default();
     let mut windows = Vec::new();
+    let mut controls = Vec::new();
+    let focus_pid = automation.get_focused_element().ok().and_then(|e| e.get_process_id().ok());
     for element in children.iter().take(40) {
         let name = element.get_name().unwrap_or_default();
         let class_name = element.get_classname().unwrap_or_default();
         let control_type = element.get_localized_control_type().unwrap_or_default();
         let process_id = element.get_process_id().unwrap_or_default();
+        if Some(process_id) == focus_pid { describe_controls(&walker, element, 0, &mut controls); }
         windows.push(serde_json::json!({
+            "windowId": element.get_runtime_id().ok(),
             "name": name.chars().take(160).collect::<String>(),
             "class_name": class_name.chars().take(100).collect::<String>(),
             "control_type": control_type.chars().take(60).collect::<String>(),
             "process_id": process_id
         }));
     }
-    Ok(serde_json::json!({ "scope": "top_level_windows", "count": windows.len(), "windows": windows }))
+    Ok(serde_json::json!({ "scope": "windows_and_focused_app", "controls": controls, "count": windows.len(), "windows": windows }))
 }
 #[tauri::command]
 fn get_screen_capture_consent(consent: tauri::State<'_, ScreenCaptureConsent>) -> bool {
@@ -303,6 +326,7 @@ async fn pair_device(code: String, connected: tauri::State<'_, Arc<AtomicBool>>)
 
 #[derive(Clone, Deserialize)]
 struct RelayCommand {
+    task_id: Option<String>,
     id: String,
     command: String,
     payload: serde_json::Value,
@@ -468,9 +492,20 @@ fn browser_window_policy<'a>(builder: WebviewWindowBuilder<'a, tauri::Wry, tauri
     let handle = app.clone();
     let consent = app.state::<BrowserConsent>().0.clone();
     let nav_consent = consent.clone();
+    let download_consent = consent.clone();
     builder.title("McpOS Isolated Browser")
         .on_navigation(move |url| nav_consent.load(Ordering::Relaxed) && (browser_url_allowed(url) || url.as_str() == "about:blank"))
-        .on_download(|_, event| !matches!(event, DownloadEvent::Requested { .. }))
+        .on_download(move |_, event| match event {
+            DownloadEvent::Requested { url, destination } => {
+                if !download_consent.load(Ordering::Relaxed) || !browser_url_allowed(&url) { return false; }
+                let name = destination.file_name().and_then(|n| n.to_str()).unwrap_or("download");
+                if let Some(path) = rfd::FileDialog::new().set_title("Save browser download").set_file_name(name).save_file() {
+                    *destination = path;
+                    download_consent.load(Ordering::Relaxed)
+                } else { false }
+            }
+            _ => true,
+        })
         .on_new_window(move |url, features| {
             if !consent.load(Ordering::Relaxed) || isolated_browser_windows(&handle).len() >= MAX_BROWSER_WINDOWS
                 || !(browser_url_allowed(&url) || url.as_str() == "about:blank") {
@@ -602,6 +637,24 @@ fn execute_browser_action(command: &RelayCommand, app: &tauri::AppHandle) -> Res
             let message = open_isolated_browser(app, raw_url, new_window, window_id)?;
             Ok(serde_json::json!({ "action": "open", "message": message, "windows": browser_window_list(app)["windows"], "browser_window_count": isolated_browser_windows(app).len() }))
         },
+        "browser.upload" => {
+            let selector = command.payload.get("selector").and_then(|v| v.as_str()).filter(|s| s.starts_with("mcpos:") && s.len() <= 256).ok_or("Select a file input from a fresh snapshot.")?;
+            let window = active_browser_window(app, window_id)?;
+            let label = window.label().to_owned();
+            let page = window.url().map_err(|_| "Browser location unavailable.")?;
+            if !browser_url_allowed(&page) { return Err("A permitted HTTPS page is required.".into()); }
+            let path = rfd::FileDialog::new().set_title(format!("Choose a file to upload to {}",page.origin().ascii_serialization())).pick_file().ok_or("Upload cancelled locally.")?;
+            let file = std::fs::File::open(&path).map_err(|_| "Selected file unavailable.")?;
+            use std::io::Read;
+            let mut bytes = Vec::new();
+            file.take(2_000_001).read_to_end(&mut bytes).map_err(|_| "Could not read selected file.")?;
+            if bytes.len() > 2_000_000 { return Err("Uploads are limited to 2 MB.".into()); }
+            let data = base64::engine::general_purpose::STANDARD.encode(bytes);
+            let name = serde_json::json!(path.file_name().and_then(|v| v.to_str()).unwrap_or("upload"));
+            let expected = serde_json::json!(page.as_str());
+            let id = serde_json::json!(selector);
+            browser_eval_and_collect(app, Some(&label), &format!("(() => {{ if(location.href !== {expected}) return {{ok:false,error:'Page changed'}}; const selector={id}; {resolve_target} if(!element.matches('input[type=file]') || element.disabled) return {{ok:false,error:'Select an enabled file input'}}; const transfer=new DataTransfer(); transfer.items.add(new File([Uint8Array.from(atob('{data}'), c=>c.charCodeAt(0))],{name})); element.files=transfer.files; element.dispatchEvent(new Event('input',{{bubbles:true}})); element.dispatchEvent(new Event('change',{{bubbles:true}})); return {{ok:true,selectedFile:{name}}}; }})()"))
+        },
         "browser.click" => {
             let selector = command.payload.get("selector").and_then(|value| value.as_str()).ok_or("A CSS selector is required.")?;
             if selector.is_empty() || selector.len() > 256 { return Err("CSS selector must be 1–256 characters.".to_string()); }
@@ -620,6 +673,54 @@ fn execute_browser_action(command: &RelayCommand, app: &tauri::AppHandle) -> Res
     }
 }
 fn execute_input_action(command: &RelayCommand) -> Result<serde_json::Value, String> {
+    match command.command.as_str() {
+        "desktop.launch" => {
+            let app = command.payload.get("application").and_then(|v| v.as_str()).unwrap_or("");
+            let path = match app {
+                "chrome" => ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"].iter()
+                    .filter_map(|key| std::env::var_os(*key)).map(|base| PathBuf::from(base).join(r"Google\Chrome\Application\chrome.exe"))
+                    .find(|p| p.is_file()).ok_or("Chrome is not installed in a standard location.")?,
+                "notepad" | "calculator" => PathBuf::from(std::env::var_os("SystemRoot").ok_or("Windows directory unavailable.")?)
+                    .join("System32").join(if app == "calculator" { "calc.exe" } else { "notepad.exe" }),
+                _ => return Err("Unsupported application.".into())
+            };
+            std::process::Command::new(path).spawn().map_err(|_| "Application launch failed.")?;
+            return Ok(serde_json::json!({"launched": app}));
+        }
+        "desktop.focus" | "native.shortcut" => {
+            let target = command.payload.get("windowId").ok_or("A windowId is required.")?;
+            let automation = UIAutomation::new().map_err(|_| "UI Automation unavailable.")?;
+            let root = automation.get_root_element().map_err(|_| "Desktop unavailable.")?;
+            let walker = automation.get_control_view_walker().map_err(|_| "Window enumeration unavailable.")?;
+            for window in walker.get_children(&root).unwrap_or_default() {
+                if window.get_runtime_id().ok().is_some_and(|id| serde_json::json!(id) == *target) {
+                    if command.command == "native.shortcut" && window.get_classname().unwrap_or_default() != "Chrome_WidgetWin_1" {
+                        return Err("The selected window is not a Chromium browser window.".into());
+                    }
+                    window.set_focus().map_err(|_| "Windows rejected the focus request.")?;
+                    if command.command == "native.shortcut" {
+                        let focused = automation.get_focused_element().map_err(|_| "Could not verify focus.")?;
+                        if focused.get_process_id().ok() != window.get_process_id().ok() {
+                            return Err("The browser did not receive focus.".into());
+                        }
+                        let mut shortcut = command.clone();
+                        shortcut.command = "input.keyboard.shortcut".into();
+                        return execute_input_action(&shortcut);
+                    }
+                    return Ok(serde_json::json!({"focused":target}));
+                }
+            }
+            return Err("Window no longer exists. Request a new accessibility snapshot.".into());
+        }
+        "clipboard.write" => {
+            let text = command.payload.get("text").and_then(|v| v.as_str()).ok_or("Clipboard text required.")?;
+            if text.len() > 16384 { return Err("Clipboard text is too large.".into()); }
+            arboard::Clipboard::new().map_err(|_| "Clipboard unavailable.")?.set_text(text)
+                .map_err(|_| "Windows rejected the clipboard update.")?;
+            return Ok(serde_json::json!({"characters":text.chars().count()}));
+        }
+        _ => {}
+    }
     let mut enigo = Enigo::new(&Settings::default()).map_err(|_| "Windows input simulation could not start.".to_string())?;
     match command.command.as_str() {
         "input.pointer.move" => {
@@ -704,13 +805,19 @@ async fn submit_relay_result(command_id: &str, result: serde_json::Value, error_
     Ok(())
 }
 
-#[tauri::command]
-fn get_pending_action(pending: tauri::State<'_, PendingAction>) -> Option<serde_json::Value> {
-    pending.0.lock().ok()?.as_ref().map(|command| serde_json::json!({ "id": command.id, "command": command.command, "payload": command.payload.clone() }))
+fn allows_relay_action(policy: &AutomationPolicy, command: &RelayCommand) -> bool {
+    if policy.paused || policy.expires_at.is_some_and(|end| end <= now_epoch()) { return false; }
+    policy_auto_approves(policy, &command.command) || policy.task_grant.as_ref().is_some_and(|(id, action, expiry)|
+        Some(id) == command.task_id.as_ref() && action == &command.command && *expiry > now_epoch())
 }
 
 #[tauri::command]
-async fn approve_pending_action(pending: tauri::State<'_, PendingAction>, app: tauri::AppHandle, browser_consent: tauri::State<'_, BrowserConsent>, policy: tauri::State<'_, AutomationPolicyState>) -> Result<String, String> {
+fn get_pending_action(pending: tauri::State<'_, PendingAction>) -> Option<serde_json::Value> {
+    pending.0.lock().ok()?.as_ref().map(|command| serde_json::json!({ "id": command.id, "taskId":command.task_id, "command": command.command, "payload": command.payload.clone() }))
+}
+
+#[tauri::command]
+async fn approve_pending_action(command_id: String, approve_task: bool, pending: tauri::State<'_, PendingAction>, app: tauri::AppHandle, browser_consent: tauri::State<'_, BrowserConsent>, policy: tauri::State<'_, AutomationPolicyState>) -> Result<String, String> {
     if policy.0.lock().map(|p| p.paused || p.expires_at.map(|e| e <= now_epoch()).unwrap_or(false)).unwrap_or(true) {
         return Err("Automation is paused or the session has expired. Resume it locally first.".into());
     }
@@ -723,6 +830,21 @@ async fn approve_pending_action(pending: tauri::State<'_, PendingAction>, app: t
         pending.0.lock().map_err(|_| "Approval state is unavailable.".to_string())?.take();
         return Err("Automation was paused or expired while authorisation was being checked. The action was not executed.".to_string());
     }
+    {
+        let mut current = pending.0.lock().map_err(|_| "Approval state unavailable.")?;
+        if current.as_ref().map(|c| &c.id) != Some(&command_id) || command.id != command_id {
+            return Err("Pending command changed. Review it again.".into());
+        }
+        current.take();
+    }
+    if approve_task {
+        if let Some(id) = &command.task_id {
+            let mut p = policy.0.lock().map_err(|_| "Policy unavailable.")?;
+            if !p.paused {
+                p.task_grant = Some((id.clone(), command.command.clone(), now_epoch() + 300));
+            }
+        }
+    }
     let action_result = if command.command.starts_with("browser.") && !browser_consent.0.load(Ordering::Relaxed) {
         Err("Isolated browser consent was switched off before approval.".to_string())
     } else if command.command.starts_with("browser.") {
@@ -733,7 +855,6 @@ async fn approve_pending_action(pending: tauri::State<'_, PendingAction>, app: t
     let (mut result, error) = match action_result { Ok(result) => (result, None), Err(message) => (serde_json::json!({}), Some(message)) };
     if error.is_none() { result["approval_mode"] = serde_json::Value::String("manual".into()); }
     let submission = submit_relay_result(&command.id, result, error.clone()).await;
-    pending.0.lock().map_err(|_| "Approval state is unavailable.".to_string())?.take();
     submission?;
     if let Some(message) = error { Err(message) } else { Ok("The approved action was executed on this computer.".to_string()) }
 }
@@ -751,6 +872,7 @@ async fn poll_relay_once(connected: &Arc<AtomicBool>, screen_consent: &Arc<Atomi
     let Some(api_key) = SUPABASE_ANON_KEY else { return };
     if api_key.is_empty() { return; }
 
+    if pending_action.lock().map(|p| p.is_some()).unwrap_or(true) { return; }
     let client = relay_client();
     let response = match client
         .post(format!("{SUPABASE_URL}/functions/v1/device-poll"))
@@ -767,15 +889,15 @@ async fn poll_relay_once(connected: &Arc<AtomicBool>, screen_consent: &Arc<Atomi
     let Ok(envelope) = response.json::<RelayPollResponse>().await else { return };
     let Some(command) = envelope.command else { return };
 
-    if matches!(command.command.as_str(), "input.pointer.click" | "input.pointer.move" | "input.pointer.scroll") || command.command == "input.keyboard.type" || command.command == "input.keyboard.shortcut" || command.command == "browser.open" || command.command == "browser.click" || command.command == "browser.type" {
+    if matches!(command.command.as_str(), "desktop.launch" | "desktop.focus" | "native.shortcut" | "clipboard.write" | "input.pointer.click" | "input.pointer.move" | "input.pointer.scroll") || command.command == "input.keyboard.type" || command.command == "input.keyboard.shortcut" || command.command == "browser.open" || command.command == "browser.click" || command.command == "browser.type" {
         if command.command.starts_with("browser.") && !browser_consent.load(Ordering::Relaxed) {
             let _ = submit_relay_result(&command.id, serde_json::json!({}), Some("Isolated browser consent is switched off on this Windows computer.".to_string())).await;
             return;
         }
-        let auto = policy.lock().map(|p| policy_auto_approves(&p, &command.command)).unwrap_or(false);
+        let auto = policy.lock().map(|p| allows_relay_action(&p, &command)).unwrap_or(false);
         if auto {
             let authorised = heartbeat().await && authorize_pending_command(&command.id).await;
-            let still_allowed = policy.lock().map(|p| policy_auto_approves(&p, &command.command)).unwrap_or(false);
+            let still_allowed = policy.lock().map(|p| allows_relay_action(&p, &command)).unwrap_or(false);
             let action = if !authorised {
                 Err("Device or AI session is no longer authorised. Action blocked.".to_string())
             } else if !still_allowed {
@@ -894,7 +1016,7 @@ fn start_relay_polling(connected: Arc<AtomicBool>, screen_consent: Arc<AtomicBoo
     tauri::async_runtime::spawn(async move {
         loop {
             poll_relay_once(&connected, &screen_consent, &accessibility_consent, &browser_consent, &approved_folders, &pending_action, &policy, &app).await;
-            tokio::time::sleep(Duration::from_secs(10)).await;
+            tokio::time::sleep(Duration::from_secs(2)).await;
         }
     });
 }
@@ -963,7 +1085,7 @@ fn main() {
             let browser_consent = Arc::new(AtomicBool::new(false));
             app.manage(BrowserConsent(browser_consent.clone()));
             app.manage(SelectedBrowserWindow(Mutex::new(None)));
-            let automation_policy = Arc::new(Mutex::new(AutomationPolicy { mode: "manual".into(), paused: false, expires_at: None, auto_pointer: false, auto_keyboard: false, auto_browser: false, auto_screen: false }));
+            let automation_policy = Arc::new(Mutex::new(AutomationPolicy { mode: "manual".into(), paused: false, expires_at: None, auto_pointer: false, auto_keyboard: false, auto_browser: false, auto_screen: false, task_grant: None }));
             app.manage(AutomationPolicyState(automation_policy.clone()));
             start_heartbeat(app.handle().clone(), connection_state.clone());
             start_relay_polling(connection_state, screen_consent, accessibility_consent, browser_consent, approved_folders, pending_action, automation_policy, app.handle().clone());
