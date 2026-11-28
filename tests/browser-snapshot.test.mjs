@@ -48,3 +48,16 @@ test("rich editor exposes its accessible label and frame-local bounds", () => {
   assert.equal(item.label,"Write a post");
   assert.deepEqual({...item.bounds},{x:15,y:30,width:280,height:92,coordinateSpace:"frame viewport"});
 });
+
+test("nested close-only dialog does not hide the enclosing rich editor", () => {
+  const editor = {...button(), localName:"div", tagName:"DIV", innerText:"", isContentEditable:true, matches:s=>s.includes("contenteditable"), getAttribute:k=>k==="aria-placeholder"?"Write a post":k==="role"?"textbox":null};
+  const close = {...button(), innerText:"Close"};
+  const nested = {...button(), querySelectorAll:()=>[close]};
+  const outer = {...button(), querySelectorAll:s=>s.startsWith("textarea,")?[editor]:[editor,close]};
+  nested.querySelectorAll = s=>s.startsWith("textarea,")?[]:[close];
+  const document = {title:"Nested modal", querySelectorAll:s=>s.startsWith('[role="dialog"]')?[outer,nested]:[editor,close]};
+  const result = runInNewContext(script,{document,location:{origin:"https://example.com",pathname:"/"},crypto:{randomUUID},window:{}});
+  assert.equal(result.interactive[0].label,"Write a post");
+  assert.equal(result.interactive[0].editable,true);
+  assert.equal(result.interactive.length,2);
+});
