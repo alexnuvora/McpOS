@@ -157,6 +157,7 @@ fn set_browser_consent(enabled: bool, consent: tauri::State<'_, BrowserConsent>,
     consent.0.store(enabled, Ordering::Relaxed);
     if !enabled {
         for window in isolated_browser_windows(&app) { let _ = window.close(); }
+        if let Ok(mut selected) = app.state::<SelectedBrowserWindow>().0.lock() { *selected = None; }
     }
     enabled
 }
@@ -463,12 +464,35 @@ fn isolated_browser_windows(app: &tauri::AppHandle) -> Vec<tauri::WebviewWindow>
     }).collect()
 }
 
-fn active_browser_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
-    let mut windows = isolated_browser_windows(app);
-    if windows.len() == 1 { return Ok(windows.remove(0)); }
+struct SelectedBrowserWindow(Mutex<Option<String>>);
+
+fn select_browser_window(app: &tauri::AppHandle, window: &tauri::WebviewWindow) {
+    if let Ok(mut selected) = app.state::<SelectedBrowserWindow>().0.lock() {
+        *selected = Some(window.label().to_string());
+    }
+}
+
+fn active_browser_window(app: &tauri::AppHandle, window_id: Option<&str>) -> Result<tauri::WebviewWindow, String> {
+    if let Some(id) = window_id {
+        if !is_isolated_browser_label(id) { return Err("Invalid isolated browser window ID.".into()); }
+        return app.get_webview_window(id).ok_or_else(|| "The selected browser window is closed or unknown. List windows again.".into());
+    }
+    let windows = isolated_browser_windows(app);
+    let selected = app.state::<SelectedBrowserWindow>().0.lock().ok().and_then(|id| id.clone());
+    if let Some(window) = windows.iter().find(|window| Some(window.label()) == selected.as_deref()) { return Ok(window.clone()); }
+    if windows.len() == 1 { return Ok(windows[0].clone()); }
     if windows.is_empty() { return Err("Open a page in the isolated browser first.".into()); }
-    windows.into_iter().find(|window| window.is_focused().unwrap_or(false))
-        .ok_or_else(|| "Several isolated browser windows are open. Focus the intended browser window before continuing.".into())
+    Err("List windows and select an explicit window ID before continuing.".into())
+}
+
+fn browser_window_list(app: &tauri::AppHandle) -> serde_json::Value {
+    let selected = app.state::<SelectedBrowserWindow>().0.lock().ok().and_then(|id| id.clone());
+    let mut windows: Vec<_> = isolated_browser_windows(app).into_iter().map(|window| {
+        let url = window.url().ok().filter(browser_url_allowed).map(|url| format!("{}{}", url.origin().ascii_serialization(), url.path()));
+        serde_json::json!({"windowId":window.label(),"url":url,"focused":window.is_focused().unwrap_or(false),"selected":Some(window.label()) == selected.as_deref()})
+    }).collect();
+    windows.sort_by(|a,b| a["windowId"].as_str().cmp(&b["windowId"].as_str()));
+    serde_json::json!({"windows":windows,"browser_window_count":windows.len()})
 }
 
 // Every child inherits the opener's WebView2 environment, but never the main application's capabilities.
@@ -489,20 +513,21 @@ fn browser_window_policy<'a>(builder: WebviewWindowBuilder<'a, tauri::Wry, tauri
             let blank = url::Url::parse("about:blank").expect("valid bootstrap URL");
             let child = WebviewWindowBuilder::new(&handle, label, WebviewUrl::External(blank)).window_features(features);
             match browser_window_policy(child, &handle).build() {
-                Ok(window) if consent.load(Ordering::Relaxed) => NewWindowResponse::Create { window },
+                Ok(window) if consent.load(Ordering::Relaxed) => { select_browser_window(&handle, &window); NewWindowResponse::Create { window } },
                 Ok(window) => { let _ = window.close(); NewWindowResponse::Deny },
                 Err(_) => NewWindowResponse::Deny,
             }
         })
 }
 
-fn open_isolated_browser(app: &tauri::AppHandle, raw_url: &str, new_window: bool) -> Result<String, String> {
+fn open_isolated_browser(app: &tauri::AppHandle, raw_url: &str, new_window: bool, window_id: Option<&str>) -> Result<String, String> {
     let url = url::Url::parse(raw_url).map_err(|_| "The browser URL is invalid.".to_string())?;
     if !browser_url_allowed(&url) { return Err("The browser only permits public HTTPS sites without embedded credentials.".to_string()); }
     if !app.state::<BrowserConsent>().0.load(Ordering::Relaxed) { return Err("Isolated browser consent is disabled.".into()); }
     let windows = isolated_browser_windows(app);
     if !new_window && !windows.is_empty() {
-        let window = active_browser_window(app)?;
+        let window = active_browser_window(app, window_id)?;
+        select_browser_window(app, &window);
         window.navigate(url).map_err(|_| "Could not navigate the isolated browser.".to_string())?;
         let _ = window.show();
         let _ = window.set_focus();
@@ -512,47 +537,40 @@ fn open_isolated_browser(app: &tauri::AppHandle, raw_url: &str, new_window: bool
     let mut profile = app.path().app_local_data_dir().map_err(|_| "Could not resolve the isolated browser profile directory.".to_string())?;
     profile.push("isolated-browser-profile");
     std::fs::create_dir_all(&profile).map_err(|_| "Could not create the isolated browser profile.".to_string())?;
-    let label = if windows.is_empty() { BROWSER_WINDOW_PREFIX.to_string() } else { format!("{BROWSER_WINDOW_PREFIX}-{}", Uuid::new_v4()) };
+    let label = format!("{BROWSER_WINDOW_PREFIX}-{}", Uuid::new_v4());
     let builder = WebviewWindowBuilder::new(app, label, WebviewUrl::External(url)).data_directory(profile);
-    browser_window_policy(builder, app).build().map_err(|_| "Could not create the isolated browser window.".to_string())?;
+    let window = browser_window_policy(builder, app).build().map_err(|_| "Could not create the isolated browser window.".to_string())?;
+    select_browser_window(app, &window);
     Ok("Opened a window in the separate McpOS browser profile.".into())
 }
 
-fn browser_eval_and_collect(app: &tauri::AppHandle, bridge: &BrowserBridge, expression: &str) -> Result<serde_json::Value, String> {
-    if bridge.port == 0 { return Err("The private browser bridge is unavailable on this computer.".to_string()); }
-    let window = active_browser_window(app)?;
+fn browser_eval_and_collect(app: &tauri::AppHandle, _bridge: &BrowserBridge, window_id: Option<&str>, expression: &str) -> Result<serde_json::Value, String> {
+    if !app.state::<BrowserConsent>().0.load(Ordering::Relaxed) { return Err("Isolated browser consent is disabled.".into()); }
+    let window = active_browser_window(app, window_id)?;
     let current = window.url().map_err(|_| "Could not verify the selected browser URL.")?;
     if !browser_url_allowed(&current) { return Err("Wait for the selected window to load a permitted HTTPS page.".into()); }
-    let nonce = Uuid::new_v4().to_string();
+    let expected = serde_json::to_string(current.as_str()).map_err(|_| "Could not prepare browser navigation guard.")?;
+    let script = format!("(() => {{ if (location.href !== {expected}) return {{ok:false,error:'Page changed; request a new snapshot.'}}; try {{ return ({expression}); }} catch (error) {{ return {{ok:false,error:String(error).slice(0,200)}}; }} }})()");
     let (sender, receiver) = sync_channel(1);
-    bridge.pending.lock().map_err(|_| "Browser bridge is unavailable.".to_string())?.insert(nonce.clone(), sender);
-    let nonce_js = serde_json::to_string(&nonce).map_err(|_| "Could not prepare browser result collection.".to_string())?;
-    let script = format!("(() => {{ try {{ const result = ({expression}); const body = JSON.stringify(result); fetch('http://127.0.0.1:{}/snapshot/' + {nonce_js}, {{ method: 'POST', mode: 'cors', headers: {{ 'Content-Type': 'text/plain' }}, body }}).catch(() => {{}}); }} catch (error) {{ const body = JSON.stringify({{ ok: false, error: String(error).slice(0, 200) }}); fetch('http://127.0.0.1:{}/snapshot/' + {nonce_js}, {{ method: 'POST', mode: 'cors', headers: {{ 'Content-Type': 'text/plain' }}, body }}).catch(() => {{}}); }} }})();", bridge.port, bridge.port);
-    if window.eval(&script).is_err() {
-        bridge.pending.lock().ok().map(|mut map| map.remove(&nonce));
-        return Err("Could not execute the browser operation.".to_string());
+    window.eval_with_callback(script, move |body| { let _ = sender.try_send(body); })
+        .map_err(|_| "Could not execute the browser operation.".to_string())?;
+    let body = receiver.recv_timeout(Duration::from_secs(8)).map_err(|_| "Browser result timed out; the page may still be loading or have closed.")?;
+    if body.len() > 100_000 { return Err("Browser result exceeds the permitted size.".into()); }
+    let mut value: serde_json::Value = serde_json::from_str(&body).map_err(|_| "The isolated browser returned an invalid result.")?;
+    if let Some(inner) = value.as_str() { value = serde_json::from_str(inner).map_err(|_| "The isolated browser returned an invalid result.")?; }
+    if value.get("ok").and_then(|item| item.as_bool()) != Some(true) {
+        return Err(value.get("error").and_then(|item| item.as_str()).unwrap_or("The browser operation returned no result.").into());
     }
-    let body = match receiver.recv_timeout(Duration::from_secs(5)) {
-        Ok(body) => body,
-        Err(_) => {
-            bridge.pending.lock().ok().map(|mut map| map.remove(&nonce));
-            return Err("The isolated browser did not return a result. The page may block local bridge requests.".to_string());
-        }
-    };
-    let value: serde_json::Value = serde_json::from_str(&body).map_err(|_| "The isolated browser returned an invalid result.".to_string())?;
-    if value.get("ok").and_then(|item| item.as_bool()) == Some(false) {
-        return Err(value.get("error").and_then(|item| item.as_str()).unwrap_or("The browser operation failed.").to_string());
-    }
-    let mut value = value;
     if let Some(object) = value.as_object_mut() {
         object.insert("browser_window_count".into(), serde_json::json!(isolated_browser_windows(app).len()));
         object.insert("browser_window".into(), serde_json::json!(window.label()));
+        object.insert("windows".into(), browser_window_list(app)["windows"].clone());
     }
     Ok(value)
 }
 
-fn get_browser_snapshot(app: &tauri::AppHandle, bridge: &BrowserBridge) -> Result<serde_json::Value, String> {
-    browser_eval_and_collect(app, bridge, r#"(() => {
+fn get_browser_snapshot(app: &tauri::AppHandle, bridge: &BrowserBridge, window_id: Option<&str>) -> Result<serde_json::Value, String> {
+    browser_eval_and_collect(app, bridge, window_id, r#"(() => {
         const cssPath = (element) => {
             if (element.id && CSS.escape) return '#' + CSS.escape(element.id);
             const parts = [];
@@ -581,19 +599,37 @@ fn get_browser_snapshot(app: &tauri::AppHandle, bridge: &BrowserBridge) -> Resul
 }
 
 fn execute_browser_action(command: &RelayCommand, app: &tauri::AppHandle, bridge: &BrowserBridge) -> Result<serde_json::Value, String> {
-    if bridge.port == 0 { return Err("The private browser automation bridge is unavailable.".to_string()); }
-    match command.command.as_str() {
+    if !app.state::<BrowserConsent>().0.load(Ordering::Relaxed) { return Err("Isolated browser consent is disabled.".into()); }
+    let window_id = command.payload.get("windowId").and_then(|value| value.as_str());
+    let operation = command.payload.get("windowAction").and_then(|value| value.as_str()).unwrap_or(command.command.as_str());
+    match operation {
+        "browser.list" => Ok(browser_window_list(app)),
+        "browser.switch" => {
+            let id = window_id.ok_or("Window ID required.")?;
+            let window = active_browser_window(app, Some(id))?;
+            window.show().map_err(|_| "Could not show selected window.")?;
+            window.set_focus().map_err(|_| "Could not focus selected window.")?;
+            select_browser_window(app, &window);
+            Ok(browser_window_list(app))
+        },
+        "browser.close" => {
+            let id = window_id.ok_or("Window ID required.")?;
+            let window = active_browser_window(app, Some(id))?;
+            window.close().map_err(|_| "Could not close selected browser window.")?;
+            Ok(serde_json::json!({"closedWindowId":id}))
+        },
+        "browser.snapshot" => get_browser_snapshot(app, bridge, window_id),
         "browser.open" => {
             let raw_url = command.payload.get("url").and_then(|value| value.as_str()).ok_or("A URL is required.")?;
             let new_window = command.payload.get("newWindow").and_then(|value| value.as_bool()).unwrap_or(false);
-            let message = open_isolated_browser(app, raw_url, new_window)?;
-            Ok(serde_json::json!({ "action": "open", "message": message }))
+            let message = open_isolated_browser(app, raw_url, new_window, window_id)?;
+            Ok(serde_json::json!({ "action": "open", "message": message, "windows": browser_window_list(app)["windows"], "browser_window_count": isolated_browser_windows(app).len() }))
         },
         "browser.click" => {
             let selector = command.payload.get("selector").and_then(|value| value.as_str()).ok_or("A CSS selector is required.")?;
             if selector.is_empty() || selector.len() > 256 { return Err("CSS selector must be 1–256 characters.".to_string()); }
             let selector_js = serde_json::to_string(selector).map_err(|_| "Invalid CSS selector.".to_string())?;
-            browser_eval_and_collect(app, bridge, &format!("(() => {{ const selector = {selector_js}; const element = document.querySelector(selector); if (!element) return {{ ok: false, error: 'No element matched the selector', selector }}; element.click(); return {{ ok: true, action: 'click', selector, element: (element.innerText || element.getAttribute('aria-label') || element.tagName).slice(0, 160) }}; }})()"))
+            browser_eval_and_collect(app, bridge, window_id, &format!("(() => {{ const selector = {selector_js}; const element = document.querySelector(selector); if (!element) return {{ ok: false, error: 'No element matched the selector', selector }}; element.click(); return {{ ok: true, action: 'click', selector, element: (element.innerText || element.getAttribute('aria-label') || element.tagName).slice(0, 160) }}; }})()"))
         },
         "browser.type" => {
             let selector = command.payload.get("selector").and_then(|value| value.as_str()).ok_or("A CSS selector is required.")?;
@@ -601,7 +637,7 @@ fn execute_browser_action(command: &RelayCommand, app: &tauri::AppHandle, bridge
             if selector.is_empty() || selector.len() > 256 || text.is_empty() || text.chars().count() > 200 || text.chars().any(|character| character.is_control()) { return Err("Selector or text is outside the allowed limits.".to_string()); }
             let selector_js = serde_json::to_string(selector).map_err(|_| "Invalid CSS selector.".to_string())?;
             let text_js = serde_json::to_string(text).map_err(|_| "Invalid text.".to_string())?;
-            browser_eval_and_collect(app, bridge, &format!("(() => {{ const selector = {selector_js}; const element = document.querySelector(selector); if (!element) return {{ ok: false, error: 'No element matched the selector', selector }}; if (!(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element.isContentEditable)) return {{ ok: false, error: 'Target is not an editable field', selector }}; if (element.matches('input[type=password],input[autocomplete=current-password],input[autocomplete=new-password]')) return {{ ok: false, error: 'Password fields require direct local entry', selector }}; element.focus(); if ('value' in element) {{ const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element), 'value')?.set; if (setter) setter.call(element, {text_js}); else element.value = {text_js}; }} else element.textContent = {text_js}; element.dispatchEvent(new InputEvent('input', {{ bubbles: true, inputType: 'insertText', data: {text_js} }})); element.dispatchEvent(new Event('change', {{ bubbles: true }})); return {{ ok: true, action: 'type', selector, characters: {text_js}.length }}; }})()"))
+            browser_eval_and_collect(app, bridge, window_id, &format!("(() => {{ const selector = {selector_js}; const element = document.querySelector(selector); if (!element) return {{ ok: false, error: 'No element matched the selector', selector }}; if (!(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element.isContentEditable)) return {{ ok: false, error: 'Target is not an editable field', selector }}; if (element.matches('input[type=password],input[autocomplete=current-password],input[autocomplete=new-password]')) return {{ ok: false, error: 'Password fields require direct local entry', selector }}; element.focus(); if ('value' in element) {{ const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element), 'value')?.set; if (setter) setter.call(element, {text_js}); else element.value = {text_js}; }} else element.textContent = {text_js}; element.dispatchEvent(new InputEvent('input', {{ bubbles: true, inputType: 'insertText', data: {text_js} }})); element.dispatchEvent(new Event('change', {{ bubbles: true }})); return {{ ok: true, action: 'type', selector, characters: {text_js}.length }}; }})()"))
         },
         _ => Err("Unsupported browser action.".to_string()),
     }
@@ -846,7 +882,7 @@ async fn poll_relay_once(connected: &Arc<AtomicBool>, screen_consent: &Arc<Atomi
             if !browser_consent.load(Ordering::Relaxed) {
                 (serde_json::json!({}), Some("Isolated browser consent is switched off on this Windows computer.".to_string()))
             } else {
-                match get_browser_snapshot(app, bridge) { Ok(snapshot) => (snapshot, None), Err(message) => (serde_json::json!({}), Some(message)) }
+                match get_browser_snapshot(app, bridge, None) { Ok(snapshot) => (snapshot, None), Err(message) => (serde_json::json!({}), Some(message)) }
             }
         },
         _ => (serde_json::json!({}), Some("Unsupported desktop command.".to_string())),
@@ -941,6 +977,7 @@ fn main() {
             app.manage(PendingAction(pending_action.clone()));
             let browser_consent = Arc::new(AtomicBool::new(false));
             app.manage(BrowserConsent(browser_consent.clone()));
+            app.manage(SelectedBrowserWindow(Mutex::new(None)));
             let automation_policy = Arc::new(Mutex::new(AutomationPolicy { mode: "manual".into(), paused: false, expires_at: None, auto_pointer: false, auto_keyboard: false, auto_browser: false, auto_screen: false }));
             app.manage(AutomationPolicyState(automation_policy.clone()));
             let browser_bridge = start_browser_bridge().unwrap_or_else(|_| BrowserBridge { port: 0, pending: Arc::new(Mutex::new(HashMap::new())) });
