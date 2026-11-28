@@ -56,7 +56,7 @@ async fn authorize_pending_command(command_id: &str) -> bool {
     if api_key.is_empty() { return false; }
     let response = relay_client()
         .post(format!("{SUPABASE_URL}/functions/v1/device-poll"))
-        .header("x-mcpos-relay-version","4")
+        .header("x-mcpos-relay-version","5")
         .header("apikey", api_key).bearer_auth(token)
         .json(&serde_json::json!({ "authorize_command_id": command_id }))
         .send().await;
@@ -72,7 +72,7 @@ async fn heartbeat() -> bool {
 
     relay_client()
         .post(format!("{SUPABASE_URL}/functions/v1/device-heartbeat"))
-        .header("x-mcpos-relay-version", "4")
+        .header("x-mcpos-relay-version", "5")
         .header("apikey", api_key)
         .bearer_auth(token)
         .send()
@@ -107,10 +107,10 @@ fn policy_active(policy: &AutomationPolicy) -> bool {
 fn policy_auto_approves(policy: &AutomationPolicy, command: &str) -> bool {
     if !policy_active(policy) { return false; }
     if policy.mode == "all" {
-        return matches!(command, "input.pointer.click" | "input.pointer.move" | "input.pointer.scroll" | "input.keyboard.type" | "input.keyboard.shortcut" | "browser.open" | "browser.click" | "browser.type" | "screen.capture" | "desktop.launch" | "desktop.focus" | "native.shortcut" | "native.invoke" | "native.set_text" | "clipboard.write");
+        return matches!(command, "input.pointer.click" | "input.pointer.move" | "input.pointer.path" | "input.pointer.double_click" | "input.pointer.scroll" | "input.keyboard.type" | "input.keyboard.shortcut" | "browser.open" | "browser.click" | "browser.type" | "screen.capture" | "desktop.launch" | "desktop.focus" | "native.shortcut" | "native.invoke" | "native.set_text" | "clipboard.write");
     }
     match command {
-        "input.pointer.click" | "input.pointer.move" | "input.pointer.scroll" => policy.auto_pointer,
+        "input.pointer.click" | "input.pointer.move" | "input.pointer.path" | "input.pointer.double_click" | "input.pointer.scroll" => policy.auto_pointer,
         "input.keyboard.type" | "input.keyboard.shortcut" => policy.auto_keyboard,
         "browser.open" | "browser.click" | "browser.type" => policy.auto_browser,
         "screen.capture" => policy.auto_screen,
@@ -793,7 +793,7 @@ fn execute_browser_action(command: &RelayCommand, app: &tauri::AppHandle) -> Res
         _ => Err("Unsupported browser action.".to_string()),
     }
 }
-fn position_pointer(x: i64, y: i64) -> Result<(), String> {
+fn validate_pointer(x: i64, y: i64) -> Result<(), String> {
     let monitors = Monitor::all().map_err(|_| "Could not enumerate monitors.")?;
     let on_screen = monitors.iter().any(|m| {
         let (Ok(left), Ok(top), Ok(width), Ok(height)) = (m.x(), m.y(), m.width(), m.height()) else { return false };
@@ -801,6 +801,11 @@ fn position_pointer(x: i64, y: i64) -> Result<(), String> {
             && (i64::from(top)..i64::from(top) + i64::from(height)).contains(&y)
     });
     if !on_screen { return Err("Coordinates outside the connected monitors.".into()); }
+    Ok(())
+}
+
+fn position_pointer(x: i64, y: i64) -> Result<(), String> {
+    validate_pointer(x,y)?;
     // SetCursorPos accepts signed virtual-desktop coordinates, including monitors left of the primary.
     if unsafe { windows_sys::Win32::UI::WindowsAndMessaging::SetCursorPos(x as i32, y as i32) } == 0 {
         return Err("Windows rejected pointer positioning.".into());
@@ -889,6 +894,54 @@ fn execute_input_action(command: &RelayCommand) -> Result<serde_json::Value, Str
     }
     let mut enigo = Enigo::new(&Settings::default()).map_err(|_| "Windows input simulation could not start.".to_string())?;
     match command.command.as_str() {
+        "input.pointer.path" => {
+            let points = command.payload["points"].as_array().ok_or("Pointer path required.")?;
+            if points.len() < 2 || points.len() > 256 { return Err("Path requires 2–256 points.".into()); }
+            let duration = command.payload["durationMs"].as_u64().unwrap_or(500);
+            if duration > 5000 { return Err("Path duration exceeds five seconds.".into()); }
+            let button = match command.payload["button"].as_str().unwrap_or("none") {
+                "none" => None, "left" => Some(Button::Left), "right" => Some(Button::Right),
+                _ => return Err("Invalid path button.".into())
+            };
+            let mut coords = Vec::with_capacity(points.len());
+            for point in points {
+                let x = point["x"].as_i64().ok_or("Invalid path x.")?;
+                let y = point["y"].as_i64().ok_or("Invalid path y.")?;
+                validate_pointer(x,y)?;
+                coords.push((x,y));
+            }
+            position_pointer(coords[0].0,coords[0].1)?;
+            if let Some(b) = button { enigo.button(b,Direction::Press).map_err(|_| "Mouse press failed.")?; }
+            // One bounded operation owns the pressed button. Release even if movement fails.
+            let result = (|| -> Result<(),String> {
+                let start = std::time::Instant::now();
+                for (i,pair) in coords.windows(2).enumerate() {
+                    let (x0,y0)=pair[0]; let (x1,y1)=pair[1];
+                    let segment_ms = duration as f64 / (coords.len()-1) as f64;
+                    let subdivisions = ((segment_ms/12.0).ceil() as usize).clamp(1,128);
+                    for n in 1..=subdivisions {
+                        let fraction = n as f64/subdivisions as f64;
+                        let deadline = Duration::from_secs_f64((i as f64+fraction)*segment_ms/1000.0);
+                        if let Some(wait)=deadline.checked_sub(start.elapsed()) { std::thread::sleep(wait); }
+                        position_pointer((x0 as f64+(x1-x0) as f64*fraction).round() as i64,(y0 as f64+(y1-y0) as f64*fraction).round() as i64)?;
+                    }
+                }
+                Ok(())
+            })();
+            let release = if let Some(b)=button { enigo.button(b,Direction::Release).map_err(|_| "Mouse release failed.".to_string()) } else { Ok(()) };
+            release?;
+            result?;
+            Ok(serde_json::json!({"action":"path","points":coords.len(),"durationMs":duration,"buttonReleased":button.is_some()}))
+        },
+        "input.pointer.double_click" => {
+            let x=command.payload["x"].as_i64().ok_or("Invalid x.")?;
+            let y=command.payload["y"].as_i64().ok_or("Invalid y.")?;
+            position_pointer(x,y)?;
+            enigo.button(Button::Left,Direction::Click).map_err(|_|"First click failed.")?;
+            std::thread::sleep(Duration::from_millis(70));
+            enigo.button(Button::Left,Direction::Click).map_err(|_|"Second click failed.")?;
+            Ok(serde_json::json!({"action":"double_click","x":x,"y":y}))
+        },
         "input.pointer.move" => {
             let x = command.payload.get("x").and_then(|v| v.as_i64()).ok_or("An x coordinate is required.")?;
             let y = command.payload.get("y").and_then(|v| v.as_i64()).ok_or("A y coordinate is required.")?;
@@ -1078,7 +1131,7 @@ async fn socket_claim(session: &mut Option<(String, RelaySocket)>, token: &str, 
         *session = None;
         let mut request = format!("{}/functions/v1/device-poll", SUPABASE_URL.replacen("https://", "wss://", 1)).into_client_request().map_err(|_| ())?;
         request.headers_mut().insert("authorization", format!("Bearer {token}").parse().map_err(|_| ())?);
-        request.headers_mut().insert("x-mcpos-relay-version","4".parse().map_err(|_| ())?);
+        request.headers_mut().insert("x-mcpos-relay-version","5".parse().map_err(|_| ())?);
         request.headers_mut().insert("apikey", api_key.parse().map_err(|_| ())?);
         let (socket, _) = tokio_tungstenite::connect_async(request).await.map_err(|_| ())?;
         *session = Some((token.to_owned(), socket));
@@ -1111,7 +1164,7 @@ async fn poll_relay_once(session: &mut Option<(String, RelaySocket)>, retry_sock
     let envelope = if let Some(value) = streamed { value } else {
     let response = match client
         .post(format!("{SUPABASE_URL}/functions/v1/device-poll"))
-        .header("x-mcpos-relay-version","4")
+        .header("x-mcpos-relay-version","5")
         .header("apikey", api_key)
         .bearer_auth(&token)
         .json(&serde_json::json!({}))
@@ -1131,7 +1184,7 @@ async fn poll_relay_once(session: &mut Option<(String, RelaySocket)>, retry_sock
         return;
     }
 
-    if matches!(command.command.as_str(), "desktop.launch" | "desktop.focus" | "native.shortcut" | "native.invoke" | "native.set_text" | "clipboard.write" | "input.pointer.click" | "input.pointer.move" | "input.pointer.scroll") || command.command == "input.keyboard.type" || command.command == "input.keyboard.shortcut" || command.command == "browser.open" || command.command == "browser.click" || command.command == "browser.type" {
+    if matches!(command.command.as_str(), "desktop.launch" | "desktop.focus" | "native.shortcut" | "native.invoke" | "native.set_text" | "clipboard.write" | "input.pointer.click" | "input.pointer.move" | "input.pointer.path" | "input.pointer.double_click" | "input.pointer.scroll") || command.command == "input.keyboard.type" || command.command == "input.keyboard.shortcut" || command.command == "browser.open" || command.command == "browser.click" || command.command == "browser.type" {
         if command.command.starts_with("browser.") && !browser_consent.load(Ordering::Relaxed) {
             let _ = submit_relay_result(&command.id, serde_json::json!({}), Some("Isolated browser consent is switched off on this Windows computer.".to_string())).await;
             return;
@@ -1178,7 +1231,7 @@ async fn poll_relay_once(session: &mut Option<(String, RelaySocket)>, retry_sock
                 "connected": connected.load(Ordering::Relaxed),
                 "device_id": device_id,
                 "agent_version": env!("CARGO_PKG_VERSION"),
-                "supported_commands": ["desktop.status", "screen.capture", "desktop.accessibility", "files.list", "files.read", "input.pointer.click", "input.pointer.move", "input.pointer.scroll", "input.keyboard.type", "input.keyboard.shortcut", "browser.open", "browser.snapshot", "browser.click", "browser.type"],
+                "supported_commands": ["desktop.status", "screen.capture", "desktop.accessibility", "files.list", "files.read", "input.pointer.click", "input.pointer.move", "input.pointer.path", "input.pointer.double_click", "input.pointer.scroll", "input.keyboard.type", "input.keyboard.shortcut", "browser.open", "browser.snapshot", "browser.click", "browser.type"],
                 "execution_enabled": policy.lock().map(|p| policy_active(&p)).unwrap_or(false),
                 "automation_policy": policy.lock().map(|p| policy_json(&p)).unwrap_or_else(|_| serde_json::json!({"mode":"manual","paused":true})),
                 "developer_tools": discover_developer_tools(),
