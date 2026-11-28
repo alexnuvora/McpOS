@@ -427,7 +427,15 @@ fn browser_url_allowed(url: &url::Url) -> bool {
 
 #[cfg(test)]
 mod browser_policy_tests {
-    use super::browser_url_allowed;
+    use super::{browser_url_allowed, is_isolated_browser_label};
+    #[test]
+    fn recognizes_only_isolated_browser_labels() {
+        assert!(is_isolated_browser_label("mcpos-isolated-browser"));
+        assert!(is_isolated_browser_label("mcpos-isolated-browser-11111111-1111-4111-8111-111111111111"));
+        for label in ["main", "mcpos-isolated-browser-other", "mcpos-isolated-browser-", "unrelated"] {
+            assert!(!is_isolated_browser_label(label));
+        }
+    }
     #[test]
     fn rejects_non_public_navigation_syntax() {
         for raw in ["http://example.com", "https://localhost./", "https://a.local./", "https://router.home.arpa", "https://127.0.0.1", "https://2130706433", "https://[::1]", "https://8.8.8.8", "https://[::ffff:127.0.0.1]", "https://server", "https://example.com:8443", "https://user:password@example.com", "https://a.internal", "https://a.lan", "https://a.onion", "https://example..com"] {
