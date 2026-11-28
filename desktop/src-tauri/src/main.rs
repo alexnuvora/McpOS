@@ -681,6 +681,12 @@ fn execute_browser_action(command: &RelayCommand, app: &tauri::AppHandle) -> Res
             };
             browser_eval_and_collect(app, window_id, &format!("(() => {{ {expression}; return {{ok:true, verification:'navigation_requested'}}; }})()"))
         },
+        "browser.scroll_to" => {
+            let selector = command.payload.get("selector").and_then(|v| v.as_str()).ok_or("Selector required.")?;
+            if selector.is_empty() || selector.len() > 256 { return Err("Invalid selector.".into()); }
+            let target = serde_json::to_string(selector).map_err(|_| "Invalid selector.")?;
+            browser_eval_and_collect(app, window_id, &format!("(() => {{ const matches = document.querySelectorAll({target}); if (matches.length !== 1) return {{ok:false,error:'Expected exactly one element'}}; const element = matches[0]; element.scrollIntoView({{block:'center',inline:'nearest',behavior:'instant'}}); const bounds=element.getBoundingClientRect(); return {{ok:true, visible:bounds.bottom>0 && bounds.right>0 && bounds.top<innerHeight && bounds.left<innerWidth}}; }})()"))
+        },
         "browser.scroll" => {
             let delta = command.payload.get("delta").and_then(|v| v.as_i64()).ok_or("Scroll delta required.")?;
             if !(-2000..=2000).contains(&delta) { return Err("Scroll delta outside allowed bounds.".into()); }
