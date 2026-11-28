@@ -30,6 +30,19 @@ async function authenticateClient(request: NextRequest): Promise<McpClient | nul
   return client;
 }
 
+function permittedBrowserUrl(url: string) {
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.replace(/\.+$/, "").toLowerCase();
+    const reserved = ["localhost", "local", "internal", "home.arpa", "lan", "corp", "test", "invalid", "onion"];
+    if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.port || host.length > 253 ||
+        !host.includes(".") || /^\d+(?:\.\d+){3}$/.test(host) || host.includes(":") ||
+        reserved.some(suffix => host === suffix || host.endsWith("." + suffix)) ||
+        !host.split(".").every(label => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label))) return false;
+    return true;
+  } catch { return false; }
+}
+
 function scopeError(scope: string) {
   return {
     content: [{ type: "text" as const, text: "This McpOS connection needs the " + scope + " permission. Reconnect and approve that permission to continue." }],
@@ -320,16 +333,7 @@ function makeServer(client: McpClient) {
       if (newWindow && windowId) return { content: [{ type: "text", text: "Choose either newWindow or a specific windowId." }], isError: true };
       if (action === "open") {
         if (!url) return { content: [{ type: "text", text: "A URL is required." }], isError: true };
-        try {
-          const parsed = new URL(url);
-          const host = parsed.hostname.replace(/\.+$/, "").toLowerCase();
-          const reserved = ["localhost", "local", "internal", "home.arpa", "lan", "corp", "test", "invalid", "onion"];
-          if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.port || host.length > 253 ||
-              !host.includes(".") || /^\d+(?:\.\d+){3}$/.test(host) || host.includes(":") ||
-              reserved.some(suffix => host === suffix || host.endsWith("." + suffix)) ||
-              !host.split(".").every(label => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label))) throw new Error("blocked");
-        }
-        catch { return { content: [{ type: "text", text: "Only valid HTTPS URLs without embedded credentials or local hostnames are allowed." }], isError: true }; }
+        if (!permittedBrowserUrl(url)) return { content: [{ type: "text", text: "Only valid public HTTPS URLs without embedded credentials are allowed." }], isError: true };
       }
       if ((action === "click" || action === "type") && !selector?.trim()) return { content: [{ type: "text", text: "A CSS selector is required." }], isError: true };
       if (action === "type" && (!text || !text.length || /[\u0000-\u001f\u007f]/.test(text))) return { content: [{ type: "text", text: "Text must be 1–200 printable characters." }], isError: true };
@@ -433,10 +437,11 @@ function makeServer(client: McpClient) {
     z.object({ command: z.literal("input.pointer.scroll"), steps: z.number().int().min(-12).max(12), axis: z.enum(["vertical", "horizontal"]).default("vertical") }),
     z.object({ command: z.literal("input.keyboard.type"), text: printable }),
     z.object({ command: z.literal("input.keyboard.shortcut"), keys: z.array(z.string().min(1).max(12)).min(2).max(4) }),
-    z.object({ command: z.literal("browser.click"), selector }),
-    z.object({ command: z.literal("browser.type"), selector, text: printable }),
+    z.object({ command: z.literal("browser.open"), url: z.string().max(2048).refine(permittedBrowserUrl), newWindow: z.boolean().optional() }),
+    z.object({ command: z.literal("browser.click"), selector, windowId: z.string().max(80).optional() }),
+    z.object({ command: z.literal("browser.type"), selector, text: printable, windowId: z.string().max(80).optional() }),
     z.object({ command: z.literal("browser.snapshot") }),
-    z.object({ command: z.literal("screen.capture") }),
+    z.object({ command: z.literal("screen.capture"), displayId: z.number().int().nonnegative().optional() }),
     z.object({ command: z.literal("desktop.accessibility") }),
     z.object({ command: z.literal("desktop.launch"), application: z.enum(["chrome","calculator","notepad"]) }),
     z.object({ command: z.literal("desktop.focus"), windowId: runtimeId }),
@@ -451,7 +456,7 @@ function makeServer(client: McpClient) {
     inputSchema: z.object({ taskId: z.string().uuid(), deviceId: z.string().uuid(), steps: z.array(stepSchema).min(1).max(8), screenshotAfterAction: z.boolean().default(false) }),
   }, async ({ taskId, deviceId, steps, screenshotAfterAction }) => {
     const planned = steps.flatMap((step): z.infer<typeof stepSchema>[] =>
-      screenshotAfterAction && (step.command.startsWith("input.") || ["browser.click","browser.type"].includes(step.command))
+      screenshotAfterAction && !["screen.capture","desktop.accessibility","browser.snapshot"].includes(step.command)
         ? [step, { command: "screen.capture" }] : [step]);
     const rows = [];
     const entitlement = await checkCommandEntitlement(client.user_id);
