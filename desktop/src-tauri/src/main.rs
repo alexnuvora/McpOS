@@ -681,6 +681,14 @@ fn execute_browser_action(command: &RelayCommand, app: &tauri::AppHandle) -> Res
             };
             browser_eval_and_collect(app, window_id, &format!("(() => {{ {expression}; return {{ok:true, verification:'navigation_requested'}}; }})()"))
         },
+        "browser.press_key" => {
+            let key = command.payload.get("key").and_then(|v| v.as_str()).ok_or("Key required.")?;
+            if !["Enter","Escape","Tab","ArrowUp","ArrowDown","ArrowLeft","ArrowRight","Home","End","PageUp","PageDown","Backspace","Delete"].contains(&key) { return Err("Unsupported browser key.".into()); }
+            let window = active_browser_window(app, window_id)?;
+            window.set_focus().map_err(|_| "Could not focus browser.")?;
+            let key_js = serde_json::to_string(key).map_err(|_| "Invalid key.")?;
+            browser_eval_and_collect(app, window_id, &format!("(() => {{ const target=document.activeElement; if (!target || target.matches('input[type=password],input[autocomplete=current-password],input[autocomplete=new-password]')) return {{ok:false,error:'No permitted focused element'}}; const key={key_js}; target.dispatchEvent(new KeyboardEvent('keydown',{{key,bubbles:true,cancelable:true}})); target.dispatchEvent(new KeyboardEvent('keyup',{{key,bubbles:true}})); return {{ok:true,verification:'synthetic_events_dispatched_only'}}; }})()"))
+        },
         "browser.scroll_to" => {
             let selector = command.payload.get("selector").and_then(|v| v.as_str()).ok_or("Selector required.")?;
             if selector.is_empty() || selector.len() > 256 { return Err("Invalid selector.".into()); }
