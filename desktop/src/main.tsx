@@ -116,7 +116,7 @@ function App() {
   async function denyPendingAction() {
     if (approvalBusy) return;
     setApprovalBusy(true); setError(""); setMessage("");
-    try { setMessage(await invoke<string>("deny_pending_action")); setPendingAction(null); }
+    try { setMessage(await invoke<string>("deny_pending_action", {commandId: pendingAction.id})); setPendingAction(null); }
     catch (reason) { setError(typeof reason === "string" ? reason : "Could not deny the pending action."); }
     finally { setApprovalBusy(false); }
   }
