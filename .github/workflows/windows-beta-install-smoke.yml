@@ -1,0 +1,67 @@
+name: Published Windows beta installer smoke
+on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/windows-beta-install-smoke.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  install-smoke:
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        installer: [exe, msi]
+    steps:
+      - name: Download published release from exact tag
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $release = gh release view v0.2.0-beta.1 --json tagName,isDraft,isPrerelease | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $release.tagName -ne 'v0.2.0-beta.1' -or $release.isDraft -or -not $release.isPrerelease) { throw 'Unexpected release' }
+          gh release download v0.2.0-beta.1 --pattern "McpOS-0.2.0-beta.1-unsigned.${{ matrix.installer }}" --pattern SHA256SUMS.txt --dir "$env:RUNNER_TEMP\mcpos-beta"
+          if ($LASTEXITCODE -ne 0) { throw 'Release download failed' }
+      - name: Verify published installer checksum
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'mcpos-beta'
+          $name = 'McpOS-0.2.0-beta.1-unsigned.${{ matrix.installer }}'
+          $expected = @(Get-Content (Join-Path $dir 'SHA256SUMS.txt') | Where-Object { $_ -match ('^[a-f0-9]{64}  ' + [regex]::Escape($name) + '$') })
+          if ($expected.Count -ne 1) { throw 'Missing or ambiguous checksum' }
+          $actual = (Get-FileHash (Join-Path $dir $name) -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne ($expected[0] -split '  ')[0]) { throw 'Checksum mismatch' }
+          Write-Output "Published installer checksum verified."
+      - name: Install on disposable Windows runner
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'mcpos-beta'
+          $dest = Join-Path $env:RUNNER_TEMP 'mcpos-installed'
+          $type = '${{ matrix.installer }}'
+          $installer = Join-Path $dir "McpOS-0.2.0-beta.1-unsigned.$type"
+          if (Test-Path $dest) { throw 'Install destination already exists' }
+          if ($type -eq 'msi') {
+            $args = "/i `"$installer`" /qn /norestart INSTALLDIR=`"$dest`" /l*v `"$dir\install.log`""
+            $p = Start-Process msiexec.exe -ArgumentList $args -Wait -PassThru
+          } else {
+            $p = Start-Process -FilePath $installer -ArgumentList "/S /D=$dest" -Wait -PassThru
+          }
+          if ($p.ExitCode -ne 0) { throw "Installation failed with exit code $($p.ExitCode)" }
+          $apps = @(Get-ChildItem $dest -Filter mcpos-desktop.exe -Recurse -File)
+          if ($apps.Count -ne 1) { throw 'Installed application missing or ambiguous' }
+          $app = $apps[0].FullName
+          $process = Start-Process -FilePath $app -PassThru
+          try {
+            Start-Sleep -Seconds 12
+            $process.Refresh()
+            if ($process.HasExited) { throw "Companion exited during startup: $($process.ExitCode)" }
+            Write-Output 'Published installer installed and companion process remained running for 12 seconds.'
+          } finally {
+            if (-not $process.HasExited) { Stop-Process -Id $process.Id -ErrorAction SilentlyContinue }
+          }
+          Write-Output 'No pairing, credentials, user account changes or Windows security policy changes attempted.'
