@@ -1,0 +1,41 @@
+name: Windows signing readiness
+on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/windows-signing-preflight.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  check:
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    timeout-minutes: 5
+    environment: windows-release
+    steps:
+      - name: Check release signing configuration without exposing values
+        shell: pwsh
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          SIGNING_ENDPOINT: ${{ vars.MCPOS_SIGNING_ENDPOINT }}
+          SIGNING_ACCOUNT: ${{ vars.MCPOS_SIGNING_ACCOUNT }}
+          SIGNING_PROFILE: ${{ vars.MCPOS_SIGNING_PROFILE }}
+          EXPECTED_PUBLISHER: ${{ vars.MCPOS_SIGNING_PUBLISHER_SUBJECT }}
+          PUBLIC_KEY: ${{ vars.MCPOS_SUPABASE_PUBLISHABLE_KEY }}
+        run: |
+          $guidPattern = '^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$'
+          $checks = [ordered]@{
+            azureClientId = [bool]($env:AZURE_CLIENT_ID -match $guidPattern)
+            azureTenantId = [bool]($env:AZURE_TENANT_ID -match $guidPattern)
+            azureClientSecretPresent = -not [string]::IsNullOrWhiteSpace($env:AZURE_CLIENT_SECRET)
+            endpoint = [bool]($env:SIGNING_ENDPOINT -match '^https://[a-z0-9]+\.codesigning\.azure\.net/?$')
+            account = [bool]($env:SIGNING_ACCOUNT -match '^[a-zA-Z0-9-]+$')
+            profile = [bool]($env:SIGNING_PROFILE -match '^[a-zA-Z0-9-]+$')
+            publisher = -not [string]::IsNullOrWhiteSpace($env:EXPECTED_PUBLISHER)
+            publicRelayKeyPresent = -not [string]::IsNullOrWhiteSpace($env:PUBLIC_KEY)
+          }
+          $checks | ConvertTo-Json -Compress
+          if ($checks.Values -contains $false) { throw 'Release signing configuration is incomplete. No signing attempted.' }
+          Write-Output 'Configuration present; certificate trust and signing still require a signed build.'
