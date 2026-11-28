@@ -716,7 +716,28 @@ fn execute_browser_action(command: &RelayCommand, app: &tauri::AppHandle) -> Res
             if selector.is_empty() || selector.len() > 256 || text.is_empty() || text.chars().count() > 200 || text.chars().any(|character| character.is_control()) { return Err("Selector or text is outside the allowed limits.".to_string()); }
             let selector_js = serde_json::to_string(selector).map_err(|_| "Invalid CSS selector.".to_string())?;
             let text_js = serde_json::to_string(text).map_err(|_| "Invalid text.".to_string())?;
-            eval_target_action(app, window_id, &format!("(() => {{ const selector = {selector_js}; {resolve_target} if (!(element.localName === 'input' || element.localName === 'textarea' || element.isContentEditable)) return {{ ok: false, error: 'Target is not an editable field', selector }}; if (element.matches('input[type=password],input[autocomplete=current-password],input[autocomplete=new-password]')) return {{ ok: false, error: 'Password fields require direct local entry', selector }}; element.focus(); if ('value' in element) {{ const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element), 'value')?.set; if (setter) setter.call(element, {text_js}); else element.value = {text_js}; }} else element.textContent = {text_js}; element.dispatchEvent(new InputEvent('input', {{ bubbles: true, inputType: 'insertText', data: {text_js} }})); element.dispatchEvent(new Event('change', {{ bubbles: true }})); if (('value' in element ? element.value : element.textContent) !== {text_js}) return {{ok:false,error:'Field did not retain the requested text. Inspect a fresh snapshot.'}}; return {{ ok: true, action: 'type', selector, verification: 'field_value_matched', characters: {text_js}.length }}; }})()"))
+            let window = active_browser_window(app, window_id)?;
+            let label = window.label().to_string();
+            let original_url = window.url().map_err(|_| "Browser location unavailable.")?;
+            let mut result = eval_target_action(app, Some(&label), &format!("(() => {{ const selector = {selector_js}; {resolve_target} if (!(element.localName === 'input' || element.localName === 'textarea' || element.isContentEditable)) return {{ ok: false, error: 'Target is not an editable field', selector }}; if (element.matches('input[type=password],input[autocomplete=current-password],input[autocomplete=new-password]') || element.disabled || element.readOnly || element.closest('[hidden],[inert],[aria-hidden=true],[aria-disabled=true]') || !element.getClientRects().length) return {{ ok: false, error: 'Target is sensitive, hidden, disabled or read-only', selector }}; element.focus(); const read = () => 'value' in element ? element.value : element.innerText; if (read() !== {text_js}) {{ if ('value' in element) {{ const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element), 'value')?.set; if (setter) setter.call(element, {text_js}); else element.value = {text_js}; element.dispatchEvent(new InputEvent('input', {{ bubbles: true, inputType: 'insertText', data: {text_js} }})); element.dispatchEvent(new Event('change', {{ bubbles: true }})); }} else {{ const doc = element.ownerDocument; const range = doc.createRange(); range.selectNodeContents(element); const selection = doc.getSelection(); selection.removeAllRanges(); selection.addRange(range); if (!doc.execCommand('insertText', false, {text_js})) return {{ok:true, action:'type', selector, verification:'dispatched_only', requiresSnapshot:true}}; }} }} const current = read(); return {{ok:true, action:'type', selector, verification: current === {text_js} ? 'field_value_matched' : 'dispatched_only', characters: {text_js}.length, requiresSnapshot:true}}; }})()"))?;
+            // Re-read only the same target after framework reconciliation; never dispatch text twice.
+            let probe = format!("(() => {{ const selector = {selector_js}; const matches = selector.startsWith('mcpos:') ? [window.__mcposSnapshot?.targets.get(selector)] : Array.from(document.querySelectorAll(selector)); const element = matches.length === 1 ? matches[0] : null; if (!element?.isConnected || !element.getClientRects().length || element.matches('input[type=password],input[autocomplete=current-password],input[autocomplete=new-password]')) return {{ok:true,matched:false}}; return {{ok:true,matched:('value' in element ? element.value : element.innerText) === {text_js}}}; }})()");
+            result["verification"] = serde_json::json!("dispatched_only");
+            for _ in 0..6 {
+                std::thread::sleep(Duration::from_millis(150));
+                if window.url().ok().as_ref() != Some(&original_url) { break; }
+                match browser_eval_and_collect(app, Some(&label), &probe) {
+                    Ok(observed) if observed["matched"] == true => {
+                        result["verification"] = serde_json::json!("field_value_matched");
+                        return Ok(result);
+                    }
+                    _ => {}
+                }
+            }
+            // Uncertain is not verified. Preserve the result and let the caller inspect without replaying.
+            result["verification"] = serde_json::json!("outcome_uncertain");
+            result["requiresSnapshot"] = serde_json::json!(true);
+            Ok(result)
         },
         _ => Err("Unsupported browser action.".to_string()),
     }
