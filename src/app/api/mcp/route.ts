@@ -84,7 +84,7 @@ function makeServer(client: McpClient) {
         authenticatedClient: client.client_name,
         mode: "outbound-device-relay",
         executionMode: "permission-gated",
-        availableTools: ["mcpos_execute_task", "mcpos_get_task_status", "mcpos_status", "mcpos_capabilities", "mcpos_list_devices", "mcpos_request_desktop_status", "mcpos_capture_screen", "mcpos_get_accessibility_snapshot", "mcpos_access_approved_files", "mcpos_request_input_action", "mcpos_browser_automation", "mcpos_get_command_status", "mcpos_profile", "mcpos_get_audit_history"],
+        availableTools: ["mcpos_execute_task", "mcpos_get_task_status", "mcpos_cancel_task", "mcpos_status", "mcpos_capabilities", "mcpos_list_devices", "mcpos_request_desktop_status", "mcpos_capture_screen", "mcpos_get_accessibility_snapshot", "mcpos_access_approved_files", "mcpos_request_input_action", "mcpos_browser_automation", "mcpos_get_command_status", "mcpos_profile", "mcpos_get_audit_history"],
       }, null, 2) }] };
     },
   );
@@ -356,6 +356,31 @@ function makeServer(client: McpClient) {
       return { content: [{ type: "text", text: JSON.stringify({ commandId: row.id, action, status: action === "snapshot" && !targeted ? "queued" : "awaiting_local_approval", device: device.device_name, localConsent: "The isolated browser switch must be ON on the Windows computer.", approval: action === "snapshot" && !targeted ? "Read-only snapshot; no click or input is performed." : "The Windows companion enforces its local Manual, Selected or AUTO policy; browser consent remains separately required.", nextStep: "Call mcpos_get_command_status with this commandId." }, null, 2) }] };
     },
   );
+  async function readCommand(commandId: string) {
+      if (!client.scopes.includes("workspace.read")) return scopeError("workspace.read");
+      const response = await supabaseRest("rpc/consume_mcpos_command_result", {
+        method: "POST", body: JSON.stringify({ p_user_id: client.user_id, p_client_id: client.id, p_command_id: commandId }),
+      });
+      if (!response.ok) return { content: [{ type: "text" as const, text: "Could not retrieve the command status." }], isError: true };
+      const command = await response.json();
+      if (!command) return { content: [{ type: "text" as const, text: "Command not found or no longer authorized for this workspace." }], isError: true };
+      if (command.status === "completed" && command.result && command.result.consumed !== true) {
+        const result = command.result;
+        const content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [];
+        const metadata = { ...command };
+        delete metadata.result;
+        if (command.command === "screen.capture" && typeof result.image_base64 === "string") {
+          const { image_base64, ...imageMetadata } = result;
+          content.push({ type: "text" as const, text: JSON.stringify({ ...metadata, result: imageMetadata }, null, 2) });
+          content.push({ type: "image", data: image_base64, mimeType: "image/jpeg" });
+        } else {
+          content.push({ type: "text" as const, text: JSON.stringify(command, null, 2) });
+        }
+        await supabaseRest("mcpos_device_audit", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ user_id: client.user_id, device_id: command.device_id, event_type: "mcp.command.result_consumed", outcome: "success", metadata: { command_id: command.id, client_name: client.client_name } }) });
+        return { content };
+      }
+      return { content: [{ type: "text" as const, text: JSON.stringify(command, null, 2) }] };
+  }
   server.registerTool(
     "mcpos_get_command_status",
     {
@@ -365,31 +390,7 @@ function makeServer(client: McpClient) {
       _meta: { securitySchemes: [{ type: "oauth2", scopes: ["workspace.read"] }] },
       inputSchema: z.object({ commandId: z.string().uuid() }),
     },
-    async ({ commandId }) => {
-      if (!client.scopes.includes("workspace.read")) return scopeError("workspace.read");
-      const response = await supabaseRest("rpc/consume_mcpos_command_result", {
-        method: "POST", body: JSON.stringify({ p_user_id: client.user_id, p_client_id: client.id, p_command_id: commandId }),
-      });
-      if (!response.ok) return { content: [{ type: "text", text: "Could not retrieve the command status." }], isError: true };
-      const command = await response.json();
-      if (!command) return { content: [{ type: "text", text: "Command not found or no longer authorized for this workspace." }], isError: true };
-      if (command.status === "completed" && command.result && command.result.consumed !== true) {
-        const result = command.result;
-        const content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [];
-        const metadata = { ...command };
-        delete metadata.result;
-        if (command.command === "screen.capture" && typeof result.image_base64 === "string") {
-          const { image_base64, ...imageMetadata } = result;
-          content.push({ type: "text", text: JSON.stringify({ ...metadata, result: imageMetadata }, null, 2) });
-          content.push({ type: "image", data: image_base64, mimeType: "image/jpeg" });
-        } else {
-          content.push({ type: "text", text: JSON.stringify(command, null, 2) });
-        }
-        await supabaseRest("mcpos_device_audit", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ user_id: client.user_id, device_id: command.device_id, event_type: "mcp.command.result_consumed", outcome: "success", metadata: { command_id: command.id, client_name: client.client_name } }) });
-        return { content };
-      }
-      return { content: [{ type: "text", text: JSON.stringify(command, null, 2) }] };
-    },
+    ({ commandId }) => readCommand(commandId),
   );
 
   server.registerTool(
@@ -451,14 +452,52 @@ function makeServer(client: McpClient) {
     z.object({ command: z.literal("native.shortcut"), windowId: runtimeId, keys: z.array(z.string().min(1).max(12)).min(2).max(4) }),
     z.object({ command: z.literal("clipboard.write"), text: z.string().max(4096) }),
   ]);
+  const waitOption = z.number().int().min(0).max(20000).default(0);
+  async function taskStatus(taskId: string, waitMs: number, includeResults: boolean) {
+    const deadline = Date.now() + waitMs;
+    for (;;) {
+      const response = await supabaseRest(`mcpos_device_commands?select=id,task_step,command,status,claimed_at,completed_at,expires_at,error_message&task_id=eq.${taskId}&mcp_client_id=eq.${client.id}&user_id=eq.${client.user_id}&order=task_step`);
+      if (!response.ok) return { isError: true, content: [{ type: "text" as const, text: "Task status unavailable." }] };
+      const steps = await response.json() as Array<{id:string; command:string; status:string; expires_at:string}>;
+      if (!steps.length) return {isError:true, content:[{type:"text" as const,text:"Task not found for this connection."}]};
+      let blocked = false;
+      for (const step of steps) {
+        if (["queued","claimed"].includes(step.status) && Date.parse(step.expires_at) <= Date.now()) step.status = "expired";
+        if (blocked && step.status === "queued") step.status = "blocked";
+        if (["failed","denied","expired"].includes(step.status)) blocked = true;
+      }
+      const pending = steps.some((s: {status:string}) => ["queued","claimed"].includes(s.status));
+      if (pending && Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, Math.min(750, deadline - Date.now())));
+        continue;
+      }
+      const content: Array<{type:"text"; text:string} | {type:"image"; data:string; mimeType:string}> = [
+        { type: "text", text: JSON.stringify({ taskId, steps, ...(pending ? {nextStep:"Resume with mcpos_get_task_status using the same taskId and waitMs. Do not resubmit actions."} : {}) }) }
+      ];
+      let missingResult = false;
+      if (includeResults && !pending) {
+        const captures = steps.filter((s: {command:string;status:string}) => s.command === "screen.capture" && s.status === "completed");
+        for (const step of steps) {
+          if (step.status !== "completed" || (step.command === "screen.capture" && step !== captures.at(-1))) continue;
+          const result = await readCommand(step.id);
+          if ("isError" in result && result.isError) missingResult = true;
+          content.push(...result.content);
+        }
+      }
+      const failed = steps.some((s: {status:string}) => ["failed","denied","expired"].includes(s.status));
+      return {content, ...(includeResults && (failed || missingResult) ? {isError:true} : {})};
+    }
+  }
   server.registerTool("mcpos_execute_task", {
     title: "Run an ordered Windows task",
-    description: "Queue up to eight steps on one device. Each step retains its own permissions and local approvals. Enable screenshotAfterAction to capture after each successful input action. Read progress using mcpos_get_task_status.",
-    inputSchema: z.object({ taskId: z.string().uuid(), deviceId: z.string().uuid(), steps: z.array(stepSchema).min(1).max(8), screenshotAfterAction: z.boolean().default(false) }),
-  }, async ({ taskId, deviceId, steps, screenshotAfterAction }) => {
+    description: "Queue up to eight steps on one device. Each step retains its own permissions and local approvals. Enable screenshotAfterAction to capture after each successful input action. Set waitMs (up to 20000) and finalScreenshot to return completed step results and the last JPEG in this call. Use the same task ID when recovering after a timeout.",
+    inputSchema: z.object({ taskId: z.string().uuid(), deviceId: z.string().uuid(), steps: z.array(stepSchema).min(1).max(8), screenshotAfterAction: z.boolean().default(false), finalScreenshot: z.boolean().default(false), waitMs: waitOption }),
+  }, async ({ taskId, deviceId, steps, screenshotAfterAction, finalScreenshot, waitMs }) => {
+    if (waitMs && !client.scopes.includes("workspace.read")) return scopeError("workspace.read");
     const planned = steps.flatMap((step): z.infer<typeof stepSchema>[] =>
       screenshotAfterAction && !["screen.capture","desktop.accessibility","browser.snapshot"].includes(step.command)
         ? [step, { command: "screen.capture" }] : [step]);
+    if (finalScreenshot && planned.at(-1)?.command !== "screen.capture") planned.push({command:"screen.capture"});
     const rows = [];
     const entitlement = await checkCommandEntitlement(client.user_id);
     if (entitlement.status !== "allowed") return { isError: true, content: [{ type: "text", text: "Desktop command entitlement unavailable." }] };
@@ -473,25 +512,32 @@ function makeServer(client: McpClient) {
       rows.push({ user_id: client.user_id, device_id: deviceId, mcp_client_id: client.id, ...entitlement.billing, command: verify ? "browser.open" : command, payload: verify ? { ...payload, windowAction: "browser.verified_click" } : payload, expires_at: expires, task_id: taskId, task_step: index });
     }
     const queued = await supabaseRest("mcpos_device_commands", { method: "POST", body: JSON.stringify(rows) });
+    if (queued.status === 409) return {isError:true, content:[{type:"text",text:JSON.stringify({taskId,message:"Task ID conflict. Inspect the original task with mcpos_get_task_status before taking further action."})}]};
     if (!queued.ok) return queueError(queued);
+    if (waitMs) return taskStatus(taskId, waitMs, true);
     return { content: [{ type: "text", text: JSON.stringify({ taskId, queuedSteps: rows.length, expires }) }] };
+  });
+  server.registerTool("mcpos_cancel_task", {
+    title: "Stop queued task steps",
+    description: "Expire this client's queued steps. A step already claimed by Windows may finish. Inspect task status before attempting recovery.",
+    inputSchema: z.object({taskId: z.string().uuid()}),
+  }, async ({taskId}) => {
+    if (!client.scopes.includes("workspace.read")) return scopeError("workspace.read");
+    const response = await supabaseRest(`mcpos_device_commands?task_id=eq.${taskId}&user_id=eq.${client.user_id}&mcp_client_id=eq.${client.id}&status=eq.queued&select=id`, {
+      method: "PATCH", headers: {Prefer:"return=representation"},
+      body: JSON.stringify({status:"expired", error_message:"Cancelled by requesting client", completed_at:new Date().toISOString()}),
+    });
+    if (!response.ok) return {isError:true, content:[{type:"text",text:"Task cancellation failed. Inspect the task before retrying."}]};
+    const cancelled = await response.json();
+    return {content:[{type:"text",text:JSON.stringify({taskId,cancelledSteps:cancelled.length})}]};
   });
   server.registerTool("mcpos_get_task_status", {
     title: "Read task progress and history",
-    description: "Returns ordered command IDs, timestamps and outcomes. Retrieve screenshots or other results separately using mcpos_get_command_status.",
-    inputSchema: z.object({ taskId: z.string().uuid() }),
-  }, async ({ taskId }) => {
+    description: "Returns ordered command IDs, timestamps and outcomes. Set waitMs to resume waiting and collect one-time results plus the last screenshot. With waitMs zero this only reads progress.",
+    inputSchema: z.object({ taskId: z.string().uuid(), waitMs: waitOption }),
+  }, async ({ taskId, waitMs }) => {
     if (!client.scopes.includes("workspace.read")) return scopeError("workspace.read");
-    const response = await supabaseRest(`mcpos_device_commands?select=id,task_step,command,status,claimed_at,completed_at,expires_at,error_message&task_id=eq.${taskId}&mcp_client_id=eq.${client.id}&user_id=eq.${client.user_id}&order=task_step`);
-    if (!response.ok) return { isError: true, content: [{ type: "text", text: "Task status unavailable." }] };
-    const steps = await response.json();
-    let blocked = false;
-    for (const step of steps) {
-      if (["queued","claimed"].includes(step.status) && Date.parse(step.expires_at) <= Date.now()) step.status = "expired";
-      if (blocked && step.status === "queued") step.status = "blocked";
-      if (["failed","denied","expired"].includes(step.status)) blocked = true;
-    }
-    return { content: [{ type: "text", text: JSON.stringify({ taskId, steps }) }] };
+    return taskStatus(taskId, waitMs, waitMs > 0);
   });
   return server;
 }
