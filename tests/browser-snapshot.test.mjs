@@ -35,3 +35,16 @@ test("modal editor is not crowded out by background buttons", () => {
   assert.equal(result.interactive.length,1);
   assert.equal(result.interactive[0].editable,true);
 });
+
+test("rich editor exposes its accessible label and frame-local bounds", () => {
+  const doc = {title:"Composer", getElementById: () => ({textContent:"Write a post"})};
+  const editor = {...button(), innerText:"", tagName:"DIV", localName:"div", ownerDocument:doc, isContentEditable:true,
+    getAttribute:k=>({"aria-labelledby":"title","role":"textbox","aria-multiline":"true"})[k],
+    getBoundingClientRect:()=>({x:15,y:30,width:280,height:92})};
+  doc.querySelectorAll=s=>s.startsWith('[role="dialog"]')?[]:[editor];
+  const {interactive:[item]}=runInNewContext(script,{document:doc,window:{},location:{origin:"https://example.com",pathname:"/"},crypto:{randomUUID}});
+  assert.equal(item.editable,true);
+  assert.equal(item.richText,true);
+  assert.equal(item.label,"Write a post");
+  assert.deepEqual({...item.bounds},{x:15,y:30,width:280,height:92,coordinateSpace:"frame viewport"});
+});

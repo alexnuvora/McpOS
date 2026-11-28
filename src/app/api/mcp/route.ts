@@ -65,6 +65,7 @@ async function queueError(response: Response) {
 }
 
 function makeServer(client: McpClient) {
+  const crop = z.object({x:z.number().int().nonnegative(), y:z.number().int().nonnegative(), width:z.number().int().positive(), height:z.number().int().positive()});
   const server = new McpServer({ name: "mcpos-workspace", version: "0.2.0" });
 
   server.registerTool(
@@ -193,9 +194,9 @@ function makeServer(client: McpClient) {
       description: "Request one JPEG screenshot from the paired Windows computer. Requires the screen.capture scope and either the visible local screen-capture consent switch or an active Windows automation session that explicitly allows captures. With an updated companion, use listDisplays to enumerate monitor IDs or displayId to capture one monitor. Defaults to the primary monitor.",
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       _meta: { securitySchemes: [{ type: "oauth2", scopes: ["screen.capture"] }] },
-      inputSchema: z.object({ deviceId: z.string().uuid().optional(), listDisplays: z.boolean().optional(), displayId: z.number().int().nonnegative().optional() }),
+      inputSchema: z.object({ deviceId: z.string().uuid().optional(), listDisplays: z.boolean().optional(), windowId:z.array(z.number().int()).min(1).max(32).optional(), crop:crop.optional(), jpegQuality:z.number().int().min(25).max(90).optional(), displayId: z.number().int().nonnegative().optional() }),
     },
-    async ({ deviceId, listDisplays, displayId }) => {
+    async ({ deviceId, listDisplays, displayId, windowId, crop, jpegQuality }) => {
       if (!client.scopes.includes("screen.capture")) return scopeError("screen.capture");
       const entitlement = await checkCommandEntitlement(client.user_id);
       if (entitlement.status !== "allowed") return { content: [{ type: "text" as const, text: entitlement.status === "subscription_required" ? "An active McpOS subscription is required to request desktop commands. Manage your plan in the McpOS dashboard." : "Subscription verification is temporarily unavailable. No desktop command was queued." }], isError: true };
@@ -205,11 +206,13 @@ function makeServer(client: McpClient) {
       if (!devicesResponse.ok) return { content: [{ type: "text", text: "Could not check device availability." }], isError: true };
       const [device] = await devicesResponse.json();
       if (!device) return { content: [{ type: "text", text: "No matching Windows device is currently online." }], isError: true };
+      if ((windowId || crop || jpegQuality) && !(device.relay_version >= 4)) return {isError:true,content:[{type:"text",text:"Window capture, crop and JPEG quality require Desktop 0.2.6."}]};
+      if (windowId && (displayId !== undefined || listDisplays)) return {isError:true,content:[{type:"text",text:"Choose a window or a display."}]};
       if ((listDisplays || displayId !== undefined) && device.relay_version < 3) return { isError: true, content: [{ type: "text", text: "Monitor selection requires McpOS Desktop 0.2.3 or later." }] };
       const expiresAt = new Date(Date.now() + 45_000).toISOString();
       const commandResponse = await supabaseRest("mcpos_device_commands", {
         method: "POST", headers: { Prefer: "return=representation" },
-        body: JSON.stringify({ user_id: client.user_id, mcp_client_id: client.id, ...entitlement.billing, device_id: device.id, command: "screen.capture", payload: { display: "primary", listDisplays, displayId, max_bytes: 4_000_000 }, expires_at: expiresAt }),
+        body: JSON.stringify({ user_id: client.user_id, mcp_client_id: client.id, ...entitlement.billing, device_id: device.id, command: "screen.capture", payload: { display: "primary", listDisplays, displayId, windowId, crop, jpegQuality, minRelay:windowId || crop || jpegQuality ? 4 : undefined, max_bytes: 4_000_000 }, expires_at: expiresAt }),
       });
       if (!commandResponse.ok) return queueError(commandResponse);
       const [command] = await commandResponse.json();
@@ -433,6 +436,10 @@ function makeServer(client: McpClient) {
   const selector = z.string().trim().min(1).max(256);
   const printable = z.string().min(1).max(200).regex(/^[^\u0000-\u001f\u007f]+$/);
   const runtimeId = z.array(z.number().int()).min(1).max(32);
+  const previous = z.object({fromStep:z.number().int().min(0).max(6)}).describe("Zero-based earlier logical step. Launch provides windowId; browser.wait provides selector and its window.");
+  const nativeWindow = z.union([runtimeId, previous]);
+  const browserTarget = z.union([selector, previous]);
+
   const stepSchema = z.discriminatedUnion("command", [
     z.object({ command: z.literal("input.pointer.click"), x: coordinate, y: coordinate, button: z.enum(["left", "right"]).default("left") }),
     z.object({ command: z.literal("input.pointer.move"), x: coordinate, y: coordinate }),
@@ -440,16 +447,20 @@ function makeServer(client: McpClient) {
     z.object({ command: z.literal("input.keyboard.type"), text: printable }),
     z.object({ command: z.literal("input.keyboard.shortcut"), keys: z.array(z.string().min(1).max(12)).min(2).max(4) }),
     z.object({ command: z.literal("browser.open"), url: z.string().max(2048).refine(permittedBrowserUrl), newWindow: z.boolean().optional() }),
-    z.object({ command: z.literal("browser.click"), selector, expectedText: z.string().trim().min(1).max(200).optional(), windowId: z.string().max(80).optional() }),
-    z.object({ command: z.literal("browser.type"), selector, text: printable, windowId: z.string().max(80).optional() }),
+    z.object({ command: z.literal("browser.click"), selector:browserTarget, expectedText: z.string().trim().min(1).max(200).optional(), windowId: z.string().max(80).optional() }),
+    z.object({ command: z.literal("browser.type"), selector:browserTarget, text: printable, windowId: z.string().max(80).optional() }),
     z.object({ command: z.literal("browser.snapshot") }),
-    z.object({ command: z.literal("screen.capture"), displayId: z.number().int().nonnegative().optional() }),
-    z.object({ command: z.literal("desktop.accessibility"), windowId: runtimeId.optional() }),
+    z.object({command:z.literal("browser.wait"), selector, expectedText:z.string().min(1).max(200).optional(), timeoutMs:z.number().int().min(100).max(15000).optional(), windowId:z.string().max(80).optional()}),
+    z.object({command:z.literal("browser.scroll"), selector:browserTarget.optional(), x:coordinate.optional(), y:coordinate.optional(), windowId:z.string().max(80).optional()}),
+    z.object({command:z.literal("native.read_text"), windowId:nativeWindow, controlId:runtimeId, maxCharacters:z.number().int().min(1).max(12000).optional()}),
+    z.object({command:z.literal("chrome.tabs"), windowId:nativeWindow, operation:z.enum(["list","open","switch","close"]), tabId:runtimeId.optional()}),
+    z.object({ command: z.literal("screen.capture"), windowId:nativeWindow.optional(), crop:crop.optional(), jpegQuality:z.number().int().min(25).max(90).optional(), displayId: z.number().int().nonnegative().optional() }),
+    z.object({ command: z.literal("desktop.accessibility"), windowId: nativeWindow.optional() }),
     z.object({ command: z.literal("desktop.launch"), application: z.enum(["chrome","calculator","notepad"]) }),
-    z.object({ command: z.literal("desktop.focus"), windowId: runtimeId }),
-    z.object({ command: z.literal("native.invoke"), windowId: runtimeId, controlId: runtimeId }),
-    z.object({ command: z.literal("native.set_text"), windowId: runtimeId, controlId: runtimeId, text: z.string().max(2048) }),
-    z.object({ command: z.literal("native.shortcut"), windowId: runtimeId, keys: z.array(z.string().min(1).max(12)).min(2).max(4) }),
+    z.object({ command: z.literal("desktop.focus"), windowId: nativeWindow }),
+    z.object({ command: z.literal("native.invoke"), windowId: nativeWindow, controlId: runtimeId }),
+    z.object({ command: z.literal("native.set_text"), windowId: nativeWindow, controlId: runtimeId, text: z.string().max(2048) }),
+    z.object({ command: z.literal("native.shortcut"), windowId: nativeWindow, keys: z.array(z.string().min(1).max(12)).min(2).max(4) }),
     z.object({ command: z.literal("clipboard.write"), text: z.string().max(4096) }),
   ]);
   const waitOption = z.number().int().min(0).max(20000).default(0);
@@ -490,26 +501,56 @@ function makeServer(client: McpClient) {
   }
   server.registerTool("mcpos_execute_task", {
     title: "Run an ordered Windows task",
-    description: "Queue up to eight steps on one device. Each step retains its own permissions and local approvals. Enable screenshotAfterAction to capture after each successful input action. Set waitMs (up to 20000) and finalScreenshot to return completed step results and the last JPEG in this call. Use the same task ID when recovering after a timeout.",
+    description: "Queue up to eight steps on one device. Each step retains its own permissions and local approvals. Enable screenshotAfterAction to capture after each successful input action. Set waitMs (up to 20000) and finalScreenshot to return completed step results and the last JPEG in this call. Use the same task ID when recovering after a timeout. Desktop 0.2.6 supports waits, scroll, rich-editor bounds, native document text, Chrome tabs, targeted cropped JPEGs, and fromStep target bindings.",
     inputSchema: z.object({ taskId: z.string().uuid(), deviceId: z.string().uuid(), steps: z.array(stepSchema).min(1).max(8), screenshotAfterAction: z.boolean().default(false), finalScreenshot: z.boolean().default(false), waitMs: waitOption }),
   }, async ({ taskId, deviceId, steps, screenshotAfterAction, finalScreenshot, waitMs }) => {
     if (waitMs && !client.scopes.includes("workspace.read")) return scopeError("workspace.read");
     const planned = steps.flatMap((step): z.infer<typeof stepSchema>[] =>
-      screenshotAfterAction && !["screen.capture","desktop.accessibility","browser.snapshot"].includes(step.command)
+      screenshotAfterAction && !["screen.capture","desktop.accessibility","browser.snapshot","browser.wait","native.read_text"].includes(step.command) && !(step.command==="chrome.tabs" && step.operation==="list")
         ? [step, { command: "screen.capture" }] : [step]);
     if (finalScreenshot && planned.at(-1)?.command !== "screen.capture") planned.push({command:"screen.capture"});
     const rows = [];
     const entitlement = await checkCommandEntitlement(client.user_id);
     if (entitlement.status !== "allowed") return { isError: true, content: [{ type: "text", text: "Desktop command entitlement unavailable." }] };
-    const device = await supabaseRest(`mcpos_devices?select=id&id=eq.${deviceId}&user_id=eq.${client.user_id}&relay_version=gte.3&status=eq.online&last_seen_at=gte.${new Date(Date.now()-90000).toISOString()}`);
-    if (!device.ok || !(await device.json()).length) return { isError: true, content: [{ type: "text", text: "An online McpOS Desktop 0.2.3 or later is required." }] };
+    const device = await supabaseRest(`mcpos_devices?select=id,relay_version&id=eq.${deviceId}&user_id=eq.${client.user_id}&relay_version=gte.3&status=eq.online&last_seen_at=gte.${new Date(Date.now()-90000).toISOString()}`);
+    const online = device.ok ? (await device.json())[0] : undefined;
+    if (!online) return { isError: true, content: [{ type: "text", text: "An online McpOS Desktop 0.2.3 or later is required." }] };
     const expires = new Date(Math.min(Date.now() + 300000, entitlement.billing.billing_verified_until ? Date.parse(entitlement.billing.billing_verified_until) : Infinity)).toISOString();
     for (const [index, { command, ...payload }] of planned.entries()) {
-      if (["native.invoke","native.set_text"].includes(command) && !client.scopes.includes("screen.accessibility")) return scopeError("screen.accessibility");
-      const scope = ["native.invoke","native.set_text","desktop.launch","desktop.focus","native.shortcut","clipboard.write"].includes(command) ? "input.keyboard" : command.startsWith("browser.") ? "browser.control" : command === "desktop.accessibility" ? "screen.accessibility" : command.split(".").slice(0,2).join(".");
+      if (["native.invoke","native.set_text","chrome.tabs"].includes(command) && !client.scopes.includes("screen.accessibility")) return scopeError("screen.accessibility");
+      const scope = command==="native.read_text" || (command==="chrome.tabs" && "operation" in payload && payload.operation==="list") ? "screen.accessibility" : ["chrome.tabs","native.invoke","native.set_text","desktop.launch","desktop.focus","native.shortcut","clipboard.write"].includes(command) ? "input.keyboard" : command.startsWith("browser.") ? "browser.control" : command === "desktop.accessibility" ? "screen.accessibility" : command.split(".").slice(0,2).join(".");
       if (!client.scopes.includes(scope)) return scopeError(scope);
       const verify = command === "browser.click" && "expectedText" in payload && payload.expectedText;
-      rows.push({ user_id: client.user_id, device_id: deviceId, mcp_client_id: client.id, ...entitlement.billing, command: verify ? "browser.open" : command, payload: verify ? { ...payload, windowAction: "browser.verified_click" } : payload, expires_at: expires, task_id: taskId, task_step: index });
+      const data:Record<string,unknown> = {...payload};
+      const bindings: Record<string,{step:number}> = {};
+      for (const field of ["windowId","selector"]) {
+        const ref = data[field];
+        if (!ref || Array.isArray(ref) || typeof ref !== "object" || !("fromStep" in ref)) continue;
+        const source = steps[Number(ref.fromStep)];
+        const sourceIndex = planned.indexOf(source);
+        if (!source || sourceIndex < 0 || sourceIndex >= index || source.command !== (field==="windowId" ? "desktop.launch" : "browser.wait"))
+          return {isError:true,content:[{type:"text",text:"Binding must reference an earlier launch (windowId) or browser.wait (selector)."}]};
+        bindings[field] = {step:sourceIndex};
+      }
+      if (Object.keys(bindings).length) data.bindings=bindings;
+      const browserOperation = command==="browser.wait" || command==="browser.scroll";
+      const captureOptions = command==="screen.capture" && ("windowId" in data || "crop" in data || "jpegQuality" in data);
+      const extended = browserOperation || captureOptions || command==="native.read_text" || command==="chrome.tabs" || !!data.bindings;
+      if (captureOptions && data.windowId && data.displayId !== undefined) return {isError:true,content:[{type:"text",text:"Choose a window or a display."}]};
+      if (extended) data.minRelay=4;
+      if (extended && !(online.relay_version>=4)) return {isError:true,content:[{type:"text",text:"This task requires Desktop 0.2.6 or later."}]};
+      let wireCommand: string = command;
+      if (verify || browserOperation) {
+        wireCommand="browser.open";
+        data.windowAction=verify ? "browser.verified_click" : command;
+      } else if (command==="native.read_text") {
+        wireCommand="desktop.accessibility"; data.readText=true;
+      } else if (command==="chrome.tabs") {
+        if (["switch","close"].includes(String(data.operation)) && !data.tabId) return {isError:true,content:[{type:"text",text:"Select the tabId from chrome.tabs list."}]};
+        wireCommand=data.operation==="list" ? "desktop.accessibility" : "native.invoke";
+        data.chromeTabs=true;
+      }
+      rows.push({user_id:client.user_id,device_id:deviceId,mcp_client_id:client.id,...entitlement.billing,command:wireCommand,payload:data,expires_at:expires,task_id:taskId,task_step:index});
     }
     const queued = await supabaseRest("mcpos_device_commands", { method: "POST", body: JSON.stringify(rows) });
     if (queued.status === 409) return {isError:true, content:[{type:"text",text:JSON.stringify({taskId,message:"Task ID conflict. Inspect the original task with mcpos_get_task_status before taking further action."})}]};

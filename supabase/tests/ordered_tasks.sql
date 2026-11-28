@@ -10,6 +10,7 @@ insert into public.mcpos_mcp_clients(id,user_id,client_name,token_hash,scopes,to
 insert into public.mcpos_device_commands(user_id, device_id, mcp_client_id, command, task_id, task_step)
 select '11111111-1111-4111-8111-111111111111','33333333-3333-4333-8333-333333333333','44444444-4444-4444-8444-444444444444',
  'desktop.status','77777777-7777-4777-8777-777777777777', i from generate_series(0,2) i order by i desc;
+update public.mcpos_device_commands set payload='{"bindings":{"windowId":{"step":0}}}' where task_step=1;
 set local role service_role;
 do $$
 declare current_id uuid;
@@ -17,9 +18,10 @@ begin
   select (public.claim_mcpos_device_command('ci-fixture-device-token')->>'id')::uuid into current_id;
   if (select task_step from public.mcpos_device_commands where id=current_id) is distinct from 0 then raise exception 'First step missing'; end if;
   if public.claim_mcpos_device_command('ci-fixture-device-token') is not null then raise exception 'Overlapping claims'; end if;
-  perform public.complete_mcpos_device_command('ci-fixture-device-token',current_id,'{}',null);
+  perform public.complete_mcpos_device_command('ci-fixture-device-token',current_id,'{"windowId":[42,7]}',null);
   select (public.claim_mcpos_device_command('ci-fixture-device-token')->>'id')::uuid into current_id;
   if (select task_step from public.mcpos_device_commands where id=current_id) is distinct from 1 then raise exception 'Successor missing'; end if;
+  if (select payload->'windowId' from public.mcpos_device_commands where id=current_id) is distinct from '[42,7]'::jsonb then raise exception 'Invalid result binding'; end if;
   perform public.complete_mcpos_device_command('ci-fixture-device-token',current_id,'{}','Local action failed');
   if public.claim_mcpos_device_command('ci-fixture-device-token') is not null then raise exception 'Executed after failure'; end if;
 end $$;

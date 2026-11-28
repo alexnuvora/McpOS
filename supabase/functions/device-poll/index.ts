@@ -29,6 +29,17 @@ Deno.serve(async request => {
   const claim = () => fetch(url + "/rest/v1/rpc/claim_mcpos_device_command", {
     method: "POST", headers, body: JSON.stringify({ p_token_hash: tokenHash }),
   });
+  async function compatibleCommand(response: Response) {
+    const command = await response.json();
+    if (command?.payload?.minRelay === 4 && request.headers.get("x-mcpos-relay-version") !== "4") {
+      const failed = await fetch(url + "/rest/v1/rpc/complete_mcpos_device_command", {
+        method:"POST", headers, body:JSON.stringify({p_token_hash:tokenHash,p_command_id:command.id,p_result:{},p_error_message:"Desktop update required."}),
+      });
+      if (!failed.ok) throw new Error("Could not close incompatible command.");
+      return null;
+    }
+    return command;
+  }
   if (upgrade) {
     const credential = await fetch(url + "/rest/v1/mcpos_device_credentials?select=id&revoked_at=is.null&token_hash=eq." + tokenHash + "&limit=1", { headers });
     if (!credential.ok || !(await credential.json()).length) return reply({ error: "Invalid device credential" }, 401);
@@ -40,7 +51,7 @@ Deno.serve(async request => {
       try {
         const result = await claim();
         if (!result.ok) { socket.close(1008, "Claim unavailable"); return; }
-        socket.send(JSON.stringify({ command: await result.json() }));
+        socket.send(JSON.stringify({ command: await compatibleCommand(result) }));
       } catch {
         if (socket.readyState === WebSocket.OPEN) socket.close(1011, "Relay unavailable");
       } finally { busy = false; }
@@ -67,6 +78,6 @@ Deno.serve(async request => {
     console.error("Device relay claim failed:", response.status, details.slice(0, 300));
     return reply({ error: "Could not poll the device command queue." }, 503);
   }
-  const command = await response.json();
+  const command = await compatibleCommand(response);
   return reply({ command: command ?? null });
 });
