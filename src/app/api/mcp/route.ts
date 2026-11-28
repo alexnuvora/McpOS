@@ -277,7 +277,7 @@ function makeServer(client: McpClient) {
       if (!device) return { content: [{ type: "text", text: "No online Windows device is available." }], isError: true };
       const command = operation === "read" ? "files.read" : "files.list";
       const payload = operation === "list_folders" ? {} : { path };
-      const expiresAt = new Date(Date.now() + 60_000).toISOString();
+      const expiresAt = new Date(Date.now() + 240_000).toISOString();
       const queued = await supabaseRest("mcpos_device_commands", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ user_id: client.user_id, mcp_client_id: client.id, ...entitlement.billing, device_id: device.id, command, payload, expires_at: expiresAt }) });
       if (!queued.ok) return queueError(queued);
       const [row] = await queued.json();
@@ -310,7 +310,7 @@ function makeServer(client: McpClient) {
       const [device] = await devicesResponse.json();
       if (!device) return { content: [{ type: "text", text: "No online Windows device is available." }], isError: true };
       const payload = action === "pointer_click" ? { x, y, button: button ?? "left" } : action === "pointer_move" ? { x, y } : action === "pointer_scroll" ? { steps, axis: axis ?? "vertical" } : action === "keyboard_type" ? { text } : { keys };
-      const expiresAt = new Date(Date.now() + 60_000).toISOString();
+      const expiresAt = new Date(Date.now() + 240_000).toISOString();
       const queued = await supabaseRest("mcpos_device_commands", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ user_id: client.user_id, mcp_client_id: client.id, ...entitlement.billing, device_id: device.id, command, payload, expires_at: expiresAt }) });
       if (!queued.ok) return queueError(queued);
       const [row] = await queued.json();
@@ -351,7 +351,7 @@ function makeServer(client: McpClient) {
       const targeted = Boolean(expectedText) || Boolean(windowId) || ["list","switch","close","upload"].includes(action);
       const command = targeted ? "browser.open" : "browser." + action;
       const payload = targeted ? { windowAction: expectedText ? "browser.verified_click" : "browser." + action, expectedText, windowId, ...(action === "open" ? { targetUrl: url } : {}), ...(["click","type","upload"].includes(action) ? { selector } : {}), ...(action === "type" ? { text } : {}) } : action === "open" ? { url, ...(newWindow === true ? { newWindow: true } : {}) } : action === "click" ? { selector } : action === "type" ? { selector, text } : {};
-      const expiresAt = new Date(Date.now() + 60_000).toISOString();
+      const expiresAt = new Date(Date.now() + 240_000).toISOString();
       const queued = await supabaseRest("mcpos_device_commands", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ user_id: client.user_id, mcp_client_id: client.id, ...entitlement.billing, device_id: device.id, command, payload, expires_at: expiresAt }) });
       if (!queued.ok) return queueError(queued);
       const [row] = await queued.json();
