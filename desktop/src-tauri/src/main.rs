@@ -182,10 +182,10 @@ fn set_accessibility_consent(enabled: bool, consent: tauri::State<'_, Accessibil
 }
 
 fn describe_controls(walker: &uiautomation::UITreeWalker, parent: &uiautomation::UIElement, depth: usize, controls: &mut Vec<serde_json::Value>, elements: &mut Vec<uiautomation::UIElement>) {
-    if depth > 5 || controls.len() >= 100 { return; }
+    if depth > 12 || controls.len() >= 160 { return; }
     let mut next = walker.get_first_child(parent).ok();
     while let Some(element) = next {
-        if controls.len() >= 100 { break; }
+        if controls.len() >= 160 { break; }
         next = walker.get_next_sibling(&element).ok();
         let sensitive = element.is_password().unwrap_or(true);
         elements.push(element.clone());
@@ -195,24 +195,28 @@ fn describe_controls(walker: &uiautomation::UITreeWalker, parent: &uiautomation:
             "role": element.get_localized_control_type().unwrap_or_default(),
             "label": if sensitive { String::new() } else { element.get_name().unwrap_or_default().chars().take(120).collect() }
         }));
-        if !sensitive { describe_controls(walker, &element, depth + 1, controls, elements); }
+        // A container may not implement IsPassword; do not expose its label, but traverse its children.
+        if element.is_password().ok() != Some(true) { describe_controls(walker, &element, depth + 1, controls, elements); }
     }
 }
 
-fn get_accessibility_snapshot() -> Result<serde_json::Value, String> {
+fn get_accessibility_snapshot(target_window: Option<&serde_json::Value>) -> Result<serde_json::Value, String> {
     let automation = UIAutomation::new().map_err(|_| "Windows UI Automation could not start.".to_string())?;
     let root = automation.get_root_element().map_err(|_| "Windows desktop accessibility tree is unavailable.".to_string())?;
     let walker = automation.get_control_view_walker().map_err(|_| "Windows accessibility control view is unavailable.".to_string())?;
     let children = walker.get_children(&root).unwrap_or_default();
     let mut windows = Vec::new();
     let mut controls = Vec::new();
+    let mut target_found = false;
     let focus_pid = automation.get_focused_element().ok().and_then(|e| e.get_process_id().ok());
     for element in children.iter().take(40) {
         let name = element.get_name().unwrap_or_default();
         let class_name = element.get_classname().unwrap_or_default();
         let control_type = element.get_localized_control_type().unwrap_or_default();
         let process_id = element.get_process_id().unwrap_or_default();
-        if Some(process_id) == focus_pid {
+        let selected = target_window.map(|id| element.get_runtime_id().ok().is_some_and(|runtime| serde_json::json!(runtime) == *id)).unwrap_or(Some(process_id) == focus_pid);
+        if selected {
+            target_found = true;
             let start = controls.len();
             describe_controls(&walker, element, 0, &mut controls, &mut Vec::new());
             let window_id = serde_json::json!(element.get_runtime_id().ok());
@@ -226,7 +230,8 @@ fn get_accessibility_snapshot() -> Result<serde_json::Value, String> {
             "process_id": process_id
         }));
     }
-    Ok(serde_json::json!({ "scope": "windows_and_focused_app", "controls": controls, "count": windows.len(), "windows": windows }))
+    if target_window.is_some() && !target_found { return Err("Target window no longer exists. Request a fresh window list.".into()); }
+    Ok(serde_json::json!({ "scope": if target_window.is_some() {"targeted_window"} else {"windows_and_focused_app"}, "controls": controls, "count": windows.len(), "windows": windows }))
 }
 #[tauri::command]
 fn get_screen_capture_consent(consent: tauri::State<'_, ScreenCaptureConsent>) -> bool {
@@ -1066,7 +1071,7 @@ async fn poll_relay_once(session: &mut Option<(String, RelaySocket)>, retry_sock
             if !accessibility_consent.load(Ordering::Relaxed) {
                 (serde_json::json!({}), Some("Windows accessibility consent is switched off on this computer.".to_string()))
             } else {
-                match get_accessibility_snapshot() {
+                match get_accessibility_snapshot(command.payload.get("windowId")) {
                     Ok(snapshot) => (snapshot, None),
                     Err(message) => (serde_json::json!({}), Some(message)),
                 }
