@@ -433,7 +433,7 @@ function makeServer(client: McpClient) {
   const selector = z.string().trim().min(1).max(256);
   const printable = z.string().min(1).max(200).regex(/^[^\u0000-\u001f\u007f]+$/);
   const runtimeId = z.array(z.number().int()).min(1).max(32);
-  const bindingBase = { fromStep: z.number().int().min(0).max(7), label: z.string().trim().min(1).max(160) };
+  const bindingBase = { fromStep: z.number().int().min(0).max(15), label: z.string().trim().min(1).max(160) };
   const windowBinding = z.object({ ...bindingBase, kind: z.literal("window") });
   const nativeBinding = z.object({ ...bindingBase, kind: z.literal("native_control"), role: z.string().min(1).max(60).optional() });
   const browserBinding = z.object({ ...bindingBase, kind: z.literal("browser_element"), role: z.string().min(1).max(60).optional() });
@@ -521,8 +521,12 @@ function makeServer(client: McpClient) {
       expandedIndices.push(offset++);
       if (screenshotAfterAction && !["screen.capture","desktop.accessibility","browser.snapshot"].includes(step.command)) offset++;
     }
-    const boundSteps = steps.map(step => "binding" in step && step.binding
-      ? { ...step, binding: { ...step.binding, fromStep: expandedIndices[step.binding.fromStep] } } : step);
+    const boundSteps = steps.map((step): z.infer<typeof stepSchema> => {
+      if ("binding" in step && step.binding) {
+        return stepSchema.parse({ ...step, binding: { ...step.binding, fromStep: expandedIndices[step.binding.fromStep] } });
+      }
+      return step;
+    });
     const planned = boundSteps.flatMap((step): z.infer<typeof stepSchema>[] =>
       screenshotAfterAction && !["screen.capture","desktop.accessibility","browser.snapshot"].includes(step.command)
         ? [step, { command: "screen.capture" }] : [step]);
