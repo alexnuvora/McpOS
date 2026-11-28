@@ -531,30 +531,67 @@ fn browser_eval_and_collect(app: &tauri::AppHandle, window_id: Option<&str>, exp
 
 fn get_browser_snapshot(app: &tauri::AppHandle, window_id: Option<&str>) -> Result<serde_json::Value, String> {
     browser_eval_and_collect(app, window_id, r#"(() => {
+        // Prefer a verified unique semantic locator; otherwise build a full structural path.
         const cssPath = (element) => {
-            if (element.id && CSS.escape) return '#' + CSS.escape(element.id);
+            const unique = selector => {
+                try { const matches = document.querySelectorAll(selector); return matches.length === 1 && matches[0] === element; } catch { return false; }
+            };
+            const tag = element.tagName.toLowerCase();
+            if (element.id) {
+                const selector = '#' + CSS.escape(element.id);
+                if (unique(selector)) return selector;
+            }
+            for (const attr of ['aria-label', 'data-testid', 'name', 'placeholder']) {
+                const value = element.getAttribute(attr);
+                if (value) {
+                    const selector = tag + '[' + attr + '="' + CSS.escape(value) + '"]';
+                    if (selector.length <= 256 && unique(selector)) return selector;
+                }
+            }
             const parts = [];
-            for (let node = element; node && node.nodeType === 1 && parts.length < 6; node = node.parentElement) {
+            for (let node = element; node && node.nodeType === 1; node = node.parentElement) {
                 const tag = node.tagName.toLowerCase();
                 const siblings = node.parentElement ? Array.from(node.parentElement.children).filter(item => item.tagName === node.tagName) : [];
                 parts.unshift(tag + (siblings.length > 1 ? ':nth-of-type(' + (siblings.indexOf(node) + 1) + ')' : ''));
-                if (node.id && CSS.escape) { parts[0] = '#' + CSS.escape(node.id); break; }
+                if (node.id) {
+                    const candidate = ['#' + CSS.escape(node.id), ...parts.slice(1)].join(' > ');
+                    if (candidate.length <= 256 && unique(candidate)) return candidate;
+                }
+                const candidate = parts.join(' > ');
+                if (candidate.length <= 256 && unique(candidate)) return candidate;
             }
-            return parts.join(' > ');
+            return null;
         };
-        const interactive = Array.from(document.querySelectorAll('a[href],button,input,textarea,select,[role="button"],[contenteditable="true"]'))
-            .filter(element => element.getClientRects().length && !element.closest('[hidden],[inert]'))
-            .slice(0, 80).map(element => ({
-                selector: cssPath(element).slice(0, 256),
+        const roles = ['button','link','menuitem','menuitemcheckbox','menuitemradio','tab','option','checkbox','radio','switch','combobox','textbox','searchbox','treeitem'];
+        const candidates = Array.from(document.querySelectorAll('a[href],button,input,textarea,select,summary,[contenteditable="true"],' + roles.map(role => '[role="' + role + '"]').join(',')))
+            .filter(element => {
+                const style = getComputedStyle(element);
+                return element.getClientRects().length && !element.closest('[hidden],[inert],[aria-hidden="true"]') && style.visibility === 'visible' && style.display !== 'none';
+            });
+        // Prioritise active dialogs and menus, then visible viewport elements, then remaining controls.
+        const priority = element => {
+            const bounds = element.getBoundingClientRect();
+            return (element.closest('[role="dialog"],[aria-modal="true"],[role="menu"],[role="listbox"],[role="alertdialog"]') ? 4 : 0)
+                + (bounds.bottom > 0 && bounds.right > 0 && bounds.top < innerHeight && bounds.left < innerWidth ? 2 : 0)
+                + (element === document.activeElement ? 1 : 0);
+        };
+        candidates.sort((a,b) => priority(b) - priority(a));
+        const interactive = candidates.slice(0, 160).map(element => {
+            const bounds = element.getBoundingClientRect();
+            const sensitive = element.matches('input[type=password],input[autocomplete=current-password],input[autocomplete=new-password]');
+            return {
+                selector: cssPath(element),
                 tag: element.tagName.toLowerCase(),
                 role: element.getAttribute('role') || undefined,
-                label: (element.getAttribute('aria-label') || element.getAttribute('placeholder') || element.innerText || element.getAttribute('name') || '').trim().slice(0, 140),
+                label: (element.getAttribute('aria-label') || element.getAttribute('placeholder') || (sensitive ? '' : element.innerText) || element.getAttribute('name') || '').trim().slice(0, 140),
                 type: element.getAttribute('type') || undefined,
-                disabled: Boolean(element.disabled),
+                disabled: Boolean(element.disabled || element.closest('[aria-disabled="true"]')),
                 editable: element.matches('input:not([type="hidden"]),textarea,[contenteditable="true"]'),
-                sensitive: element.matches('input[type=password],input[autocomplete=current-password],input[autocomplete=new-password]')
-            }));
-        return { ok: true, url: location.origin + location.pathname, title: document.title, text: (document.body?.innerText || '').slice(0, 12000), interactive };
+                sensitive,
+                bounds: {x:Math.round(bounds.x),y:Math.round(bounds.y),width:Math.round(bounds.width),height:Math.round(bounds.height)}
+            };
+        });
+        return { ok: true, url: location.origin + location.pathname, title: document.title, text: (document.body?.innerText || '').slice(0, 12000), interactive, interactiveTotal: candidates.length, truncated: candidates.length > interactive.length };
     })()"#)
 }
 
@@ -589,7 +626,7 @@ fn execute_browser_action(command: &RelayCommand, app: &tauri::AppHandle) -> Res
             let selector = command.payload.get("selector").and_then(|value| value.as_str()).ok_or("A CSS selector is required.")?;
             if selector.is_empty() || selector.len() > 256 { return Err("CSS selector must be 1–256 characters.".to_string()); }
             let selector_js = serde_json::to_string(selector).map_err(|_| "Invalid CSS selector.".to_string())?;
-            browser_eval_and_collect(app, window_id, &format!("(() => {{ const selector = {selector_js}; const element = document.querySelector(selector); if (!element) return {{ ok: false, error: 'No element matched the selector', selector }}; element.click(); return {{ ok: true, action: 'click', selector, element: (element.innerText || element.getAttribute('aria-label') || element.tagName).slice(0, 160) }}; }})()"))
+            browser_eval_and_collect(app, window_id, &format!("(() => {{ const selector = {selector_js}; const matches = document.querySelectorAll(selector); if (matches.length !== 1) return {{ ok: false, error: matches.length ? 'AMBIGUOUS_SELECTOR: request a new snapshot and use a unique selector' : 'ELEMENT_NOT_FOUND: request a new snapshot', selector }}; const element = matches[0]; if (!element.getClientRects().length || element.closest('[hidden],[inert],[aria-hidden=true],[aria-disabled=true]') || element.disabled || getComputedStyle(element).visibility !== 'visible') return {{ ok: false, error: 'ELEMENT_NOT_INTERACTABLE: request a new snapshot', selector }}; element.click(); return {{ ok: true, action: 'click', verification: 'dispatched_only', selector, element: (element.innerText || element.getAttribute('aria-label') || element.tagName).slice(0, 160) }}; }})()"))
         },
         "browser.type" => {
             let selector = command.payload.get("selector").and_then(|value| value.as_str()).ok_or("A CSS selector is required.")?;
@@ -597,7 +634,7 @@ fn execute_browser_action(command: &RelayCommand, app: &tauri::AppHandle) -> Res
             if selector.is_empty() || selector.len() > 256 || text.is_empty() || text.chars().count() > 200 || text.chars().any(|character| character.is_control()) { return Err("Selector or text is outside the allowed limits.".to_string()); }
             let selector_js = serde_json::to_string(selector).map_err(|_| "Invalid CSS selector.".to_string())?;
             let text_js = serde_json::to_string(text).map_err(|_| "Invalid text.".to_string())?;
-            browser_eval_and_collect(app, window_id, &format!("(() => {{ const selector = {selector_js}; const element = document.querySelector(selector); if (!element) return {{ ok: false, error: 'No element matched the selector', selector }}; if (!(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element.isContentEditable)) return {{ ok: false, error: 'Target is not an editable field', selector }}; if (element.matches('input[type=password],input[autocomplete=current-password],input[autocomplete=new-password]')) return {{ ok: false, error: 'Password fields require direct local entry', selector }}; element.focus(); if ('value' in element) {{ const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element), 'value')?.set; if (setter) setter.call(element, {text_js}); else element.value = {text_js}; }} else element.textContent = {text_js}; element.dispatchEvent(new InputEvent('input', {{ bubbles: true, inputType: 'insertText', data: {text_js} }})); element.dispatchEvent(new Event('change', {{ bubbles: true }})); return {{ ok: true, action: 'type', selector, characters: {text_js}.length }}; }})()"))
+            browser_eval_and_collect(app, window_id, &format!("(() => {{ const selector = {selector_js}; const matches = document.querySelectorAll(selector); if (matches.length !== 1) return {{ ok: false, error: matches.length ? 'AMBIGUOUS_SELECTOR: request a new snapshot and use a unique selector' : 'ELEMENT_NOT_FOUND: request a new snapshot', selector }}; const element = matches[0]; if (!element.getClientRects().length || element.closest('[hidden],[inert],[aria-hidden=true],[aria-disabled=true]') || element.disabled || getComputedStyle(element).visibility !== 'visible') return {{ ok: false, error: 'ELEMENT_NOT_INTERACTABLE: request a new snapshot', selector }}; if (!(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element.isContentEditable)) return {{ ok: false, error: 'Target is not an editable field', selector }}; if (element.matches('input[type=password],input[autocomplete=current-password],input[autocomplete=new-password]')) return {{ ok: false, error: 'Password fields require direct local entry', selector }}; element.focus(); if ('value' in element) {{ const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element), 'value')?.set; if (setter) setter.call(element, {text_js}); else element.value = {text_js}; }} else element.textContent = {text_js}; element.dispatchEvent(new InputEvent('input', {{ bubbles: true, inputType: 'insertText', data: {text_js} }})); element.dispatchEvent(new Event('change', {{ bubbles: true }})); return {{ ok: true, action: 'type', selector, characters: {text_js}.length }}; }})()"))
         },
         _ => Err("Unsupported browser action.".to_string()),
     }
