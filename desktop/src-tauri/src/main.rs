@@ -878,12 +878,13 @@ async fn approve_pending_action(command_id: String, approve_task: bool, pending:
         return Err("Automation is paused or the session has expired. Resume it locally first.".into());
     }
     let command = pending.0.lock().map_err(|_| "Approval state is unavailable.".to_string())?.clone().ok_or("There is no pending action to approve.")?;
+    if command.id != command_id { return Err("Pending command changed. Review it again.".into()); }
     if !heartbeat().await || !authorize_pending_command(&command.id).await {
-        pending.0.lock().map_err(|_| "Approval state is unavailable.".to_string())?.take();
+        { let mut current = pending.0.lock().map_err(|_| "Approval state is unavailable.".to_string())?; if current.as_ref().map(|c| &c.id) == Some(&command.id) { current.take(); } }
         return Err("McpOS could not verify that this device and AI session are still authorised. The action was not executed.".to_string());
     }
     if policy.0.lock().map(|p| p.paused || p.expires_at.map(|e| e <= now_epoch()).unwrap_or(false)).unwrap_or(true) {
-        pending.0.lock().map_err(|_| "Approval state is unavailable.".to_string())?.take();
+        { let mut current = pending.0.lock().map_err(|_| "Approval state is unavailable.".to_string())?; if current.as_ref().map(|c| &c.id) == Some(&command.id) { current.take(); } }
         return Err("Automation was paused or expired while authorisation was being checked. The action was not executed.".to_string());
     }
     {
@@ -918,12 +919,14 @@ async fn approve_pending_action(command_id: String, approve_task: bool, pending:
 }
 
 #[tauri::command]
-async fn deny_pending_action(pending: tauri::State<'_, PendingAction>) -> Result<String, String> {
-    let command = pending.0.lock().map_err(|_| "Approval state is unavailable.".to_string())?.clone().ok_or("There is no pending action to deny.")?;
-    let submission = submit_relay_result(&command.id, serde_json::json!({}), Some("The user denied this action on the Windows computer.".to_string())).await;
-    pending.0.lock().map_err(|_| "Approval state is unavailable.".to_string())?.take();
-    submission?;
-    Ok("Action denied. Nothing was executed.".to_string())
+async fn deny_pending_action(command_id: String, pending: tauri::State<'_, PendingAction>) -> Result<String, String> {
+    let command = {
+        let mut current = pending.0.lock().map_err(|_| "Approval state unavailable.")?;
+        if current.as_ref().map(|c| &c.id) != Some(&command_id) { return Err("Pending command changed. Review it again.".into()); }
+        current.take().ok_or("There is no pending action to deny.")?
+    };
+    submit_relay_result(&command.id, serde_json::json!({}), Some("The user denied this action on the Windows computer.".into())).await?;
+    Ok("Action denied. Nothing was executed.".into())
 }
 type RelaySocket = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
