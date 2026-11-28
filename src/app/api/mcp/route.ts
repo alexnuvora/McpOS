@@ -305,10 +305,10 @@ function makeServer(client: McpClient) {
     "mcpos_browser_automation",
     {
       title: "Automate the isolated browser",
-      description: "Open an HTTPS website (newWindow optionally opens another window on supported companions), read a bounded page snapshot, click a CSS selector, or enter text into a selected field in the separate McpOS browser profile. List windows, switch or close by windowId, and target snapshots, clicks and typing with the exact windowId. Requires Desktop 0.2.2 for window IDs and management. Requires browser.control scope and the local browser consent switch. The Windows computer enforces its local Manual, Selected or Auto-approve-all policy. Browser automation always retains its separate local consent switch. New companion builds support back, forward, refresh, scroll (delta), find (query), verify (expected visible text in query), and multiline typing. Click completion only confirms dispatch; verify the actual outcome before retrying.",
+      description: "Open an HTTPS website (newWindow optionally opens another window on supported companions), read a bounded page snapshot, click a CSS selector, or enter text into a selected field in the separate McpOS browser profile. List windows, switch or close by windowId, and target snapshots, clicks and typing with the exact windowId. Requires Desktop 0.2.2 for window IDs and management. Requires browser.control scope and the local browser consent switch. The Windows computer enforces its local Manual, Selected or Auto-approve-all policy. Browser automation always retains its separate local consent switch. New companion builds support back, forward, refresh, scroll (delta), find (query), verify (expected visible text in query), wait (up to 10 seconds for visible text), and multiline typing. Click completion only confirms dispatch; verify the actual outcome before retrying.",
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
       _meta: { securitySchemes: [{ type: "oauth2", scopes: ["browser.control"] }] },
-      inputSchema: z.object({ action: z.enum(["open", "snapshot", "click", "type", "list", "switch", "close", "back", "forward", "refresh", "scroll", "find", "verify"]), url: z.string().max(2048).optional(), selector: z.string().max(256).optional(), text: z.string().max(4000).optional(), query: z.string().min(1).max(140).optional(), delta: z.number().int().min(-2000).max(2000).optional(), newWindow: z.boolean().optional(), windowId: z.string().regex(/^mcpos-isolated-browser-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i).optional() }),
+      inputSchema: z.object({ action: z.enum(["open", "snapshot", "click", "type", "list", "switch", "close", "back", "forward", "refresh", "scroll", "find", "verify", "wait"]), url: z.string().max(2048).optional(), selector: z.string().max(256).optional(), text: z.string().max(4000).optional(), query: z.string().min(1).max(140).optional(), delta: z.number().int().min(-2000).max(2000).optional(), newWindow: z.boolean().optional(), windowId: z.string().regex(/^mcpos-isolated-browser-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i).optional() }),
     },
     async ({ action, url, selector, text, query, delta, newWindow, windowId }) => {
       if (!client.scopes.includes("browser.control")) return scopeError("browser.control");
@@ -331,7 +331,7 @@ function makeServer(client: McpClient) {
       }
       if ((action === "click" || action === "type") && !selector?.trim()) return { content: [{ type: "text", text: "A CSS selector is required." }], isError: true };
       if (action === "type" && (!text || !text.length || /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/.test(text))) return { content: [{ type: "text", text: "Text must be 1–4000 characters; newlines and tabs are supported." }], isError: true };
-      if (["find","verify"].includes(action) && !query?.trim()) return { content: [{ type: "text", text: "A query is required." }], isError: true };
+      if (["find","verify","wait"].includes(action) && !query?.trim()) return { content: [{ type: "text", text: "A query is required." }], isError: true };
       if (action === "scroll" && delta === undefined) return { content: [{ type: "text", text: "A scroll delta is required." }], isError: true };
       const recentCutoff = new Date(Date.now() - 90_000).toISOString();
       const devicesResponse = await supabaseRest(`mcpos_devices?select=id,device_name&user_id=eq.${client.user_id}&status=eq.online&last_seen_at=gte.${recentCutoff}&order=last_seen_at.desc&limit=1`);
@@ -340,9 +340,9 @@ function makeServer(client: McpClient) {
       if (!device) return { content: [{ type: "text", text: "No online Windows device is available." }], isError: true };
       // Use the existing approved browser.open relay envelope for v2 window operations.
       // Older agents reject the missing URL instead of accidentally acting on the wrong window.
-      const targeted = Boolean(windowId) || ["list","switch","close","back","forward","refresh","scroll","find","verify"].includes(action);
+      const targeted = Boolean(windowId) || ["list","switch","close","back","forward","refresh","scroll","find","verify","wait"].includes(action);
       const command = targeted ? "browser.open" : "browser." + action;
-      const payload = targeted ? { windowAction: "browser." + action, windowId, ...(action === "open" ? { targetUrl: url } : {}), ...(action === "click" || action === "type" ? { selector } : {}), ...(action === "type" ? { text } : {}), ...(["find","verify"].includes(action) ? { query } : {}), ...(action === "scroll" ? { delta } : {}) } : action === "open" ? { url, ...(newWindow === true ? { newWindow: true } : {}) } : action === "click" ? { selector } : action === "type" ? { selector, text } : {};
+      const payload = targeted ? { windowAction: "browser." + action, windowId, ...(action === "open" ? { targetUrl: url } : {}), ...(action === "click" || action === "type" ? { selector } : {}), ...(action === "type" ? { text } : {}), ...(["find","verify","wait"].includes(action) ? { query } : {}), ...(action === "scroll" ? { delta } : {}) } : action === "open" ? { url, ...(newWindow === true ? { newWindow: true } : {}) } : action === "click" ? { selector } : action === "type" ? { selector, text } : {};
       const expiresAt = new Date(Date.now() + 60_000).toISOString();
       const queued = await supabaseRest("mcpos_device_commands", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ user_id: client.user_id, mcp_client_id: client.id, ...entitlement.billing, device_id: device.id, command, payload, expires_at: expiresAt }) });
       if (!queued.ok) return queueError(queued);
