@@ -1,6 +1,6 @@
 [package]
 name = "mcpos-desktop"
-version = "0.2.4"
+version = "0.2.5"
 description = "McpOS Windows desktop companion"
 authors = ["McpOS"]
 edition = "2021"
@@ -35,3 +35,5 @@ futures-util = { version = "0.3", features = ["sink"] }
 windows-sys = { version = "0.59", features = ["Win32_UI_WindowsAndMessaging", "Win32_Foundation"] }
 
 tauri-plugin-notification = "2"
+
+tauri-winrt-notification = "0.7.2"

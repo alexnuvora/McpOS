@@ -322,9 +322,9 @@ function makeServer(client: McpClient) {
       description: "Open an HTTPS website (newWindow optionally opens another window on supported companions), read a bounded page snapshot, click a returned snapshot-bound elementId (pass it as selector) or CSS selector, or enter text into a selected field in the separate McpOS browser profile. List windows, switch or close by windowId, and target snapshots, clicks and typing with the exact windowId. Requires Desktop 0.2.2 for window IDs and management. Requires browser.control scope and the local browser consent switch. The Windows computer enforces its local Manual, Selected or Auto-approve-all policy. Browser automation always retains its separate local consent switch.",
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
       _meta: { securitySchemes: [{ type: "oauth2", scopes: ["browser.control"] }] },
-      inputSchema: z.object({ action: z.enum(["open", "snapshot", "click", "type", "upload", "list", "switch", "close"]), url: z.string().max(2048).optional(), selector: z.string().max(256).optional(), text: z.string().max(200).optional(), newWindow: z.boolean().optional(), windowId: z.string().regex(/^mcpos-isolated-browser-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i).optional() }),
+      inputSchema: z.object({ action: z.enum(["open", "snapshot", "click", "type", "upload", "list", "switch", "close"]), expectedText: z.string().trim().min(1).max(200).optional().describe("For click: require this new visible confirmation text after dispatch."), url: z.string().max(2048).optional(), selector: z.string().max(256).optional(), text: z.string().max(200).optional(), newWindow: z.boolean().optional(), windowId: z.string().regex(/^mcpos-isolated-browser-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i).optional() }),
     },
-    async ({ action, url, selector, text, newWindow, windowId }) => {
+    async ({ action, url, selector, text, newWindow, windowId, expectedText }) => {
       if (!client.scopes.includes("browser.control")) return scopeError("browser.control");
       const entitlement = await checkCommandEntitlement(client.user_id);
       if (entitlement.status !== "allowed") return { content: [{ type: "text" as const, text: entitlement.status === "subscription_required" ? "An active McpOS subscription is required to request desktop commands. Manage your plan in the McpOS dashboard." : "Subscription verification is temporarily unavailable. No desktop command was queued." }], isError: true };
@@ -344,9 +344,10 @@ function makeServer(client: McpClient) {
       if (!device) return { content: [{ type: "text", text: "No online Windows device is available." }], isError: true };
       // Use the existing approved browser.open relay envelope for v2 window operations.
       // Older agents reject the missing URL instead of accidentally acting on the wrong window.
-      const targeted = Boolean(windowId) || ["list","switch","close","upload"].includes(action);
+      if (expectedText && action !== "click") return { isError: true, content: [{ type: "text", text: "expectedText applies to clicks." }] };
+      const targeted = Boolean(expectedText) || Boolean(windowId) || ["list","switch","close","upload"].includes(action);
       const command = targeted ? "browser.open" : "browser." + action;
-      const payload = targeted ? { windowAction: "browser." + action, windowId, ...(action === "open" ? { targetUrl: url } : {}), ...(["click","type","upload"].includes(action) ? { selector } : {}), ...(action === "type" ? { text } : {}) } : action === "open" ? { url, ...(newWindow === true ? { newWindow: true } : {}) } : action === "click" ? { selector } : action === "type" ? { selector, text } : {};
+      const payload = targeted ? { windowAction: expectedText ? "browser.verified_click" : "browser." + action, expectedText, windowId, ...(action === "open" ? { targetUrl: url } : {}), ...(["click","type","upload"].includes(action) ? { selector } : {}), ...(action === "type" ? { text } : {}) } : action === "open" ? { url, ...(newWindow === true ? { newWindow: true } : {}) } : action === "click" ? { selector } : action === "type" ? { selector, text } : {};
       const expiresAt = new Date(Date.now() + 60_000).toISOString();
       const queued = await supabaseRest("mcpos_device_commands", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ user_id: client.user_id, mcp_client_id: client.id, ...entitlement.billing, device_id: device.id, command, payload, expires_at: expiresAt }) });
       if (!queued.ok) return queueError(queued);
@@ -438,7 +439,7 @@ function makeServer(client: McpClient) {
     z.object({ command: z.literal("input.keyboard.type"), text: printable }),
     z.object({ command: z.literal("input.keyboard.shortcut"), keys: z.array(z.string().min(1).max(12)).min(2).max(4) }),
     z.object({ command: z.literal("browser.open"), url: z.string().max(2048).refine(permittedBrowserUrl), newWindow: z.boolean().optional() }),
-    z.object({ command: z.literal("browser.click"), selector, windowId: z.string().max(80).optional() }),
+    z.object({ command: z.literal("browser.click"), selector, expectedText: z.string().trim().min(1).max(200).optional(), windowId: z.string().max(80).optional() }),
     z.object({ command: z.literal("browser.type"), selector, text: printable, windowId: z.string().max(80).optional() }),
     z.object({ command: z.literal("browser.snapshot") }),
     z.object({ command: z.literal("screen.capture"), displayId: z.number().int().nonnegative().optional() }),
@@ -468,7 +469,8 @@ function makeServer(client: McpClient) {
       if (["native.invoke","native.set_text"].includes(command) && !client.scopes.includes("screen.accessibility")) return scopeError("screen.accessibility");
       const scope = ["native.invoke","native.set_text","desktop.launch","desktop.focus","native.shortcut","clipboard.write"].includes(command) ? "input.keyboard" : command.startsWith("browser.") ? "browser.control" : command === "desktop.accessibility" ? "screen.accessibility" : command.split(".").slice(0,2).join(".");
       if (!client.scopes.includes(scope)) return scopeError(scope);
-      rows.push({ user_id: client.user_id, device_id: deviceId, mcp_client_id: client.id, ...entitlement.billing, command, payload, expires_at: expires, task_id: taskId, task_step: index });
+      const verify = command === "browser.click" && "expectedText" in payload && payload.expectedText;
+      rows.push({ user_id: client.user_id, device_id: deviceId, mcp_client_id: client.id, ...entitlement.billing, command: verify ? "browser.open" : command, payload: verify ? { ...payload, windowAction: "browser.verified_click" } : payload, expires_at: expires, task_id: taskId, task_step: index });
     }
     const queued = await supabaseRest("mcpos_device_commands", { method: "POST", body: JSON.stringify(rows) });
     if (!queued.ok) return queueError(queued);
