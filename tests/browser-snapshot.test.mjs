@@ -25,3 +25,13 @@ test("identical controls in different frames have distinct snapshot-bound refere
   assert.notEqual(next.snapshotId, first.snapshotId);
   assert.equal(context.window.__mcposSnapshot.targets.has(one.elementId), false);
 });
+
+test("modal editor is not crowded out by background buttons", () => {
+  const background = Array.from({length: 150}, button);
+  const editor = {...button(), localName:"div", tagName:"DIV", innerText:"", matches: s => s.includes("contenteditable"), getAttribute: k => k === "role" ? "textbox" : null};
+  const modal = {...button(), querySelectorAll: () => [editor]};
+  const document = {title:"Modal test",querySelectorAll: s => s.startsWith('[role="dialog"]') ? [modal] : [...background,editor]};
+  const result = runInNewContext(script,{document,location:{origin:"https://example.com",pathname:"/"},crypto:{randomUUID},window:{}});
+  assert.equal(result.interactive.length,1);
+  assert.equal(result.interactive[0].editable,true);
+});
