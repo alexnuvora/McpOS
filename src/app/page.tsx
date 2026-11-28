@@ -16,6 +16,7 @@ type Device = {
   paired_at: string;
 };
 type AuthStatus = { authenticated: boolean; user: { email: string } | null };
+type BetaRelease = { available: boolean; version?: string; tag?: string; assets?: Array<{ name: string; url: string; size: number }>; error?: string };
 type PairingCode = { code: string; expires_at: string; device_name: string };
 
 const capabilities = [
@@ -36,6 +37,7 @@ export default function Home() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(true);
+  const [release, setRelease] = useState<BetaRelease | null>(null);
 
   const loadDevices = useCallback(async () => {
     const response = await fetch("/api/devices", { cache: "no-store" });
@@ -72,6 +74,21 @@ export default function Home() {
     const timer = window.setInterval(() => { void loadDevices().catch(() => setMessage("Could not refresh device status.")); }, 20000);
     return () => window.clearInterval(timer);
   }, [auth.authenticated, loadDevices]);
+
+  useEffect(() => {
+    if (!auth.authenticated) return;
+    let active = true;
+    const check = async () => {
+      try {
+        const result = await fetch("/api/desktop-release", {cache:"no-store"});
+        const data = await result.json() as BetaRelease;
+        if (active) setRelease(data);
+      } catch { if (active) setRelease({available:false,error:"Release check unavailable."}); }
+    };
+    void check();
+    const timer = window.setInterval(() => void check(), 60000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [auth.authenticated]);
 
   async function createPairingCode() {
     setBusy(true); setMessage(""); setPairing(null);
@@ -126,7 +143,7 @@ export default function Home() {
     <aside className="sidebar flex flex-col p-4">
       <div className="mb-8 flex items-center gap-3 px-2 pt-1"><div className="flex h-9 w-9 items-center justify-center rounded-xl bg-indigo-500/15 text-indigo-300"><Command size={19}/></div><div><div className="text-sm font-semibold">McpOS</div><div className="text-[11px] text-slate-500">AI desktop agent platform</div></div></div>
       <div className="mb-3 px-2 text-[11px] font-semibold uppercase tracking-widest text-slate-500">Workspace</div>
-      <nav className="space-y-1"><a href="#overview" className="nav-item active"><LayoutDashboard size={16}/>Overview</a><a href="#devices" className="nav-item"><Monitor size={16}/>Devices<span className="ml-auto pill">{activeDevices}</span></a><a href="#activity" className="nav-item"><Activity size={16}/>Activity</a><a href="#capabilities" className="nav-item"><Braces size={16}/>Capabilities</a></nav>
+      <nav className="space-y-1"><a href="#overview" className="nav-item active"><LayoutDashboard size={16}/>Overview</a><a href="#devices" className="nav-item"><Monitor size={16}/>Devices<span className="ml-auto pill">{activeDevices}</span></a>{auth.authenticated && <a href="#downloads" className="nav-item"><Monitor size={16}/>Windows downloads</a>}<a href="#activity" className="nav-item"><Activity size={16}/>Activity</a><a href="#capabilities" className="nav-item"><Braces size={16}/>Capabilities</a></nav>
       <div className="mb-3 mt-8 px-2 text-[11px] font-semibold uppercase tracking-widest text-slate-500">Platform</div>
       <nav className="space-y-1"><a href="#capabilities" className="nav-item"><ShieldCheck size={16}/>Permissions</a><a href="/audit" className="nav-item"><Activity size={16}/>Audit history</a><a href="/integrations" className="nav-item"><Braces size={16}/>AI connections</a><a href="/billing" className="nav-item"><CircleDot size={16}/>Billing &amp; usage</a></nav>
       <div className="panel-soft mt-auto p-3"><div className="mb-2 flex items-center gap-2 text-xs font-medium"><ShieldCheck size={14} className="text-emerald-400"/>Permission-first access</div><p className="text-[11px] leading-5 text-slate-500">Pairing creates device identity only. Screen, accessibility, mouse, keyboard and file permissions remain disabled until separately approved.</p></div>
@@ -140,6 +157,12 @@ export default function Home() {
         <div className="mb-8 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           {[[ "Paired devices", String(activeDevices), "Registered Windows companions", Monitor ],[ "Online devices", String(onlineDevices), "Heartbeat seen in the last 90 seconds", Activity ],[ "AI clients", String(clientCount), "Active remote MCP credentials", Braces ],[ "Desktop permissions", "Local", "Check current permission switches in the Windows companion", ShieldCheck ]].map(([name,value,note,Icon])=>{const I=Icon as typeof Mail;return <div className="panel p-4" key={String(name)}><div className="flex items-center justify-between text-xs text-slate-400"><span>{String(name)}</span><I size={16}/></div><div className="mt-3 text-2xl font-semibold">{String(value)}</div><div className="mt-1 text-[11px] text-slate-500">{String(note)}</div></div>})}
         </div>
+
+        {auth.authenticated && <section id="downloads" className="panel mb-8 p-4 sm:p-5">
+          <div className="flex flex-wrap items-center justify-between gap-2"><h2 className="text-sm font-semibold">Windows companion downloads</h2><span className="pill">Closed beta · unsigned</span></div>
+          <p className="mt-2 text-xs leading-5 text-slate-400">For authorised testers only. Windows may block these unsigned installers. Do not disable Windows security protections. Verify the downloaded installer against SHA256SUMS.txt. This checks integrity, not publisher trust.</p>
+          {release?.available ? <><p className="mt-3 text-xs text-slate-300">Available version {release.version} ({release.tag}). Compare with your installed version; updates are manual.</p><div className="mt-3 flex flex-wrap gap-2">{release.assets?.map(asset => <a key={asset.name} href={asset.url} className="rounded-lg border border-[#30394a] px-3 py-2 text-xs text-indigo-200 hover:bg-[#171e2a]">{asset.name.endsWith(".exe") ? "Download EXE" : asset.name.endsWith(".msi") ? "Download MSI" : "SHA-256 checksums"}</a>)}</div></> : <p className="mt-3 text-xs text-slate-500">{release?.error ?? (release ? "Beta installers are not published yet." : "Checking release availability…")}</p>}
+        </section>}
 
         <section id="devices" className="panel mb-8 p-4 sm:p-5">
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3"><div><div className="text-sm font-semibold">Windows devices</div><p className="mt-1 text-xs text-slate-500">Create a short-lived code here, then enter it in the McpOS Windows companion.</p></div><span className="pill">{devices.length} registered</span></div>
