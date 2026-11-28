@@ -72,10 +72,12 @@ begin
     return jsonb_set(claimed,'{payload}',resolved);
   exception when others then
     update public.mcpos_device_commands set status='failed', completed_at=pg_catalog.now(), error_message='Dynamic binding could not resolve uniquely; inspect snapshots before retrying.' where id=q.id;
+    insert into public.mcpos_device_audit(user_id,device_id,event_type,outcome,metadata)
+      values(q.user_id,q.device_id,q.command || '.failed','failure',jsonb_build_object('command_id',q.id,'reason','dynamic_binding_unresolved'));
     return null;
   end;
 end;
-$$;
+$;
 revoke all on function public.claim_mcpos_device_command(text) from public, anon, authenticated;
 grant execute on function public.claim_mcpos_device_command(text) to service_role;
 notify pgrst, 'reload schema';
