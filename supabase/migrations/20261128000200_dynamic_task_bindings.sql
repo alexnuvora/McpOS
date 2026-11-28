@@ -77,7 +77,7 @@ begin
     return null;
   end;
 end;
-$;
+$$;
 revoke all on function public.claim_mcpos_device_command(text) from public, anon, authenticated;
 grant execute on function public.claim_mcpos_device_command(text) to service_role;
 notify pgrst, 'reload schema';
