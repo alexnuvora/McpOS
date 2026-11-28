@@ -4,7 +4,7 @@ use base64::Engine;
 use enigo::{Axis, Button, Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
 use keyring::Entry;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, io::Read, path::{Path, PathBuf}, sync::{mpsc::{sync_channel, SyncSender}, Arc, Mutex, atomic::{AtomicBool, Ordering}}, time::{Duration, SystemTime, UNIX_EPOCH}};
+use std::{path::{Path, PathBuf}, sync::{mpsc::sync_channel, Arc, Mutex, atomic::{AtomicBool, Ordering}}, time::{Duration, SystemTime, UNIX_EPOCH}};
 use xcap::{image::{codecs::jpeg::JpegEncoder, DynamicImage}, Monitor};
 use uiautomation::UIAutomation;
 use uuid::Uuid;
@@ -110,8 +110,6 @@ fn policy_auto_approves(policy: &AutomationPolicy, command: &str) -> bool {
 fn policy_json(policy: &AutomationPolicy) -> serde_json::Value {
     serde_json::to_value(policy).unwrap_or_else(|_| serde_json::json!({"mode":"manual","paused":true}))
 }
-#[derive(Clone)]
-struct BrowserBridge { port: u16, pending: Arc<Mutex<HashMap<String, SyncSender<String>>>> }
 
 #[tauri::command]
 fn get_automation_policy(policy: tauri::State<'_, AutomationPolicyState>) -> serde_json::Value {
@@ -377,44 +375,6 @@ struct RelayPollResponse {
     command: Option<RelayCommand>,
 }
 
-fn start_browser_bridge() -> Result<BrowserBridge, String> {
-    let server = tiny_http::Server::http(("127.0.0.1", 0)).map_err(|_| "Could not start the private browser bridge.".to_string())?;
-    let port = server.server_addr().to_ip().ok_or("Could not bind the private browser bridge.".to_string())?.port();
-    let pending = Arc::new(Mutex::new(HashMap::<String, SyncSender<String>>::new()));
-    let pending_server = pending.clone();
-    std::thread::spawn(move || {
-        for mut request in server.incoming_requests() {
-            let path = request.url().to_string();
-            let method = request.method().as_str().to_string();
-            let mut response = tiny_http::Response::empty(tiny_http::StatusCode(204));
-            let headers = [
-                ("Access-Control-Allow-Origin", "*"),
-                ("Access-Control-Allow-Methods", "POST, OPTIONS"),
-                ("Access-Control-Allow-Headers", "content-type"),
-                ("Access-Control-Allow-Private-Network", "true"),
-                ("Cache-Control", "no-store"),
-            ];
-            for (name, value) in headers { if let Ok(header) = tiny_http::Header::from_bytes(name.as_bytes(), value.as_bytes()) { response.add_header(header); } }
-            if method == "OPTIONS" { let _ = request.respond(response); continue; }
-            if method != "POST" || !path.starts_with("/snapshot/") {
-                let _ = request.respond(tiny_http::Response::empty(tiny_http::StatusCode(404)));
-                continue;
-            }
-            let nonce = path.trim_start_matches("/snapshot/").to_string();
-            let mut body = String::new();
-            if request.as_reader().take(100_000).read_to_string(&mut body).is_err() {
-                let _ = request.respond(tiny_http::Response::empty(tiny_http::StatusCode(400)));
-                continue;
-            }
-            let sender = pending_server.lock().ok().and_then(|mut map| map.remove(&nonce));
-            if let Some(sender) = sender { let _ = sender.send(body); }
-            else { response = tiny_http::Response::empty(tiny_http::StatusCode(404)); }
-            let _ = request.respond(response);
-        }
-    });
-    Ok(BrowserBridge { port, pending })
-}
-
 fn browser_url_allowed(url: &url::Url) -> bool {
     if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() || url.port_or_known_default() != Some(443) { return false; }
     // Apply the same lexical policy to initial URLs and every top-level redirect.
@@ -544,7 +504,7 @@ fn open_isolated_browser(app: &tauri::AppHandle, raw_url: &str, new_window: bool
     Ok("Opened a window in the separate McpOS browser profile.".into())
 }
 
-fn browser_eval_and_collect(app: &tauri::AppHandle, _bridge: &BrowserBridge, window_id: Option<&str>, expression: &str) -> Result<serde_json::Value, String> {
+fn browser_eval_and_collect(app: &tauri::AppHandle, window_id: Option<&str>, expression: &str) -> Result<serde_json::Value, String> {
     if !app.state::<BrowserConsent>().0.load(Ordering::Relaxed) { return Err("Isolated browser consent is disabled.".into()); }
     let window = active_browser_window(app, window_id)?;
     let current = window.url().map_err(|_| "Could not verify the selected browser URL.")?;
@@ -569,8 +529,8 @@ fn browser_eval_and_collect(app: &tauri::AppHandle, _bridge: &BrowserBridge, win
     Ok(value)
 }
 
-fn get_browser_snapshot(app: &tauri::AppHandle, bridge: &BrowserBridge, window_id: Option<&str>) -> Result<serde_json::Value, String> {
-    browser_eval_and_collect(app, bridge, window_id, r#"(() => {
+fn get_browser_snapshot(app: &tauri::AppHandle, window_id: Option<&str>) -> Result<serde_json::Value, String> {
+    browser_eval_and_collect(app, window_id, r#"(() => {
         const cssPath = (element) => {
             if (element.id && CSS.escape) return '#' + CSS.escape(element.id);
             const parts = [];
@@ -598,7 +558,7 @@ fn get_browser_snapshot(app: &tauri::AppHandle, bridge: &BrowserBridge, window_i
     })()"#)
 }
 
-fn execute_browser_action(command: &RelayCommand, app: &tauri::AppHandle, bridge: &BrowserBridge) -> Result<serde_json::Value, String> {
+fn execute_browser_action(command: &RelayCommand, app: &tauri::AppHandle) -> Result<serde_json::Value, String> {
     if !app.state::<BrowserConsent>().0.load(Ordering::Relaxed) { return Err("Isolated browser consent is disabled.".into()); }
     let window_id = command.payload.get("windowId").and_then(|value| value.as_str());
     let operation = command.payload.get("windowAction").and_then(|value| value.as_str()).unwrap_or(command.command.as_str());
@@ -618,7 +578,7 @@ fn execute_browser_action(command: &RelayCommand, app: &tauri::AppHandle, bridge
             window.close().map_err(|_| "Could not close selected browser window.")?;
             Ok(serde_json::json!({"closedWindowId":id}))
         },
-        "browser.snapshot" => get_browser_snapshot(app, bridge, window_id),
+        "browser.snapshot" => get_browser_snapshot(app, window_id),
         "browser.open" => {
             let raw_url = command.payload.get("targetUrl").or_else(|| command.payload.get("url")).and_then(|value| value.as_str()).ok_or("A URL is required.")?;
             let new_window = command.payload.get("newWindow").and_then(|value| value.as_bool()).unwrap_or(false);
@@ -629,7 +589,7 @@ fn execute_browser_action(command: &RelayCommand, app: &tauri::AppHandle, bridge
             let selector = command.payload.get("selector").and_then(|value| value.as_str()).ok_or("A CSS selector is required.")?;
             if selector.is_empty() || selector.len() > 256 { return Err("CSS selector must be 1–256 characters.".to_string()); }
             let selector_js = serde_json::to_string(selector).map_err(|_| "Invalid CSS selector.".to_string())?;
-            browser_eval_and_collect(app, bridge, window_id, &format!("(() => {{ const selector = {selector_js}; const element = document.querySelector(selector); if (!element) return {{ ok: false, error: 'No element matched the selector', selector }}; element.click(); return {{ ok: true, action: 'click', selector, element: (element.innerText || element.getAttribute('aria-label') || element.tagName).slice(0, 160) }}; }})()"))
+            browser_eval_and_collect(app, window_id, &format!("(() => {{ const selector = {selector_js}; const element = document.querySelector(selector); if (!element) return {{ ok: false, error: 'No element matched the selector', selector }}; element.click(); return {{ ok: true, action: 'click', selector, element: (element.innerText || element.getAttribute('aria-label') || element.tagName).slice(0, 160) }}; }})()"))
         },
         "browser.type" => {
             let selector = command.payload.get("selector").and_then(|value| value.as_str()).ok_or("A CSS selector is required.")?;
@@ -637,7 +597,7 @@ fn execute_browser_action(command: &RelayCommand, app: &tauri::AppHandle, bridge
             if selector.is_empty() || selector.len() > 256 || text.is_empty() || text.chars().count() > 200 || text.chars().any(|character| character.is_control()) { return Err("Selector or text is outside the allowed limits.".to_string()); }
             let selector_js = serde_json::to_string(selector).map_err(|_| "Invalid CSS selector.".to_string())?;
             let text_js = serde_json::to_string(text).map_err(|_| "Invalid text.".to_string())?;
-            browser_eval_and_collect(app, bridge, window_id, &format!("(() => {{ const selector = {selector_js}; const element = document.querySelector(selector); if (!element) return {{ ok: false, error: 'No element matched the selector', selector }}; if (!(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element.isContentEditable)) return {{ ok: false, error: 'Target is not an editable field', selector }}; if (element.matches('input[type=password],input[autocomplete=current-password],input[autocomplete=new-password]')) return {{ ok: false, error: 'Password fields require direct local entry', selector }}; element.focus(); if ('value' in element) {{ const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element), 'value')?.set; if (setter) setter.call(element, {text_js}); else element.value = {text_js}; }} else element.textContent = {text_js}; element.dispatchEvent(new InputEvent('input', {{ bubbles: true, inputType: 'insertText', data: {text_js} }})); element.dispatchEvent(new Event('change', {{ bubbles: true }})); return {{ ok: true, action: 'type', selector, characters: {text_js}.length }}; }})()"))
+            browser_eval_and_collect(app, window_id, &format!("(() => {{ const selector = {selector_js}; const element = document.querySelector(selector); if (!element) return {{ ok: false, error: 'No element matched the selector', selector }}; if (!(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element.isContentEditable)) return {{ ok: false, error: 'Target is not an editable field', selector }}; if (element.matches('input[type=password],input[autocomplete=current-password],input[autocomplete=new-password]')) return {{ ok: false, error: 'Password fields require direct local entry', selector }}; element.focus(); if ('value' in element) {{ const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element), 'value')?.set; if (setter) setter.call(element, {text_js}); else element.value = {text_js}; }} else element.textContent = {text_js}; element.dispatchEvent(new InputEvent('input', {{ bubbles: true, inputType: 'insertText', data: {text_js} }})); element.dispatchEvent(new Event('change', {{ bubbles: true }})); return {{ ok: true, action: 'type', selector, characters: {text_js}.length }}; }})()"))
         },
         _ => Err("Unsupported browser action.".to_string()),
     }
@@ -733,7 +693,7 @@ fn get_pending_action(pending: tauri::State<'_, PendingAction>) -> Option<serde_
 }
 
 #[tauri::command]
-async fn approve_pending_action(pending: tauri::State<'_, PendingAction>, app: tauri::AppHandle, bridge: tauri::State<'_, BrowserBridge>, browser_consent: tauri::State<'_, BrowserConsent>, policy: tauri::State<'_, AutomationPolicyState>) -> Result<String, String> {
+async fn approve_pending_action(pending: tauri::State<'_, PendingAction>, app: tauri::AppHandle, browser_consent: tauri::State<'_, BrowserConsent>, policy: tauri::State<'_, AutomationPolicyState>) -> Result<String, String> {
     if policy.0.lock().map(|p| p.paused || p.expires_at.map(|e| e <= now_epoch()).unwrap_or(false)).unwrap_or(true) {
         return Err("Automation is paused or the session has expired. Resume it locally first.".into());
     }
@@ -749,7 +709,7 @@ async fn approve_pending_action(pending: tauri::State<'_, PendingAction>, app: t
     let action_result = if command.command.starts_with("browser.") && !browser_consent.0.load(Ordering::Relaxed) {
         Err("Isolated browser consent was switched off before approval.".to_string())
     } else if command.command.starts_with("browser.") {
-        execute_browser_action(&command, &app, &bridge)
+        execute_browser_action(&command, &app)
     } else {
         execute_input_action(&command)
     };
@@ -769,7 +729,7 @@ async fn deny_pending_action(pending: tauri::State<'_, PendingAction>) -> Result
     submission?;
     Ok("Action denied. Nothing was executed.".to_string())
 }
-async fn poll_relay_once(connected: &Arc<AtomicBool>, screen_consent: &Arc<AtomicBool>, accessibility_consent: &Arc<AtomicBool>, browser_consent: &Arc<AtomicBool>, approved_folders: &Arc<Mutex<Vec<PathBuf>>>, pending_action: &Arc<Mutex<Option<RelayCommand>>>, policy: &Arc<Mutex<AutomationPolicy>>, bridge: &BrowserBridge, app: &tauri::AppHandle) {
+async fn poll_relay_once(connected: &Arc<AtomicBool>, screen_consent: &Arc<AtomicBool>, accessibility_consent: &Arc<AtomicBool>, browser_consent: &Arc<AtomicBool>, approved_folders: &Arc<Mutex<Vec<PathBuf>>>, pending_action: &Arc<Mutex<Option<RelayCommand>>>, policy: &Arc<Mutex<AutomationPolicy>>, app: &tauri::AppHandle) {
     let Some(token) = stored_token() else { return };
     let Some(api_key) = SUPABASE_ANON_KEY else { return };
     if api_key.is_empty() { return; }
@@ -804,7 +764,7 @@ async fn poll_relay_once(connected: &Arc<AtomicBool>, screen_consent: &Arc<Atomi
             } else if !still_allowed {
                 Err("Automation was paused or the session expired before execution. Action blocked.".to_string())
             } else if command.command.starts_with("browser.") {
-                execute_browser_action(&command, app, bridge)
+                execute_browser_action(&command, app)
             } else {
                 execute_input_action(&command)
             };
@@ -882,7 +842,7 @@ async fn poll_relay_once(connected: &Arc<AtomicBool>, screen_consent: &Arc<Atomi
             if !browser_consent.load(Ordering::Relaxed) {
                 (serde_json::json!({}), Some("Isolated browser consent is switched off on this Windows computer.".to_string()))
             } else {
-                match get_browser_snapshot(app, bridge, None) { Ok(snapshot) => (snapshot, None), Err(message) => (serde_json::json!({}), Some(message)) }
+                match get_browser_snapshot(app, None) { Ok(snapshot) => (snapshot, None), Err(message) => (serde_json::json!({}), Some(message)) }
             }
         },
         _ => (serde_json::json!({}), Some("Unsupported desktop command.".to_string())),
@@ -905,10 +865,10 @@ async fn poll_relay_once(connected: &Arc<AtomicBool>, screen_consent: &Arc<Atomi
         .await;
 }
 
-fn start_relay_polling(connected: Arc<AtomicBool>, screen_consent: Arc<AtomicBool>, accessibility_consent: Arc<AtomicBool>, browser_consent: Arc<AtomicBool>, approved_folders: Arc<Mutex<Vec<PathBuf>>>, pending_action: Arc<Mutex<Option<RelayCommand>>>, policy: Arc<Mutex<AutomationPolicy>>, bridge: BrowserBridge, app: tauri::AppHandle) {
+fn start_relay_polling(connected: Arc<AtomicBool>, screen_consent: Arc<AtomicBool>, accessibility_consent: Arc<AtomicBool>, browser_consent: Arc<AtomicBool>, approved_folders: Arc<Mutex<Vec<PathBuf>>>, pending_action: Arc<Mutex<Option<RelayCommand>>>, policy: Arc<Mutex<AutomationPolicy>>, app: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         loop {
-            poll_relay_once(&connected, &screen_consent, &accessibility_consent, &browser_consent, &approved_folders, &pending_action, &policy, &bridge, &app).await;
+            poll_relay_once(&connected, &screen_consent, &accessibility_consent, &browser_consent, &approved_folders, &pending_action, &policy, &app).await;
             tokio::time::sleep(Duration::from_secs(10)).await;
         }
     });
@@ -980,10 +940,8 @@ fn main() {
             app.manage(SelectedBrowserWindow(Mutex::new(None)));
             let automation_policy = Arc::new(Mutex::new(AutomationPolicy { mode: "manual".into(), paused: false, expires_at: None, auto_pointer: false, auto_keyboard: false, auto_browser: false, auto_screen: false }));
             app.manage(AutomationPolicyState(automation_policy.clone()));
-            let browser_bridge = start_browser_bridge().unwrap_or_else(|_| BrowserBridge { port: 0, pending: Arc::new(Mutex::new(HashMap::new())) });
-            app.manage(browser_bridge.clone());
             start_heartbeat(app.handle().clone(), connection_state.clone());
-            start_relay_polling(connection_state, screen_consent, accessibility_consent, browser_consent, approved_folders, pending_action, automation_policy, browser_bridge, app.handle().clone());
+            start_relay_polling(connection_state, screen_consent, accessibility_consent, browser_consent, approved_folders, pending_action, automation_policy, app.handle().clone());
             Ok(())
         })
         .on_window_event(|window, event| {
