@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getDeviceAccount } from "@/lib/device-auth";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-const releases = [{tag:"v0.2.3-beta.1",version:"0.2.3"},{tag:"v0.2.2-beta.1",version:"0.2.2"},{tag:"v0.2.1-beta.1",version:"0.2.1"},{tag:"v0.2.0-beta.1",version:"0.2.0"}];
+const releases = [{tag:"v0.2.4-beta.1",version:"0.2.4"},{tag:"v0.2.3-beta.1",version:"0.2.3"},{tag:"v0.2.2-beta.1",version:"0.2.2"},{tag:"v0.2.1-beta.1",version:"0.2.1"},{tag:"v0.2.0-beta.1",version:"0.2.0"}];
 export async function GET(request: NextRequest) {
   const auth = await getDeviceAccount(request);
   if ("response" in auth) return auth.response;
