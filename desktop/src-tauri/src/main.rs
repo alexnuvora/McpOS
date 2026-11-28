@@ -651,7 +651,10 @@ fn execute_browser_action(command: &RelayCommand, app: &tauri::AppHandle) -> Res
         }
         const dialogSelector = '[aria-modal="true"],dialog[open],[role="dialog"],[role="alertdialog"]';
         for (let node = element; node; node = node.ownerDocument.defaultView?.frameElement) {
-            const modal = Array.from(node.ownerDocument.querySelectorAll(dialogSelector)).filter(d => d.getClientRects().length && !d.closest('[hidden],[inert],[aria-hidden="true"]')).at(-1);
+            const visible = el => el.getClientRects().length && !el.closest('[hidden],[inert],[aria-hidden="true"]') && !['hidden','collapse'].includes(el.ownerDocument.defaultView.getComputedStyle(el).visibility);
+            const dialogs = Array.from(node.ownerDocument.querySelectorAll(dialogSelector)).filter(visible);
+            const editors = 'textarea,input:not([type="hidden"]),[contenteditable]:not([contenteditable="false"]),[role="textbox"]';
+            const modal = dialogs.slice().reverse().find(d => Array.from(d.querySelectorAll(editors)).some(visible)) || dialogs.at(-1);
             if (modal && !modal.contains(node)) return {ok:false,error:'An active dialogue blocks the target. Inspect a fresh snapshot before proceeding.'};
         }
         if (!element?.isConnected || !element.ownerDocument.defaultView || element.ownerDocument.defaultView.document !== element.ownerDocument)
@@ -813,13 +816,13 @@ fn execute_input_action(command: &RelayCommand) -> Result<serde_json::Value, Str
                 "chrome" => ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"].iter()
                     .filter_map(|key| std::env::var_os(*key)).map(|base| PathBuf::from(base).join(r"Google\Chrome\Application\chrome.exe"))
                     .find(|p| p.is_file()).ok_or("Chrome is not installed in a standard location.")?,
-                "notepad" | "calculator" => PathBuf::from(std::env::var_os("SystemRoot").ok_or("Windows directory unavailable.")?)
-                    .join("System32").join(if app == "calculator" { "calc.exe" } else { "notepad.exe" }),
+                "notepad" | "calculator" | "paint" => PathBuf::from(std::env::var_os("SystemRoot").ok_or("Windows directory unavailable.")?)
+                    .join("System32").join(match app { "calculator" => "calc.exe", "paint" => "mspaint.exe", _ => "notepad.exe" }),
                 _ => return Err("Unsupported application.".into())
             };
             let before = windows_controls::app_windows(app);
             std::process::Command::new(path).spawn().map_err(|_| "Application launch failed.")?;
-            for _ in 0..12 {
+            for _ in 0..30 {
                 let found: Vec<_> = windows_controls::app_windows(app).into_iter().filter(|id|!before.contains(id)).collect();
                 if found.len()==1 { return Ok(serde_json::json!({"launched":app,"verification":"new_window_observed","windowId":found[0]})); }
                 if found.len()>1 {break;}
