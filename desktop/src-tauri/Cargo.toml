@@ -1,6 +1,6 @@
 [package]
 name = "mcpos-desktop"
-version = "0.2.3"
+version = "0.2.4"
 description = "McpOS Windows desktop companion"
 authors = ["McpOS"]
 edition = "2021"
