@@ -33,3 +33,5 @@ arboard = { version = "3", default-features = false }
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
 futures-util = { version = "0.3", features = ["sink"] }
 windows-sys = { version = "0.59", features = ["Win32_UI_WindowsAndMessaging", "Win32_Foundation"] }
+
+tauri-plugin-notification = "2"
