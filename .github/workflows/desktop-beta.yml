@@ -32,12 +32,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Resolve public API key
         env:
-          PUBLIC_KEY: ${{ vars.MCPOS_SUPABASE_PUBLISHABLE_KEY }}
+          # Public client configuration only; never use a secret or service-role key.
+          # Fallback matches the McpOS production project's published client configuration.
+          PUBLIC_KEY: ${{ vars.MCPOS_SUPABASE_PUBLISHABLE_KEY || 'sb_publishable_DdVZfRJmm-SiBTrQBL3SOg_LmvNNPy0' }}
         shell: bash
         run: |
           test -n "$PUBLIC_KEY" || (echo 'Beta release requires public relay key' && exit 1)
-            node -e 'const k=process.env.PUBLIC_KEY;if(!k.startsWith("sb_publishable_")){let p;try{p=JSON.parse(Buffer.from(k.split(".")[1],"base64url").toString())}catch{};if(p?.role!=="anon")process.exit(1)}'
-            echo "SUPABASE_ANON_KEY=$PUBLIC_KEY" >> "$GITHUB_ENV"
+          node -e 'const k=process.env.PUBLIC_KEY;if(!k.startsWith("sb_publishable_")){let p;try{p=JSON.parse(Buffer.from(k.split(".")[1],"base64url").toString())}catch{};if(p?.role!=="anon")process.exit(1)}'
+          echo "SUPABASE_ANON_KEY=$PUBLIC_KEY" >> "$GITHUB_ENV"
       - name: Install frontend dependencies
         run: npm install
       - name: Generate Windows icon
