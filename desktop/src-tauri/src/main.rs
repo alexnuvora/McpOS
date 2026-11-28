@@ -8,7 +8,7 @@ use std::{collections::HashMap, io::Read, path::{Path, PathBuf}, sync::{mpsc::{s
 use xcap::{image::{codecs::jpeg::JpegEncoder, DynamicImage}, Monitor};
 use uiautomation::UIAutomation;
 use uuid::Uuid;
-use tauri::{utils::config::WebviewUrl, webview::{DownloadEvent, WebviewWindowBuilder}};
+use tauri::{utils::config::WebviewUrl, webview::{DownloadEvent, NewWindowResponse, WebviewWindowBuilder}};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -156,7 +156,7 @@ fn get_browser_consent(consent: tauri::State<'_, BrowserConsent>) -> bool {
 fn set_browser_consent(enabled: bool, consent: tauri::State<'_, BrowserConsent>, app: tauri::AppHandle) -> bool {
     consent.0.store(enabled, Ordering::Relaxed);
     if !enabled {
-        if let Some(window) = app.get_webview_window("mcpos-isolated-browser") { let _ = window.close(); }
+        for window in isolated_browser_windows(&app) { let _ = window.close(); }
     }
     enabled
 }
@@ -442,32 +442,79 @@ mod browser_policy_tests {
     }
 }
 
-fn open_isolated_browser(app: &tauri::AppHandle, raw_url: &str) -> Result<String, String> {
-    let url = url::Url::parse(raw_url).map_err(|_| "The browser URL is invalid.".to_string())?;
-    if !browser_url_allowed(&url) { return Err("The isolated browser only permits public HTTPS sites without embedded credentials.".to_string()); }
+const BROWSER_WINDOW_PREFIX: &str = "mcpos-isolated-browser";
+const MAX_BROWSER_WINDOWS: usize = 6;
 
-    if let Some(window) = app.get_webview_window("mcpos-isolated-browser") {
-        window.navigate(url.clone()).map_err(|_| "Could not navigate the isolated browser.".to_string())?;
+fn is_isolated_browser_label(label: &str) -> bool {
+    label == BROWSER_WINDOW_PREFIX || label.strip_prefix("mcpos-isolated-browser-").is_some_and(|id| Uuid::parse_str(id).is_ok())
+}
+
+fn isolated_browser_windows(app: &tauri::AppHandle) -> Vec<tauri::WebviewWindow> {
+    app.webview_windows().into_iter().filter_map(|(label, window)| {
+        is_isolated_browser_label(&label).then_some(window)
+    }).collect()
+}
+
+fn active_browser_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
+    let mut windows = isolated_browser_windows(app);
+    if windows.len() == 1 { return Ok(windows.remove(0)); }
+    if windows.is_empty() { return Err("Open a page in the isolated browser first.".into()); }
+    windows.into_iter().find(|window| window.is_focused().unwrap_or(false))
+        .ok_or_else(|| "Several isolated browser windows are open. Focus the intended browser window before continuing.".into())
+}
+
+// Every child inherits the opener's WebView2 environment, but never the main application's capabilities.
+fn browser_window_policy<'a>(builder: WebviewWindowBuilder<'a, tauri::Wry, tauri::AppHandle>, app: &tauri::AppHandle)
+    -> WebviewWindowBuilder<'a, tauri::Wry, tauri::AppHandle> {
+    let handle = app.clone();
+    let consent = app.state::<BrowserConsent>().0.clone();
+    let nav_consent = consent.clone();
+    builder.title("McpOS Isolated Browser")
+        .on_navigation(move |url| nav_consent.load(Ordering::Relaxed) && (browser_url_allowed(url) || url.as_str() == "about:blank"))
+        .on_download(|_, event| !matches!(event, DownloadEvent::Requested { .. }))
+        .on_new_window(move |url, features| {
+            if !consent.load(Ordering::Relaxed) || isolated_browser_windows(&handle).len() >= MAX_BROWSER_WINDOWS
+                || !(browser_url_allowed(&url) || url.as_str() == "about:blank") {
+                return NewWindowResponse::Deny;
+            }
+            let label = format!("{BROWSER_WINDOW_PREFIX}-{}", Uuid::new_v4());
+            let blank = url::Url::parse("about:blank").expect("valid bootstrap URL");
+            let child = WebviewWindowBuilder::new(&handle, label, WebviewUrl::External(blank)).window_features(features);
+            match browser_window_policy(child, &handle).build() {
+                Ok(window) if consent.load(Ordering::Relaxed) => NewWindowResponse::Create { window },
+                Ok(window) => { let _ = window.close(); NewWindowResponse::Deny },
+                Err(_) => NewWindowResponse::Deny,
+            }
+        })
+}
+
+fn open_isolated_browser(app: &tauri::AppHandle, raw_url: &str, new_window: bool) -> Result<String, String> {
+    let url = url::Url::parse(raw_url).map_err(|_| "The browser URL is invalid.".to_string())?;
+    if !browser_url_allowed(&url) { return Err("The browser only permits public HTTPS sites without embedded credentials.".to_string()); }
+    if !app.state::<BrowserConsent>().0.load(Ordering::Relaxed) { return Err("Isolated browser consent is disabled.".into()); }
+    let windows = isolated_browser_windows(app);
+    if !new_window && !windows.is_empty() {
+        let window = active_browser_window(app)?;
+        window.navigate(url).map_err(|_| "Could not navigate the isolated browser.".to_string())?;
         let _ = window.show();
         let _ = window.set_focus();
-        return Ok("Opened the URL in the separate McpOS browser profile.".to_string());
+        return Ok("Navigation requested in the selected isolated browser window.".into());
     }
+    if windows.len() >= MAX_BROWSER_WINDOWS { return Err("Close an isolated browser window before opening another (maximum six).".into()); }
     let mut profile = app.path().app_local_data_dir().map_err(|_| "Could not resolve the isolated browser profile directory.".to_string())?;
     profile.push("isolated-browser-profile");
     std::fs::create_dir_all(&profile).map_err(|_| "Could not create the isolated browser profile.".to_string())?;
-    WebviewWindowBuilder::new(app, "mcpos-isolated-browser", WebviewUrl::External(url))
-        .title("McpOS Isolated Browser")
-        .data_directory(profile)
-        .on_navigation(browser_url_allowed)
-        .on_download(|_, event| !matches!(event, DownloadEvent::Requested { .. }))
-        .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny)
-        .build().map_err(|_| "Could not create the isolated browser window.".to_string())?;
-    Ok("Opened the URL in a separate browser profile with isolated cookies and storage.".to_string())
+    let label = if windows.is_empty() { BROWSER_WINDOW_PREFIX.to_string() } else { format!("{BROWSER_WINDOW_PREFIX}-{}", Uuid::new_v4()) };
+    let builder = WebviewWindowBuilder::new(app, label, WebviewUrl::External(url)).data_directory(profile);
+    browser_window_policy(builder, app).build().map_err(|_| "Could not create the isolated browser window.".to_string())?;
+    Ok("Opened a window in the separate McpOS browser profile.".into())
 }
 
 fn browser_eval_and_collect(app: &tauri::AppHandle, bridge: &BrowserBridge, expression: &str) -> Result<serde_json::Value, String> {
     if bridge.port == 0 { return Err("The private browser bridge is unavailable on this computer.".to_string()); }
-    let window = app.get_webview_window("mcpos-isolated-browser").ok_or("Open a page in the isolated browser first.")?;
+    let window = active_browser_window(app)?;
+    let current = window.url().map_err(|_| "Could not verify the selected browser URL.")?;
+    if !browser_url_allowed(&current) { return Err("Wait for the selected window to load a permitted HTTPS page.".into()); }
     let nonce = Uuid::new_v4().to_string();
     let (sender, receiver) = sync_channel(1);
     bridge.pending.lock().map_err(|_| "Browser bridge is unavailable.".to_string())?.insert(nonce.clone(), sender);
@@ -487,6 +534,11 @@ fn browser_eval_and_collect(app: &tauri::AppHandle, bridge: &BrowserBridge, expr
     let value: serde_json::Value = serde_json::from_str(&body).map_err(|_| "The isolated browser returned an invalid result.".to_string())?;
     if value.get("ok").and_then(|item| item.as_bool()) == Some(false) {
         return Err(value.get("error").and_then(|item| item.as_str()).unwrap_or("The browser operation failed.").to_string());
+    }
+    let mut value = value;
+    if let Some(object) = value.as_object_mut() {
+        object.insert("browser_window_count".into(), serde_json::json!(isolated_browser_windows(app).len()));
+        object.insert("browser_window".into(), serde_json::json!(window.label()));
     }
     Ok(value)
 }
@@ -525,7 +577,8 @@ fn execute_browser_action(command: &RelayCommand, app: &tauri::AppHandle, bridge
     match command.command.as_str() {
         "browser.open" => {
             let raw_url = command.payload.get("url").and_then(|value| value.as_str()).ok_or("A URL is required.")?;
-            let message = open_isolated_browser(app, raw_url)?;
+            let new_window = command.payload.get("newWindow").and_then(|value| value.as_bool()).unwrap_or(false);
+            let message = open_isolated_browser(app, raw_url, new_window)?;
             Ok(serde_json::json!({ "action": "open", "message": message }))
         },
         "browser.click" => {
