@@ -8,6 +8,7 @@ use std::{path::{Path, PathBuf}, sync::{mpsc::sync_channel, Arc, Mutex, atomic::
 use xcap::{image::{codecs::jpeg::JpegEncoder, DynamicImage}, Monitor};
 use uiautomation::UIAutomation;
 use uuid::Uuid;
+use tauri_plugin_notification::NotificationExt;
 use tauri::{utils::config::WebviewUrl, webview::{DownloadEvent, NewWindowResponse, WebviewWindowBuilder}};
 use tauri::{
     menu::{Menu, MenuItem},
@@ -1012,7 +1013,10 @@ async fn poll_relay_once(session: &mut Option<(String, RelaySocket)>, retry_sock
         };
         if already_pending {
             let _ = submit_relay_result(&command_id, serde_json::json!({}), Some("Another local approval is already pending.".to_string())).await;
-        } else { show_main_window(app); }
+        } else {
+            // Keep the target application focused until the user chooses to review the request.
+            let _ = app.notification().builder().title("McpOS approval required").body("An AI action is awaiting your review. Open McpOS from the system tray to approve or deny it.").show();
+        }
         return;
     }
 
@@ -1140,6 +1144,7 @@ fn start_heartbeat(app: tauri::AppHandle, connected: Arc<AtomicBool>) {
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![pair_device, get_device_status, get_screen_capture_consent, set_screen_capture_consent, get_accessibility_consent, set_accessibility_consent, get_approved_folders, pick_approved_folder, remove_approved_folder, get_pending_action, approve_pending_action, deny_pending_action, get_browser_consent, set_browser_consent, get_automation_policy, set_automation_policy, pause_automation])
         .setup(|app| {
             let open = MenuItem::with_id(app, "open", "Open McpOS", true, None::<&str>)?;
