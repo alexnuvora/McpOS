@@ -39,7 +39,7 @@ pub fn capture(id: &Value) -> Result<xcap::image::RgbaImage, String> {
     let window = xcap::Window::all().map_err(|_| "Window enumeration failed.")?.into_iter()
         .find(|w| w.id().ok() == Some(handle as u32) && w.pid().ok() == Some(pid))
         .ok_or("Selected window cannot be captured.")?;
-    window.capture_image().map_err(|_| "Window capture failed.")
+    window.capture_image().map_err(|_| "Window capture failed.".to_string())
 }
 
 pub fn app_windows(app: &str) -> Vec<Value> {
