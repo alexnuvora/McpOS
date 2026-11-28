@@ -104,10 +104,10 @@ function makeServer(client: McpClient) {
       content: [{ type: "text", text: JSON.stringify({
         enabled: ["per-client bearer authentication", "workspace status", "capability discovery", "paired-device listing", "outbound command polling", "read-only desktop status request", "one-shot JPEG screen capture", "bounded read-only Windows application discovery", "read-only approved-folder text access", "one-shot pointer and text-entry actions with local approval", "isolated browser navigation and selector automation", "paginated audit history and session revocation", "OAuth 2.1 authorization-code with PKCE and rotating refresh tokens"],
         permissionGated: ["screen capture local switch", "Windows accessibility local switch", "native folder-picker grants", "fresh local approval for every input action", "isolated browser local switch and fresh approval for navigation/click/type"],
+        desktop023: ["ordered MCP tasks and task progress", "optional screenshots after actions", "snapshot-bound browser elements and same-origin frames", "native window controls and browser shortcuts", "clipboard writes", "application launching and focus", "locally selected browser file transfers", "per-task action permissions", "WebSocket relay with HTTP fallback", "multi-monitor capture and pointer coordinates"],
         planned: includePlanned === false ? [] : [
           "full accessibility-tree inspection",
           "file writes and deletes",
-          "application launching",
           "sandboxed terminal",
         ],
       }, null, 2) }] };
