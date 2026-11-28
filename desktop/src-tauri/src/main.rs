@@ -104,7 +104,7 @@ fn policy_active(policy: &AutomationPolicy) -> bool {
 fn policy_auto_approves(policy: &AutomationPolicy, command: &str) -> bool {
     if !policy_active(policy) { return false; }
     if policy.mode == "all" {
-        return matches!(command, "input.pointer.click" | "input.pointer.move" | "input.pointer.scroll" | "input.keyboard.type" | "input.keyboard.shortcut" | "browser.open" | "browser.click" | "browser.type" | "screen.capture");
+        return matches!(command, "input.pointer.click" | "input.pointer.move" | "input.pointer.scroll" | "input.keyboard.type" | "input.keyboard.shortcut" | "browser.open" | "browser.click" | "browser.type" | "screen.capture" | "desktop.launch" | "desktop.focus" | "native.shortcut" | "native.invoke" | "native.set_text" | "clipboard.write");
     }
     match command {
         "input.pointer.click" | "input.pointer.move" | "input.pointer.scroll" => policy.auto_pointer,
@@ -428,6 +428,31 @@ fn browser_url_allowed(url: &url::Url) -> bool {
 #[cfg(test)]
 mod browser_policy_tests {
     use super::{browser_url_allowed, is_isolated_browser_label};
+    #[test]
+    fn auto_all_covers_bounded_desktop_actions_but_not_destructive_commands() {
+        let mut policy = super::AutomationPolicy {
+            mode: "all".into(), paused: false, expires_at: Some(super::now_epoch() + 60),
+            auto_pointer: true, auto_keyboard: true, auto_browser: true, auto_screen: true, task_grant: None,
+        };
+        let actions = ["desktop.launch", "desktop.focus", "native.shortcut", "native.invoke", "native.set_text", "clipboard.write", "browser.open", "screen.capture"];
+        for action in actions { assert!(super::policy_auto_approves(&policy, action), "missing {action}"); }
+        for action in ["files.delete", "files.write", "terminal.exec", "system.shutdown", "apps.install", "unknown"] {
+            assert!(!super::policy_auto_approves(&policy, action), "unsafe {action}");
+        }
+        policy.paused = true;
+        for action in actions { assert!(!super::policy_auto_approves(&policy, action)); }
+        policy.paused = false;
+        policy.expires_at = Some(0);
+        for action in actions { assert!(!super::policy_auto_approves(&policy, action)); }
+        policy.expires_at = Some(super::now_epoch() + 60);
+        policy.mode = "manual".into();
+        for action in actions { assert!(!super::policy_auto_approves(&policy, action)); }
+        policy.mode = "selected".into();
+        for action in ["desktop.launch", "desktop.focus", "native.shortcut", "native.invoke", "native.set_text", "clipboard.write"] {
+            assert!(!super::policy_auto_approves(&policy, action));
+        }
+    }
+
     #[test]
     fn recognizes_only_isolated_browser_labels() {
         assert!(is_isolated_browser_label("mcpos-isolated-browser"));
