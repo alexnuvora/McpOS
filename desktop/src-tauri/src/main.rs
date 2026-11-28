@@ -622,6 +622,43 @@ fn execute_browser_action(command: &RelayCommand, app: &tauri::AppHandle) -> Res
             let message = open_isolated_browser(app, raw_url, new_window, window_id)?;
             Ok(serde_json::json!({ "action": "open", "message": message, "windows": browser_window_list(app)["windows"], "browser_window_count": isolated_browser_windows(app).len() }))
         },
+        "browser.batch" => {
+            let steps = command.payload.get("steps").and_then(|v| v.as_array()).ok_or("Steps required.")?;
+            if steps.is_empty() || steps.len() > 5 { return Err("Batch must contain 1–5 steps.".into()); }
+            let id = window_id.ok_or("Batch requires an explicit browser window ID.")?;
+            let window = active_browser_window(app, Some(id))?;
+            let origin = window.url().map_err(|_| "Cannot inspect browser origin.")?.origin();
+            let allowed = ["click", "type", "scroll", "verify", "snapshot"];
+            // Validate every step before executing any of them.
+            for step in steps {
+                let action = step.get("action").and_then(|v| v.as_str()).ok_or("Step action required.")?;
+                if !allowed.contains(&action) { return Err("Unsupported batch step.".into()); }
+            }
+            let deadline = std::time::Instant::now() + Duration::from_secs(35);
+            let mut results = Vec::new();
+            for (index, step) in steps.iter().enumerate() {
+                if std::time::Instant::now() >= deadline || !app.state::<BrowserConsent>().0.load(Ordering::Relaxed)
+                    || app.state::<AutomationPolicyState>().0.lock().map(|p| p.paused || p.expires_at.map(|e| e <= now_epoch()).unwrap_or(false)).unwrap_or(true)
+                    || window.url().map(|u| u.origin() != origin).unwrap_or(true) {
+                    return Ok(serde_json::json!({"ok":false,"completed":results.len(),"failed_step":index,"error":"Batch stopped: deadline, consent, pause or origin changed","results":results}));
+                }
+                let action = step["action"].as_str().unwrap_or("");
+                let mut payload = step.clone();
+                payload["windowId"] = serde_json::json!(id);
+                payload["windowAction"] = serde_json::json!(format!("browser.{action}"));
+                let child = RelayCommand { id: command.id.clone(), command: "browser.open".into(), payload };
+                match execute_browser_action(&child, app) {
+                    Ok(result) => {
+                        let failed = result.get("matched").and_then(|v| v.as_bool()) == Some(false)
+                            || result.get("verification").and_then(|v| v.as_str()) == Some("field_value_unconfirmed");
+                        results.push(result);
+                        if failed { return Ok(serde_json::json!({"ok":false,"completed":index,"failed_step":index,"error":"Verification failed","results":results})); }
+                    }
+                    Err(error) => return Ok(serde_json::json!({"ok":false,"completed":index,"failed_step":index,"error":error,"results":results})),
+                }
+            }
+            Ok(serde_json::json!({"ok":true,"completed":results.len(),"results":results}))
+        },
         "browser.wait" => {
             let query = command.payload.get("query").and_then(|v| v.as_str()).ok_or("Expected text required.")?;
             if query.is_empty() || query.chars().count() > 140 { return Err("Invalid expected text.".into()); }
