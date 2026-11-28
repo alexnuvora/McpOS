@@ -1,7 +1,7 @@
 import { sandboxBillingEnabled } from "@/lib/sandbox-billing";
 import { NextRequest, NextResponse } from "next/server";
 import { getDeviceAccount, supabaseRest } from "@/lib/device-auth";
-import { getSandboxSubscriptions } from "@/lib/billing-entitlement";
+import { getSandboxSubscriptions, getCommandEnforcementMode } from "@/lib/billing-entitlement";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -16,8 +16,9 @@ export async function GET(request: NextRequest) {
     const subscriptions = await getSandboxSubscriptions(auth.account.userId);
     const limits = { personal: 500, professional: 2000, business: 10000 } as const;
     const plan = (["business", "professional", "personal"] as const).find(p => subscriptions.some(s => s.active && s.plan === p));
-    const exempt = (process.env.MCPOS_BILLING_EXEMPT_USER_IDS || "").split(",").map(id => id.trim()).includes(auth.account.userId);
-    const enforcing = process.env.MCPOS_ENFORCE_SUBSCRIPTIONS === "true";
+    const enforcementMode = getCommandEnforcementMode(auth.account.userId);
+    const exempt = enforcementMode === "exempt";
+    const enforcing = enforcementMode === "pilot" || enforcementMode === "global";
     const day = new Date().toISOString().slice(0,10);
     let usage = null;
     if (enforcing && plan && !exempt) {
@@ -28,6 +29,6 @@ export async function GET(request: NextRequest) {
       if (!Number.isSafeInteger(used) || used < 0) throw new Error("Invalid usage");
       usage = { used, limit: limits[plan], date: day };
     }
-    return NextResponse.json({ enabled: true, subscriptions, usage, enforcing, exempt }, { headers });
+    return NextResponse.json({ enabled: true, subscriptions, usage, enforcing, exempt, enforcementMode }, { headers });
   } catch { return NextResponse.json({ error: "Subscription status unavailable." }, { status: 503, headers }); }
 }
