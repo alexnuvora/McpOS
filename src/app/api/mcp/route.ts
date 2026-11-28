@@ -437,6 +437,10 @@ function makeServer(client: McpClient) {
   const printable = z.string().min(1).max(200).regex(/^[^\u0000-\u001f\u007f]+$/);
   const runtimeId = z.array(z.number().int()).min(1).max(32);
   const previous = z.object({fromStep:z.number().int().min(0).max(6)}).describe("Zero-based earlier logical step. Launch provides windowId; browser.wait provides selector and its window.");
+  const bindingBase = { fromStep: z.number().int().min(0).max(15), label: z.string().trim().min(1).max(160) };
+  const windowBinding = z.object({ ...bindingBase, kind: z.literal("window") });
+  const nativeBinding = z.object({ ...bindingBase, kind: z.literal("native_control"), role: z.string().min(1).max(60).optional() });
+  const browserBinding = z.object({ ...bindingBase, kind: z.literal("browser_element"), role: z.string().min(1).max(60).optional() });
   const nativeWindow = z.union([runtimeId, previous]);
   const browserTarget = z.union([selector, previous]);
 
@@ -447,19 +451,19 @@ function makeServer(client: McpClient) {
     z.object({ command: z.literal("input.keyboard.type"), text: printable }),
     z.object({ command: z.literal("input.keyboard.shortcut"), keys: z.array(z.string().min(1).max(12)).min(2).max(4) }),
     z.object({ command: z.literal("browser.open"), url: z.string().max(2048).refine(permittedBrowserUrl), newWindow: z.boolean().optional() }),
-    z.object({ command: z.literal("browser.click"), selector:browserTarget, expectedText: z.string().trim().min(1).max(200).optional(), windowId: z.string().max(80).optional() }),
-    z.object({ command: z.literal("browser.type"), selector:browserTarget, text: printable, windowId: z.string().max(80).optional() }),
+    z.object({ command: z.literal("browser.click"), selector:browserTarget.optional(), binding:browserBinding.optional(), expectedText: z.string().trim().min(1).max(200).optional(), windowId: z.string().max(80).optional() }),
+    z.object({ command: z.literal("browser.type"), selector:browserTarget.optional(), binding:browserBinding.optional(), text: printable, windowId: z.string().max(80).optional() }),
     z.object({ command: z.literal("browser.snapshot") }),
     z.object({command:z.literal("browser.wait"), selector, expectedText:z.string().min(1).max(200).optional(), timeoutMs:z.number().int().min(100).max(15000).optional(), windowId:z.string().max(80).optional()}),
     z.object({command:z.literal("browser.scroll"), selector:browserTarget.optional(), x:coordinate.optional(), y:coordinate.optional(), windowId:z.string().max(80).optional()}),
     z.object({command:z.literal("native.read_text"), windowId:nativeWindow, controlId:runtimeId, maxCharacters:z.number().int().min(1).max(12000).optional()}),
     z.object({command:z.literal("chrome.tabs"), windowId:nativeWindow, operation:z.enum(["list","open","switch","close"]), tabId:runtimeId.optional()}),
     z.object({ command: z.literal("screen.capture"), windowId:nativeWindow.optional(), crop:crop.optional(), jpegQuality:z.number().int().min(25).max(90).optional(), displayId: z.number().int().nonnegative().optional() }),
-    z.object({ command: z.literal("desktop.accessibility"), windowId: nativeWindow.optional() }),
+    z.object({ command: z.literal("desktop.accessibility"), windowId: nativeWindow.optional(), binding:windowBinding.optional() }),
     z.object({ command: z.literal("desktop.launch"), application: z.enum(["chrome","calculator","notepad"]) }),
-    z.object({ command: z.literal("desktop.focus"), windowId: nativeWindow }),
-    z.object({ command: z.literal("native.invoke"), windowId: nativeWindow, controlId: runtimeId }),
-    z.object({ command: z.literal("native.set_text"), windowId: nativeWindow, controlId: runtimeId, text: z.string().max(2048) }),
+    z.object({ command: z.literal("desktop.focus"), windowId: nativeWindow.optional(), binding:windowBinding.optional() }),
+    z.object({ command: z.literal("native.invoke"), windowId: nativeWindow.optional(), controlId: runtimeId.optional(), binding:nativeBinding.optional() }),
+    z.object({ command: z.literal("native.set_text"), windowId: nativeWindow.optional(), controlId: runtimeId.optional(), binding:nativeBinding.optional(), text: z.string().max(2048) }),
     z.object({ command: z.literal("native.shortcut"), windowId: nativeWindow, keys: z.array(z.string().min(1).max(12)).min(2).max(4) }),
     z.object({ command: z.literal("clipboard.write"), text: z.string().max(4096) }),
   ]);
@@ -501,14 +505,33 @@ function makeServer(client: McpClient) {
   }
   server.registerTool("mcpos_execute_task", {
     title: "Run an ordered Windows task",
-    description: "Queue up to eight steps on one device. Each step retains its own permissions and local approvals. Enable screenshotAfterAction to capture after each successful input action. Set waitMs (up to 20000) and finalScreenshot to return completed step results and the last JPEG in this call. Use the same task ID when recovering after a timeout. Desktop 0.2.6 supports waits, scroll, rich-editor bounds, native document text, Chrome tabs, targeted cropped JPEGs, and fromStep target bindings.",
+    description: "Queue up to eight steps on one device. Each step retains its own permissions and local approvals. Enable screenshotAfterAction to capture after each successful input action. Set waitMs (up to 20000) and finalScreenshot to return completed step results and the last JPEG in this call. Use the same task ID when recovering after a timeout. Desktop 0.2.6 supports waits, scroll, rich-editor bounds, native document text, Chrome tabs, targeted cropped JPEGs, and fromStep target bindings. Alternatively use binding with an earlier snapshot step, exact label and optional role.",
     inputSchema: z.object({ taskId: z.string().uuid(), deviceId: z.string().uuid(), steps: z.array(stepSchema).min(1).max(8), screenshotAfterAction: z.boolean().default(false), finalScreenshot: z.boolean().default(false), waitMs: waitOption }),
   }, async ({ taskId, deviceId, steps, screenshotAfterAction, finalScreenshot, waitMs }) => {
     if (waitMs && !client.scopes.includes("workspace.read")) return scopeError("workspace.read");
-    const planned = steps.flatMap((step): z.infer<typeof stepSchema>[] =>
-      screenshotAfterAction && !["screen.capture","desktop.accessibility","browser.snapshot","browser.wait","native.read_text"].includes(step.command) && !(step.command==="chrome.tabs" && step.operation==="list")
-        ? [step, { command: "screen.capture" }] : [step]);
+    const fail = (text:string) => ({isError:true,content:[{type:"text" as const,text}]});
+    for (const [index, step] of steps.entries()) {
+      const binding = "binding" in step ? step.binding : undefined;
+      if (binding) {
+        if (!client.scopes.includes("workspace.read")) return scopeError("workspace.read");
+        if (binding.fromStep >= index) return fail("Dynamic bindings must reference an earlier logical step.");
+        const source = steps[binding.fromStep];
+        if (binding.kind === "browser_element" ? source.command !== "browser.snapshot" : source.command !== "desktop.accessibility") return fail("Dynamic binding references the wrong snapshot type.");
+        if (binding.kind === "native_control" && source.command === "desktop.accessibility" && !source.windowId && !source.binding) return fail("Native controls require a targeted accessibility snapshot.");
+        if (("selector" in step && step.selector) || ("windowId" in step && step.windowId) || ("controlId" in step && step.controlId)) return fail("Choose either a label binding or explicit target identifiers.");
+      } else if (((step.command === "browser.click" || step.command === "browser.type") && !step.selector) ||
+        (step.command === "desktop.focus" && !step.windowId) ||
+        ((step.command === "native.invoke" || step.command === "native.set_text") && (!step.windowId || !step.controlId))) return fail("A target ID or binding is required.");
+    }
+    const planned: z.infer<typeof stepSchema>[] = [];
+    const expandedIndices:number[] = [];
+    for (const step of steps) {
+      expandedIndices.push(planned.length);
+      planned.push(step);
+      if (screenshotAfterAction && !["screen.capture","desktop.accessibility","browser.snapshot","browser.wait","native.read_text"].includes(step.command) && !(step.command==="chrome.tabs" && step.operation==="list")) planned.push({command:"screen.capture"});
+    }
     if (finalScreenshot && planned.at(-1)?.command !== "screen.capture") planned.push({command:"screen.capture"});
+    if (planned.length > 16) return fail("Expanded task exceeds 16 steps.");
     const rows = [];
     const entitlement = await checkCommandEntitlement(client.user_id);
     if (entitlement.status !== "allowed") return { isError: true, content: [{ type: "text", text: "Desktop command entitlement unavailable." }] };
@@ -522,12 +545,13 @@ function makeServer(client: McpClient) {
       if (!client.scopes.includes(scope)) return scopeError(scope);
       const verify = command === "browser.click" && "expectedText" in payload && payload.expectedText;
       const data:Record<string,unknown> = {...payload};
+      if ("binding" in payload && payload.binding) data.binding = {...payload.binding, fromStep:expandedIndices[payload.binding.fromStep]};
       const bindings: Record<string,{step:number}> = {};
       for (const field of ["windowId","selector"]) {
         const ref = data[field];
         if (!ref || Array.isArray(ref) || typeof ref !== "object" || !("fromStep" in ref)) continue;
         const source = steps[Number(ref.fromStep)];
-        const sourceIndex = planned.indexOf(source);
+        const sourceIndex = expandedIndices[Number(ref.fromStep)];
         if (!source || sourceIndex < 0 || sourceIndex >= index || source.command !== (field==="windowId" ? "desktop.launch" : "browser.wait"))
           return {isError:true,content:[{type:"text",text:"Binding must reference an earlier launch (windowId) or browser.wait (selector)."}]};
         bindings[field] = {step:sourceIndex};
