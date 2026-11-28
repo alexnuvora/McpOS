@@ -35,6 +35,11 @@ struct PairingResponse {
     device_name: String,
 }
 
+fn relay_client() -> &'static reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(reqwest::Client::new)
+}
+
 fn credential(key: &str) -> Result<Entry, String> {
     Entry::new(KEYRING_SERVICE, key).map_err(|error| format!("Windows Credential Manager: {error}"))
 }
@@ -47,7 +52,7 @@ async fn authorize_pending_command(command_id: &str) -> bool {
     let Some(token) = stored_token() else { return false };
     let Some(api_key) = SUPABASE_ANON_KEY else { return false };
     if api_key.is_empty() { return false; }
-    let response = reqwest::Client::new()
+    let response = relay_client()
         .post(format!("{SUPABASE_URL}/functions/v1/device-poll"))
         .header("apikey", api_key).bearer_auth(token)
         .json(&serde_json::json!({ "authorize_command_id": command_id }))
@@ -62,7 +67,7 @@ async fn heartbeat() -> bool {
     let Some(api_key) = SUPABASE_ANON_KEY else { return false };
     if api_key.is_empty() { return false; }
 
-    reqwest::Client::new()
+    relay_client()
         .post(format!("{SUPABASE_URL}/functions/v1/device-heartbeat"))
         .header("apikey", api_key)
         .bearer_auth(token)
@@ -232,9 +237,11 @@ fn discover_developer_tools() -> serde_json::Value {
     serde_json::json!({"tools": found, "read_only": true})
 }
 
-fn capture_screen_jpeg() -> Result<(String, u32, u32), String> {
+fn capture_screen_jpeg(display_id: Option<u64>) -> Result<(String, u32, u32), String> {
     let monitors = Monitor::all().map_err(|_| "Windows could not enumerate the displays.".to_string())?;
-    let monitor = monitors.iter().find(|monitor| monitor.is_primary().unwrap_or(false)).or_else(|| monitors.first()).ok_or("No active display was found.".to_string())?;
+    let monitor = if let Some(id) = display_id {
+        monitors.iter().find(|monitor| monitor.id().ok().map(u64::from) == Some(id))
+    } else { monitors.iter().find(|monitor| monitor.is_primary().unwrap_or(false)).or_else(|| monitors.first()) }.ok_or("Requested display is unavailable.".to_string())?;
     let image = monitor.capture_image().map_err(|_| "Windows screen capture failed.".to_string())?;
     let width = image.width();
     let height = image.height();
@@ -267,7 +274,7 @@ async fn pair_device(code: String, connected: tauri::State<'_, Arc<AtomicBool>>)
         return Err("Desktop build is missing its Supabase public API key. Install the latest build.".into());
     }
 
-    let response = reqwest::Client::new()
+    let response = relay_client()
         .post(format!("{SUPABASE_URL}/functions/v1/pairing-complete"))
         .header("apikey", api_key)
         .json(&serde_json::json!({ "code": clean_code }))
@@ -531,21 +538,24 @@ fn browser_eval_and_collect(app: &tauri::AppHandle, window_id: Option<&str>, exp
 
 fn get_browser_snapshot(app: &tauri::AppHandle, window_id: Option<&str>) -> Result<serde_json::Value, String> {
     browser_eval_and_collect(app, window_id, r#"(() => {
-        const cssPath = (element) => {
-            if (element.id && CSS.escape) return '#' + CSS.escape(element.id);
-            const parts = [];
-            for (let node = element; node && node.nodeType === 1 && parts.length < 6; node = node.parentElement) {
-                const tag = node.tagName.toLowerCase();
-                const siblings = node.parentElement ? Array.from(node.parentElement.children).filter(item => item.tagName === node.tagName) : [];
-                parts.unshift(tag + (siblings.length > 1 ? ':nth-of-type(' + (siblings.indexOf(node) + 1) + ')' : ''));
-                if (node.id && CSS.escape) { parts[0] = '#' + CSS.escape(node.id); break; }
-            }
-            return parts.join(' > ');
-        };
-        const interactive = Array.from(document.querySelectorAll('a[href],button,input,textarea,select,[role="button"],[contenteditable="true"]'))
-            .filter(element => element.getClientRects().length && !element.closest('[hidden],[inert]'))
-            .slice(0, 80).map(element => ({
-                selector: cssPath(element).slice(0, 256),
+        const snapshotId = crypto.randomUUID();
+        const targets = new Map();
+        const interactive = [];
+        window.__mcposSnapshot = { snapshotId, targets };
+        let visited = 0;
+        function scan(doc, depth) {
+            if (++visited > 24) return;
+            for (const element of doc.querySelectorAll('iframe,a[href],button,input,textarea,select,[role="button"],[contenteditable="true"]')) {
+                if (interactive.length >= 80) break;
+                if (!element.getClientRects().length || element.closest('[hidden],[inert]')) continue;
+                if (element.localName === 'iframe') {
+                    if (depth < 4 && visited < 24 && element.contentDocument) scan(element.contentDocument, depth + 1);
+                    continue;
+                }
+                const elementId = 'mcpos:' + snapshotId + ':' + interactive.length;
+                targets.set(elementId, element);
+                interactive.push({
+                elementId, selector: elementId,
                 tag: element.tagName.toLowerCase(),
                 role: element.getAttribute('role') || undefined,
                 label: (element.getAttribute('aria-label') || element.getAttribute('placeholder') || element.innerText || element.getAttribute('name') || '').trim().slice(0, 140),
@@ -553,8 +563,11 @@ fn get_browser_snapshot(app: &tauri::AppHandle, window_id: Option<&str>) -> Resu
                 disabled: Boolean(element.disabled),
                 editable: element.matches('input:not([type="hidden"]),textarea,[contenteditable="true"]'),
                 sensitive: element.matches('input[type=password],input[autocomplete=current-password],input[autocomplete=new-password]')
-            }));
-        return { ok: true, url: location.origin + location.pathname, title: document.title, text: (document.body?.innerText || '').slice(0, 12000), interactive };
+                });
+            }
+        }
+        scan(document, 0);
+        return { ok: true, snapshotId, url: location.origin + location.pathname, title: document.title, text: (document.body?.innerText || '').slice(0, 12000), interactive };
     })()"#)
 }
 
@@ -562,6 +575,10 @@ fn execute_browser_action(command: &RelayCommand, app: &tauri::AppHandle) -> Res
     if !app.state::<BrowserConsent>().0.load(Ordering::Relaxed) { return Err("Isolated browser consent is disabled.".into()); }
     let window_id = command.payload.get("windowId").and_then(|value| value.as_str());
     let operation = command.payload.get("windowAction").and_then(|value| value.as_str()).unwrap_or(command.command.as_str());
+    let resolve_target = r#"const element = selector.startsWith('mcpos:') ? window.__mcposSnapshot?.targets.get(selector) : document.querySelector(selector);
+        if (!element?.isConnected || !element.ownerDocument.defaultView || element.ownerDocument.defaultView.document !== element.ownerDocument)
+            return {ok:false, error:'Target is stale or missing. Request a fresh snapshot before choosing a target.'};
+        element.scrollIntoView({block:'nearest', inline:'nearest', behavior:'instant'});"#;
     match operation {
         "browser.list" => Ok(browser_window_list(app)),
         "browser.switch" => {
@@ -589,7 +606,7 @@ fn execute_browser_action(command: &RelayCommand, app: &tauri::AppHandle) -> Res
             let selector = command.payload.get("selector").and_then(|value| value.as_str()).ok_or("A CSS selector is required.")?;
             if selector.is_empty() || selector.len() > 256 { return Err("CSS selector must be 1–256 characters.".to_string()); }
             let selector_js = serde_json::to_string(selector).map_err(|_| "Invalid CSS selector.".to_string())?;
-            browser_eval_and_collect(app, window_id, &format!("(() => {{ const selector = {selector_js}; const element = document.querySelector(selector); if (!element) return {{ ok: false, error: 'No element matched the selector', selector }}; element.click(); return {{ ok: true, action: 'click', selector, element: (element.innerText || element.getAttribute('aria-label') || element.tagName).slice(0, 160) }}; }})()"))
+            browser_eval_and_collect(app, window_id, &format!("(() => {{ const selector = {selector_js}; {resolve_target} element.click(); return {{ ok: true, action: 'click', selector, element: (element.innerText || element.getAttribute('aria-label') || element.tagName).slice(0, 160) }}; }})()"))
         },
         "browser.type" => {
             let selector = command.payload.get("selector").and_then(|value| value.as_str()).ok_or("A CSS selector is required.")?;
@@ -597,7 +614,7 @@ fn execute_browser_action(command: &RelayCommand, app: &tauri::AppHandle) -> Res
             if selector.is_empty() || selector.len() > 256 || text.is_empty() || text.chars().count() > 200 || text.chars().any(|character| character.is_control()) { return Err("Selector or text is outside the allowed limits.".to_string()); }
             let selector_js = serde_json::to_string(selector).map_err(|_| "Invalid CSS selector.".to_string())?;
             let text_js = serde_json::to_string(text).map_err(|_| "Invalid text.".to_string())?;
-            browser_eval_and_collect(app, window_id, &format!("(() => {{ const selector = {selector_js}; const element = document.querySelector(selector); if (!element) return {{ ok: false, error: 'No element matched the selector', selector }}; if (!(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element.isContentEditable)) return {{ ok: false, error: 'Target is not an editable field', selector }}; if (element.matches('input[type=password],input[autocomplete=current-password],input[autocomplete=new-password]')) return {{ ok: false, error: 'Password fields require direct local entry', selector }}; element.focus(); if ('value' in element) {{ const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element), 'value')?.set; if (setter) setter.call(element, {text_js}); else element.value = {text_js}; }} else element.textContent = {text_js}; element.dispatchEvent(new InputEvent('input', {{ bubbles: true, inputType: 'insertText', data: {text_js} }})); element.dispatchEvent(new Event('change', {{ bubbles: true }})); return {{ ok: true, action: 'type', selector, characters: {text_js}.length }}; }})()"))
+            browser_eval_and_collect(app, window_id, &format!("(() => {{ const selector = {selector_js}; {resolve_target} if (!(element.localName === 'input' || element.localName === 'textarea' || element.isContentEditable)) return {{ ok: false, error: 'Target is not an editable field', selector }}; if (element.matches('input[type=password],input[autocomplete=current-password],input[autocomplete=new-password]')) return {{ ok: false, error: 'Password fields require direct local entry', selector }}; element.focus(); if ('value' in element) {{ const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element), 'value')?.set; if (setter) setter.call(element, {text_js}); else element.value = {text_js}; }} else element.textContent = {text_js}; element.dispatchEvent(new InputEvent('input', {{ bubbles: true, inputType: 'insertText', data: {text_js} }})); element.dispatchEvent(new Event('change', {{ bubbles: true }})); if (('value' in element ? element.value : element.textContent) !== {text_js}) return {{ok:false,error:'Field did not retain the requested text. Inspect a fresh snapshot.'}}; return {{ ok: true, action: 'type', selector, characters: {text_js}.length }}; }})()"))
         },
         _ => Err("Unsupported browser action.".to_string()),
     }
@@ -680,7 +697,7 @@ async fn submit_relay_result(command_id: &str, result: serde_json::Value, error_
     let api_key = SUPABASE_ANON_KEY.filter(|value| !value.is_empty()).ok_or("Desktop relay is not configured.".to_string())?;
     let mut body = serde_json::json!({ "command_id": command_id, "result": result });
     if let Some(message) = error_message { body["error_message"] = serde_json::Value::String(message); }
-    let response = reqwest::Client::new().post(format!("{SUPABASE_URL}/functions/v1/device-result"))
+    let response = relay_client().post(format!("{SUPABASE_URL}/functions/v1/device-result"))
         .header("apikey", api_key).bearer_auth(&token).json(&body).send().await
         .map_err(|_| "Could not submit the action result.".to_string())?;
     if !response.status().is_success() { return Err(format!("The relay rejected the action result ({}).", response.status())); }
@@ -734,7 +751,7 @@ async fn poll_relay_once(connected: &Arc<AtomicBool>, screen_consent: &Arc<Atomi
     let Some(api_key) = SUPABASE_ANON_KEY else { return };
     if api_key.is_empty() { return; }
 
-    let client = reqwest::Client::new();
+    let client = relay_client();
     let response = match client
         .post(format!("{SUPABASE_URL}/functions/v1/device-poll"))
         .header("apikey", api_key)
@@ -818,14 +835,22 @@ async fn poll_relay_once(connected: &Arc<AtomicBool>, screen_consent: &Arc<Atomi
             } else if !screen_consent.load(Ordering::Relaxed) && !allowed_by_policy {
                 (serde_json::json!({}), Some("Screen capture requires its local consent switch or an active session that explicitly allows captures.".into()))
             } else {
-                match capture_screen_jpeg() {
+                if command.payload.get("listDisplays").and_then(|v| v.as_bool()) == Some(true) {
+                    match Monitor::all() {
+                        Ok(monitors) => (serde_json::json!({"displays": monitors.iter().map(|m| serde_json::json!({
+                            "id": m.id().ok(), "primary": m.is_primary().ok(), "x": m.x().ok(), "y": m.y().ok(),
+                            "width": m.width().ok(), "height": m.height().ok()
+                        })).collect::<Vec<_>>() }), None),
+                        Err(_) => (serde_json::json!({}), Some("Could not list displays.".into()))
+                    }
+                } else { match capture_screen_jpeg(command.payload.get("displayId").and_then(|id| id.as_u64())) {
                     Ok((image_base64, width, height)) => (
                         serde_json::json!({ "image_base64": image_base64, "mime_type": "image/jpeg", "width": width, "height": height, "approval_mode": if allowed_by_policy { "auto" } else { "local_consent" } }),
                         None,
                     ),
                     Err(message) => (serde_json::json!({}), Some(message)),
                 }
-            }
+            }}
         },
         "desktop.accessibility" => {
             if !accessibility_consent.load(Ordering::Relaxed) {
