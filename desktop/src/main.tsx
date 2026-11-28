@@ -4,7 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import "./style.css";
 
 type DeviceStatus = { paired: boolean; connected: boolean; device_id: string | null };
-type PendingAction = { id: string; command: string; payload: Record<string, unknown> };
+type PendingAction = { id: string; taskId?: string; command: string; payload: Record<string, unknown> };
 type AutomationPolicy = { mode: "manual" | "selected" | "all"; paused: boolean; expires_at: number | null; auto_pointer: boolean; auto_keyboard: boolean; auto_browser: boolean; auto_screen: boolean };
 
 function App() {
@@ -99,16 +99,16 @@ function App() {
     try {
       const actual = await invoke<boolean>("set_accessibility_consent", { enabled });
       setAccessibilityConsent(actual);
-      setMessage(actual ? "Windows accessibility understanding is enabled locally. Only a bounded list of top-level app windows is exposed." : "Windows accessibility understanding has been disabled on this computer.");
+      setMessage(actual ? "Windows accessibility understanding is enabled locally. Window names and controls in the focused application are shared." : "Windows accessibility understanding has been disabled on this computer.");
     } catch {
       setError("Could not update the local Windows accessibility setting.");
     }
   }
 
-  async function approvePendingAction() {
-    if (approvalBusy) return;
+  async function approvePendingAction(approveTask = false) {
+    if (approvalBusy || !pendingAction) return;
     setApprovalBusy(true); setError(""); setMessage("");
-    try { setMessage(await invoke<string>("approve_pending_action")); setPendingAction(null); }
+    try { setMessage(await invoke<string>("approve_pending_action", {commandId: pendingAction.id, approveTask})); setPendingAction(null); }
     catch (reason) { setError(typeof reason === "string" ? reason : "Could not execute the approved action."); setPendingAction(null); }
     finally { setApprovalBusy(false); }
   }
@@ -184,7 +184,7 @@ function App() {
       <div className="capability"><span className="symbol">✓</span><div><strong>Device identity</strong><small>Credential stored securely on this Windows computer.</small></div><span className="enabled">Paired</span></div>
       <div className="capability"><span className="symbol">↻</span><div><strong>Connection heartbeat</strong><small>The desktop companion sends a heartbeat every 30 seconds.</small></div><span className={status.connected ? "enabled" : "disabled"}>{status.connected ? "Connected" : "Offline"}</span></div>
       <div className="capability consent-capability"><span className="symbol">▧</span><div><strong>Screen capture consent</strong><small>This is a local Windows switch. It resets to off when McpOS restarts. Turn it off at any time to stop further captures.</small></div><button className={"consent-switch " + (screenConsent ? "is-on" : "")} role="switch" aria-checked={screenConsent} aria-label="Allow screen capture on this computer" onClick={() => void toggleScreenConsent(!screenConsent)}><span /></button></div>
-      <div className="capability consent-capability"><span className="symbol">⌖</span><div><strong>Application understanding</strong><small>Read-only Windows UI Automation. Shares a limited list of top-level window names and process IDs, not control text or keystrokes. Local consent resets to off on restart.</small></div><button className={"consent-switch " + (accessibilityConsent ? "is-on" : "")} role="switch" aria-checked={accessibilityConsent} aria-label="Allow Windows accessibility inspection" onClick={() => void toggleAccessibilityConsent(!accessibilityConsent)}><span /></button></div>
+      <div className="capability consent-capability"><span className="symbol">⌖</span><div><strong>Application understanding</strong><small>Read-only Windows UI Automation. Shares window names, process IDs and up to 100 control labels in the focused application. Local consent resets to off on restart.</small></div><button className={"consent-switch " + (accessibilityConsent ? "is-on" : "")} role="switch" aria-checked={accessibilityConsent} aria-label="Allow Windows accessibility inspection" onClick={() => void toggleAccessibilityConsent(!accessibilityConsent)}><span /></button></div>
       <div className="capability consent-capability"><span className="symbol">◎</span><div><strong>Isolated browser automation</strong><small>Uses a separate WebView2 profile with separate cookies and storage. Only HTTPS sites are allowed. Enable this local switch to permit browser control; active AUTO mode then approves navigation, clicks and text entry without individual prompts.</small></div><button className={"consent-switch " + (browserConsent ? "is-on" : "")} role="switch" aria-checked={browserConsent} aria-label="Allow isolated browser automation" onClick={() => void toggleBrowserConsent(!browserConsent)}><span /></button></div>
       <section className="automation-panel">
         <div className="automation-title"><div><strong>Automation approval</strong><small>Choose how this Windows computer handles permitted AI actions. The setting is local and resets to Manual after restart.</small></div><span className={automation.mode === "all" && !automation.paused ? "auto-pill" : "manual-pill"}>{automation.paused ? "PAUSED" : automation.mode === "all" ? "AUTO" : automation.mode.toUpperCase()}</span></div>
@@ -206,9 +206,10 @@ function App() {
       <div className="capability"><span className="symbol">⌘</span><div><strong>Mouse & keyboard</strong><small>Pointer clicks and text entry follow the local approval policy. Destructive file operations remain unavailable.</small></div><span className={automation.mode === "all" && !automation.paused && automation.expires_at !== null && automation.expires_at * 1000 > now ? "enabled" : "disabled"}>{automation.paused ? "Paused" : automation.mode === "all" ? "AUTO" : "Policy controlled"}</span></div>
       {pendingAction && <section className="approval-card">
         <div className="approval-eyebrow">LOCAL APPROVAL REQUIRED</div>
-        <strong>{pendingAction.command === "input.pointer.click" ? "AI wants to click your screen" : pendingAction.command === "input.keyboard.type" ? "AI wants to type on your computer" : pendingAction.command === "input.keyboard.shortcut" ? "AI wants to press a keyboard shortcut" : pendingAction.command === "browser.open" ? "AI wants to open a website in the isolated browser" : pendingAction.command === "browser.click" ? "AI wants to click a page element" : "AI wants to type into a page field"}</strong>
-        {pendingAction.command === "input.pointer.click" ? <p>Button: {String(pendingAction.payload.button ?? "left")} · Position: {String(pendingAction.payload.x)}, {String(pendingAction.payload.y)}</p> : pendingAction.command === "input.keyboard.shortcut" ? <p className="approval-text">Keys: {Array.isArray(pendingAction.payload.keys) ? pendingAction.payload.keys.join(" + ") : ""}</p> : pendingAction.command === "browser.open" ? <p className="approval-text">{String(pendingAction.payload.url ?? "")}</p> : pendingAction.command === "browser.click" ? <p className="approval-text">CSS selector: {String(pendingAction.payload.selector ?? "")}</p> : pendingAction.command === "browser.type" ? <p className="approval-text">Selector: {String(pendingAction.payload.selector ?? "")} · Text: “{String(pendingAction.payload.text ?? "")}”</p> : <p className="approval-text">Text to enter: “{String(pendingAction.payload.text ?? "")}”</p>}
+        <strong>{["desktop.launch", "desktop.focus", "native.invoke", "native.set_text", "native.shortcut", "clipboard.write"].includes(pendingAction.command) ? pendingAction.command : pendingAction.command === "input.pointer.click" ? "AI wants to click your screen" : pendingAction.command === "input.keyboard.type" ? "AI wants to type on your computer" : pendingAction.command === "input.keyboard.shortcut" ? "AI wants to press a keyboard shortcut" : pendingAction.command === "browser.open" ? "AI wants to open a website in the isolated browser" : pendingAction.command === "browser.click" ? "AI wants to click a page element" : "AI wants to type into a page field"}</strong>
+        {["desktop.launch", "desktop.focus", "native.invoke", "native.set_text", "native.shortcut", "clipboard.write"].includes(pendingAction.command) ? <p className="approval-text">{JSON.stringify(pendingAction.payload)}</p> : pendingAction.command === "input.pointer.click" ? <p>Button: {String(pendingAction.payload.button ?? "left")} · Position: {String(pendingAction.payload.x)}, {String(pendingAction.payload.y)}</p> : pendingAction.command === "input.keyboard.shortcut" ? <p className="approval-text">Keys: {Array.isArray(pendingAction.payload.keys) ? pendingAction.payload.keys.join(" + ") : ""}</p> : pendingAction.command === "browser.open" ? <p className="approval-text">{String(pendingAction.payload.url ?? "")}</p> : pendingAction.command === "browser.click" ? <p className="approval-text">CSS selector: {String(pendingAction.payload.selector ?? "")}</p> : pendingAction.command === "browser.type" ? <p className="approval-text">Selector: {String(pendingAction.payload.selector ?? "")} · Text: “{String(pendingAction.payload.text ?? "")}”</p> : <p className="approval-text">Text to enter: “{String(pendingAction.payload.text ?? "")}”</p>}
         <div className="approval-actions"><button className="deny" disabled={approvalBusy} onClick={() => void denyPendingAction()}>{approvalBusy ? "Working…" : "Deny"}</button><button className="approve" disabled={approvalBusy} onClick={() => void approvePendingAction()}>{approvalBusy ? "Working…" : "Approve once"}</button></div>
+        {pendingAction.taskId && <button disabled={approvalBusy} onClick={() => void approvePendingAction(true)}>Allow {pendingAction.command} for this task (5 minutes)</button>}
         <small>Nothing happens unless you approve this exact action here. This exact action requires approval unless a locally configured auto-approval rule applies.</small>
       </section>}
       <section className="approved-folders">

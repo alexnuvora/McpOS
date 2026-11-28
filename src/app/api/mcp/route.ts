@@ -30,6 +30,19 @@ async function authenticateClient(request: NextRequest): Promise<McpClient | nul
   return client;
 }
 
+function permittedBrowserUrl(url: string) {
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.replace(/\.+$/, "").toLowerCase();
+    const reserved = ["localhost", "local", "internal", "home.arpa", "lan", "corp", "test", "invalid", "onion"];
+    if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.port || host.length > 253 ||
+        !host.includes(".") || /^\d+(?:\.\d+){3}$/.test(host) || host.includes(":") ||
+        reserved.some(suffix => host === suffix || host.endsWith("." + suffix)) ||
+        !host.split(".").every(label => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label))) return false;
+    return true;
+  } catch { return false; }
+}
+
 function scopeError(scope: string) {
   return {
     content: [{ type: "text" as const, text: "This McpOS connection needs the " + scope + " permission. Reconnect and approve that permission to continue." }],
@@ -71,7 +84,7 @@ function makeServer(client: McpClient) {
         authenticatedClient: client.client_name,
         mode: "outbound-device-relay",
         executionMode: "permission-gated",
-        availableTools: ["mcpos_status", "mcpos_capabilities", "mcpos_list_devices", "mcpos_request_desktop_status", "mcpos_capture_screen", "mcpos_get_accessibility_snapshot", "mcpos_access_approved_files", "mcpos_request_input_action", "mcpos_browser_automation", "mcpos_get_command_status", "mcpos_profile", "mcpos_get_audit_history"],
+        availableTools: ["mcpos_execute_task", "mcpos_get_task_status", "mcpos_status", "mcpos_capabilities", "mcpos_list_devices", "mcpos_request_desktop_status", "mcpos_capture_screen", "mcpos_get_accessibility_snapshot", "mcpos_access_approved_files", "mcpos_request_input_action", "mcpos_browser_automation", "mcpos_get_command_status", "mcpos_profile", "mcpos_get_audit_history"],
       }, null, 2) }] };
     },
   );
@@ -91,10 +104,10 @@ function makeServer(client: McpClient) {
       content: [{ type: "text", text: JSON.stringify({
         enabled: ["per-client bearer authentication", "workspace status", "capability discovery", "paired-device listing", "outbound command polling", "read-only desktop status request", "one-shot JPEG screen capture", "bounded read-only Windows application discovery", "read-only approved-folder text access", "one-shot pointer and text-entry actions with local approval", "isolated browser navigation and selector automation", "paginated audit history and session revocation", "OAuth 2.1 authorization-code with PKCE and rotating refresh tokens"],
         permissionGated: ["screen capture local switch", "Windows accessibility local switch", "native folder-picker grants", "fresh local approval for every input action", "isolated browser local switch and fresh approval for navigation/click/type"],
+        desktop023: ["ordered MCP tasks and task progress", "optional screenshots after actions", "snapshot-bound browser elements and same-origin frames", "native window controls and browser shortcuts", "clipboard writes", "application launching and focus", "locally selected browser file transfers", "per-task action permissions", "WebSocket relay with HTTP fallback", "multi-monitor capture and pointer coordinates"],
         planned: includePlanned === false ? [] : [
           "full accessibility-tree inspection",
           "file writes and deletes",
-          "application launching",
           "sandboxed terminal",
         ],
       }, null, 2) }] };
@@ -177,25 +190,26 @@ function makeServer(client: McpClient) {
     "mcpos_capture_screen",
     {
       title: "Capture Windows screen",
-      description: "Request one JPEG screenshot from the paired Windows computer. Requires the screen.capture scope and either the visible local screen-capture consent switch or an active Windows automation session that explicitly allows captures. Captures one primary display only; no continuous recording.",
+      description: "Request one JPEG screenshot from the paired Windows computer. Requires the screen.capture scope and either the visible local screen-capture consent switch or an active Windows automation session that explicitly allows captures. With an updated companion, use listDisplays to enumerate monitor IDs or displayId to capture one monitor. Defaults to the primary monitor.",
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       _meta: { securitySchemes: [{ type: "oauth2", scopes: ["screen.capture"] }] },
-      inputSchema: z.object({ deviceId: z.string().uuid().optional() }),
+      inputSchema: z.object({ deviceId: z.string().uuid().optional(), listDisplays: z.boolean().optional(), displayId: z.number().int().nonnegative().optional() }),
     },
-    async ({ deviceId }) => {
+    async ({ deviceId, listDisplays, displayId }) => {
       if (!client.scopes.includes("screen.capture")) return scopeError("screen.capture");
       const entitlement = await checkCommandEntitlement(client.user_id);
       if (entitlement.status !== "allowed") return { content: [{ type: "text" as const, text: entitlement.status === "subscription_required" ? "An active McpOS subscription is required to request desktop commands. Manage your plan in the McpOS dashboard." : "Subscription verification is temporarily unavailable. No desktop command was queued." }], isError: true };
       const filter = deviceId ? `&id=eq.${deviceId}` : "";
       const recentCutoff = new Date(Date.now() - 90_000).toISOString();
-      const devicesResponse = await supabaseRest(`mcpos_devices?select=id,device_name,status,last_seen_at&user_id=eq.${client.user_id}&status=eq.online&last_seen_at=gte.${recentCutoff}${filter}&order=last_seen_at.desc&limit=1`);
+      const devicesResponse = await supabaseRest(`mcpos_devices?select=id,device_name,status,last_seen_at,relay_version&user_id=eq.${client.user_id}&status=eq.online&last_seen_at=gte.${recentCutoff}${filter}&order=last_seen_at.desc&limit=1`);
       if (!devicesResponse.ok) return { content: [{ type: "text", text: "Could not check device availability." }], isError: true };
       const [device] = await devicesResponse.json();
       if (!device) return { content: [{ type: "text", text: "No matching Windows device is currently online." }], isError: true };
+      if ((listDisplays || displayId !== undefined) && device.relay_version < 3) return { isError: true, content: [{ type: "text", text: "Monitor selection requires McpOS Desktop 0.2.3 or later." }] };
       const expiresAt = new Date(Date.now() + 45_000).toISOString();
       const commandResponse = await supabaseRest("mcpos_device_commands", {
         method: "POST", headers: { Prefer: "return=representation" },
-        body: JSON.stringify({ user_id: client.user_id, mcp_client_id: client.id, ...entitlement.billing, device_id: device.id, command: "screen.capture", payload: { display: "primary", max_bytes: 4_000_000 }, expires_at: expiresAt }),
+        body: JSON.stringify({ user_id: client.user_id, mcp_client_id: client.id, ...entitlement.billing, device_id: device.id, command: "screen.capture", payload: { display: "primary", listDisplays, displayId, max_bytes: 4_000_000 }, expires_at: expiresAt }),
       });
       if (!commandResponse.ok) return queueError(commandResponse);
       const [command] = await commandResponse.json();
@@ -210,7 +224,7 @@ function makeServer(client: McpClient) {
     "mcpos_get_accessibility_snapshot",
     {
       title: "Understand open Windows applications",
-      description: "Read a bounded Windows UI Automation snapshot of top-level application windows. Requires the screen.accessibility scope on this AI client and the visible local application-understanding switch to be ON. Does not read control contents or send input.",
+      description: "Read a bounded Windows UI Automation snapshot of windows and the focused application’s control labels on updated companions. Requires the screen.accessibility scope on this AI client and the visible local application-understanding switch to be ON. Password control labels are excluded.",
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       _meta: { securitySchemes: [{ type: "oauth2", scopes: ["screen.accessibility"] }] },
       inputSchema: z.object({ deviceId: z.string().uuid().optional() }),
@@ -275,7 +289,7 @@ function makeServer(client: McpClient) {
       description: "Queue a bounded pointer click, text-entry action or allowlisted keyboard shortcut. The Windows computer enforces its local Manual, Selected or Auto-approve-all policy; Auto mode never grants destructive file operations.",
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
       _meta: { securitySchemes: [{ type: "oauth2", scopes: ["input.pointer","input.keyboard"] }] },
-      inputSchema: z.object({ action: z.enum(["pointer_click", "pointer_move", "pointer_scroll", "keyboard_type", "keyboard_shortcut"]), x: z.number().int().min(0).max(32767).optional(), y: z.number().int().min(0).max(32767).optional(), button: z.enum(["left", "right"]).optional(), steps: z.number().int().min(-12).max(12).optional(), axis: z.enum(["vertical", "horizontal"]).optional(), text: z.string().max(200).optional(), keys: z.array(z.string().max(12)).min(2).max(4).optional() }),
+      inputSchema: z.object({ action: z.enum(["pointer_click", "pointer_move", "pointer_scroll", "keyboard_type", "keyboard_shortcut"]), x: z.number().int().min(-32768).max(32767).optional(), y: z.number().int().min(-32768).max(32767).optional(), button: z.enum(["left", "right"]).optional(), steps: z.number().int().min(-12).max(12).optional(), axis: z.enum(["vertical", "horizontal"]).optional(), text: z.string().max(200).optional(), keys: z.array(z.string().max(12)).min(2).max(4).optional() }),
     },
     async ({ action, x, y, button, steps, axis, text, keys }) => {
       const command = action === "pointer_click" ? "input.pointer.click" : action === "pointer_move" ? "input.pointer.move" : action === "pointer_scroll" ? "input.pointer.scroll" : action === "keyboard_type" ? "input.keyboard.type" : "input.keyboard.shortcut";
@@ -305,29 +319,21 @@ function makeServer(client: McpClient) {
     "mcpos_browser_automation",
     {
       title: "Automate the isolated browser",
-      description: "Open an HTTPS website (newWindow optionally opens another window on supported companions), read a bounded page snapshot, click a CSS selector, or enter text into a selected field in the separate McpOS browser profile. List windows, switch or close by windowId, and target snapshots, clicks and typing with the exact windowId. Requires Desktop 0.2.2 for window IDs and management. Requires browser.control scope and the local browser consent switch. The Windows computer enforces its local Manual, Selected or Auto-approve-all policy. Browser automation always retains its separate local consent switch.",
+      description: "Open an HTTPS website (newWindow optionally opens another window on supported companions), read a bounded page snapshot, click a returned snapshot-bound elementId (pass it as selector) or CSS selector, or enter text into a selected field in the separate McpOS browser profile. List windows, switch or close by windowId, and target snapshots, clicks and typing with the exact windowId. Requires Desktop 0.2.2 for window IDs and management. Requires browser.control scope and the local browser consent switch. The Windows computer enforces its local Manual, Selected or Auto-approve-all policy. Browser automation always retains its separate local consent switch.",
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
       _meta: { securitySchemes: [{ type: "oauth2", scopes: ["browser.control"] }] },
-      inputSchema: z.object({ action: z.enum(["open", "snapshot", "click", "type", "list", "switch", "close"]), url: z.string().max(2048).optional(), selector: z.string().max(256).optional(), text: z.string().max(200).optional(), newWindow: z.boolean().optional(), windowId: z.string().regex(/^mcpos-isolated-browser-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i).optional() }),
+      inputSchema: z.object({ action: z.enum(["open", "snapshot", "click", "type", "upload", "list", "switch", "close"]), url: z.string().max(2048).optional(), selector: z.string().max(256).optional(), text: z.string().max(200).optional(), newWindow: z.boolean().optional(), windowId: z.string().regex(/^mcpos-isolated-browser-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i).optional() }),
     },
     async ({ action, url, selector, text, newWindow, windowId }) => {
       if (!client.scopes.includes("browser.control")) return scopeError("browser.control");
       const entitlement = await checkCommandEntitlement(client.user_id);
       if (entitlement.status !== "allowed") return { content: [{ type: "text" as const, text: entitlement.status === "subscription_required" ? "An active McpOS subscription is required to request desktop commands. Manage your plan in the McpOS dashboard." : "Subscription verification is temporarily unavailable. No desktop command was queued." }], isError: true };
       if ((action === "switch" || action === "close") && !windowId) return { content: [{ type: "text", text: "A windowId returned by list is required." }], isError: true };
+      if (action === "upload" && !selector?.startsWith("mcpos:")) return { isError: true, content: [{ type: "text", text: "Choose a snapshot-bound file input. Windows will prompt for the local file." }] };
       if (newWindow && windowId) return { content: [{ type: "text", text: "Choose either newWindow or a specific windowId." }], isError: true };
       if (action === "open") {
         if (!url) return { content: [{ type: "text", text: "A URL is required." }], isError: true };
-        try {
-          const parsed = new URL(url);
-          const host = parsed.hostname.replace(/\.+$/, "").toLowerCase();
-          const reserved = ["localhost", "local", "internal", "home.arpa", "lan", "corp", "test", "invalid", "onion"];
-          if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.port || host.length > 253 ||
-              !host.includes(".") || /^\d+(?:\.\d+){3}$/.test(host) || host.includes(":") ||
-              reserved.some(suffix => host === suffix || host.endsWith("." + suffix)) ||
-              !host.split(".").every(label => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label))) throw new Error("blocked");
-        }
-        catch { return { content: [{ type: "text", text: "Only valid HTTPS URLs without embedded credentials or local hostnames are allowed." }], isError: true }; }
+        if (!permittedBrowserUrl(url)) return { content: [{ type: "text", text: "Only valid public HTTPS URLs without embedded credentials are allowed." }], isError: true };
       }
       if ((action === "click" || action === "type") && !selector?.trim()) return { content: [{ type: "text", text: "A CSS selector is required." }], isError: true };
       if (action === "type" && (!text || !text.length || /[\u0000-\u001f\u007f]/.test(text))) return { content: [{ type: "text", text: "Text must be 1–200 printable characters." }], isError: true };
@@ -338,9 +344,9 @@ function makeServer(client: McpClient) {
       if (!device) return { content: [{ type: "text", text: "No online Windows device is available." }], isError: true };
       // Use the existing approved browser.open relay envelope for v2 window operations.
       // Older agents reject the missing URL instead of accidentally acting on the wrong window.
-      const targeted = Boolean(windowId) || ["list","switch","close"].includes(action);
+      const targeted = Boolean(windowId) || ["list","switch","close","upload"].includes(action);
       const command = targeted ? "browser.open" : "browser." + action;
-      const payload = targeted ? { windowAction: "browser." + action, windowId, ...(action === "open" ? { targetUrl: url } : {}), ...(action === "click" || action === "type" ? { selector } : {}), ...(action === "type" ? { text } : {}) } : action === "open" ? { url, ...(newWindow === true ? { newWindow: true } : {}) } : action === "click" ? { selector } : action === "type" ? { selector, text } : {};
+      const payload = targeted ? { windowAction: "browser." + action, windowId, ...(action === "open" ? { targetUrl: url } : {}), ...(["click","type","upload"].includes(action) ? { selector } : {}), ...(action === "type" ? { text } : {}) } : action === "open" ? { url, ...(newWindow === true ? { newWindow: true } : {}) } : action === "click" ? { selector } : action === "type" ? { selector, text } : {};
       const expiresAt = new Date(Date.now() + 60_000).toISOString();
       const queued = await supabaseRest("mcpos_device_commands", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ user_id: client.user_id, mcp_client_id: client.id, ...entitlement.billing, device_id: device.id, command, payload, expires_at: expiresAt }) });
       if (!queued.ok) return queueError(queued);
@@ -421,6 +427,70 @@ function makeServer(client: McpClient) {
     },
   );
 
+  const coordinate = z.number().int().min(-32768).max(32767);
+  const selector = z.string().trim().min(1).max(256);
+  const printable = z.string().min(1).max(200).regex(/^[^\u0000-\u001f\u007f]+$/);
+  const runtimeId = z.array(z.number().int()).min(1).max(32);
+  const stepSchema = z.discriminatedUnion("command", [
+    z.object({ command: z.literal("input.pointer.click"), x: coordinate, y: coordinate, button: z.enum(["left", "right"]).default("left") }),
+    z.object({ command: z.literal("input.pointer.move"), x: coordinate, y: coordinate }),
+    z.object({ command: z.literal("input.pointer.scroll"), steps: z.number().int().min(-12).max(12), axis: z.enum(["vertical", "horizontal"]).default("vertical") }),
+    z.object({ command: z.literal("input.keyboard.type"), text: printable }),
+    z.object({ command: z.literal("input.keyboard.shortcut"), keys: z.array(z.string().min(1).max(12)).min(2).max(4) }),
+    z.object({ command: z.literal("browser.open"), url: z.string().max(2048).refine(permittedBrowserUrl), newWindow: z.boolean().optional() }),
+    z.object({ command: z.literal("browser.click"), selector, windowId: z.string().max(80).optional() }),
+    z.object({ command: z.literal("browser.type"), selector, text: printable, windowId: z.string().max(80).optional() }),
+    z.object({ command: z.literal("browser.snapshot") }),
+    z.object({ command: z.literal("screen.capture"), displayId: z.number().int().nonnegative().optional() }),
+    z.object({ command: z.literal("desktop.accessibility") }),
+    z.object({ command: z.literal("desktop.launch"), application: z.enum(["chrome","calculator","notepad"]) }),
+    z.object({ command: z.literal("desktop.focus"), windowId: runtimeId }),
+    z.object({ command: z.literal("native.invoke"), windowId: runtimeId, controlId: runtimeId }),
+    z.object({ command: z.literal("native.set_text"), windowId: runtimeId, controlId: runtimeId, text: z.string().max(2048) }),
+    z.object({ command: z.literal("native.shortcut"), windowId: runtimeId, keys: z.array(z.string().min(1).max(12)).min(2).max(4) }),
+    z.object({ command: z.literal("clipboard.write"), text: z.string().max(4096) }),
+  ]);
+  server.registerTool("mcpos_execute_task", {
+    title: "Run an ordered Windows task",
+    description: "Queue up to eight steps on one device. Each step retains its own permissions and local approvals. Enable screenshotAfterAction to capture after each successful input action. Read progress using mcpos_get_task_status.",
+    inputSchema: z.object({ taskId: z.string().uuid(), deviceId: z.string().uuid(), steps: z.array(stepSchema).min(1).max(8), screenshotAfterAction: z.boolean().default(false) }),
+  }, async ({ taskId, deviceId, steps, screenshotAfterAction }) => {
+    const planned = steps.flatMap((step): z.infer<typeof stepSchema>[] =>
+      screenshotAfterAction && !["screen.capture","desktop.accessibility","browser.snapshot"].includes(step.command)
+        ? [step, { command: "screen.capture" }] : [step]);
+    const rows = [];
+    const entitlement = await checkCommandEntitlement(client.user_id);
+    if (entitlement.status !== "allowed") return { isError: true, content: [{ type: "text", text: "Desktop command entitlement unavailable." }] };
+    const device = await supabaseRest(`mcpos_devices?select=id&id=eq.${deviceId}&user_id=eq.${client.user_id}&relay_version=gte.3&status=eq.online&last_seen_at=gte.${new Date(Date.now()-90000).toISOString()}`);
+    if (!device.ok || !(await device.json()).length) return { isError: true, content: [{ type: "text", text: "An online McpOS Desktop 0.2.3 or later is required." }] };
+    const expires = new Date(Math.min(Date.now() + 300000, entitlement.billing.billing_verified_until ? Date.parse(entitlement.billing.billing_verified_until) : Infinity)).toISOString();
+    for (const [index, { command, ...payload }] of planned.entries()) {
+      if (["native.invoke","native.set_text"].includes(command) && !client.scopes.includes("screen.accessibility")) return scopeError("screen.accessibility");
+      const scope = ["native.invoke","native.set_text","desktop.launch","desktop.focus","native.shortcut","clipboard.write"].includes(command) ? "input.keyboard" : command.startsWith("browser.") ? "browser.control" : command === "desktop.accessibility" ? "screen.accessibility" : command.split(".").slice(0,2).join(".");
+      if (!client.scopes.includes(scope)) return scopeError(scope);
+      rows.push({ user_id: client.user_id, device_id: deviceId, mcp_client_id: client.id, ...entitlement.billing, command, payload, expires_at: expires, task_id: taskId, task_step: index });
+    }
+    const queued = await supabaseRest("mcpos_device_commands", { method: "POST", body: JSON.stringify(rows) });
+    if (!queued.ok) return queueError(queued);
+    return { content: [{ type: "text", text: JSON.stringify({ taskId, queuedSteps: rows.length, expires }) }] };
+  });
+  server.registerTool("mcpos_get_task_status", {
+    title: "Read task progress and history",
+    description: "Returns ordered command IDs, timestamps and outcomes. Retrieve screenshots or other results separately using mcpos_get_command_status.",
+    inputSchema: z.object({ taskId: z.string().uuid() }),
+  }, async ({ taskId }) => {
+    if (!client.scopes.includes("workspace.read")) return scopeError("workspace.read");
+    const response = await supabaseRest(`mcpos_device_commands?select=id,task_step,command,status,claimed_at,completed_at,expires_at,error_message&task_id=eq.${taskId}&mcp_client_id=eq.${client.id}&user_id=eq.${client.user_id}&order=task_step`);
+    if (!response.ok) return { isError: true, content: [{ type: "text", text: "Task status unavailable." }] };
+    const steps = await response.json();
+    let blocked = false;
+    for (const step of steps) {
+      if (["queued","claimed"].includes(step.status) && Date.parse(step.expires_at) <= Date.now()) step.status = "expired";
+      if (blocked && step.status === "queued") step.status = "blocked";
+      if (["failed","denied","expired"].includes(step.status)) blocked = true;
+    }
+    return { content: [{ type: "text", text: JSON.stringify({ taskId, steps }) }] };
+  });
   return server;
 }
 

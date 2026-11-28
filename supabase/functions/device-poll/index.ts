@@ -17,7 +17,8 @@ function getServiceKey(): string | null {
 }
 Deno.serve(async request => {
   if (request.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
-  if (request.method !== "POST") return reply({ error: "Method not allowed" }, 405);
+  const upgrade = request.method === "GET" && request.headers.get("upgrade")?.toLowerCase() === "websocket";
+  if (!upgrade && request.method !== "POST") return reply({ error: "Method not allowed" }, 405);
   const bearer = (request.headers.get("Authorization") ?? "").match(/^Bearer\s+(.+)$/i)?.[1];
   if (!bearer || bearer.length < 40 || bearer.length > 256) return reply({ error: "Unauthorized" }, 401);
   const url = Deno.env.get("SUPABASE_URL");
@@ -25,6 +26,27 @@ Deno.serve(async request => {
   if (!url || !key) return reply({ error: "Device relay is not configured." }, 503);
   const tokenHash = await sha256(bearer);
   const headers = { apikey: key, Authorization: "Bearer " + key, "Content-Type": "application/json" };
+  const claim = () => fetch(url + "/rest/v1/rpc/claim_mcpos_device_command", {
+    method: "POST", headers, body: JSON.stringify({ p_token_hash: tokenHash }),
+  });
+  if (upgrade) {
+    const credential = await fetch(url + "/rest/v1/mcpos_device_credentials?select=id&revoked_at=is.null&token_hash=eq." + tokenHash + "&limit=1", { headers });
+    if (!credential.ok || !(await credential.json()).length) return reply({ error: "Invalid device credential" }, 401);
+    const { socket, response } = Deno.upgradeWebSocket(request);
+    let busy = false;
+    socket.onmessage = async event => {
+      if (event.data !== "claim" || busy) { socket.close(1008, "Invalid request"); return; }
+      busy = true;
+      try {
+        const result = await claim();
+        if (!result.ok) { socket.close(1008, "Claim unavailable"); return; }
+        socket.send(JSON.stringify({ command: await result.json() }));
+      } catch {
+        if (socket.readyState === WebSocket.OPEN) socket.close(1011, "Relay unavailable");
+      } finally { busy = false; }
+    };
+    return response;
+  }
   const body = await request.json().catch(() => ({}));
   if (typeof body?.authorize_command_id === "string") {
     const authorization = await fetch(url + "/rest/v1/rpc/authorize_mcpos_device_command", {
@@ -38,9 +60,7 @@ Deno.serve(async request => {
     }
     return reply({ authorized: (await authorization.json()) === true });
   }
-  const response = await fetch(url + "/rest/v1/rpc/claim_mcpos_device_command", {
-    method: "POST", headers, body: JSON.stringify({ p_token_hash: tokenHash }),
-  });
+  const response = await claim();
   if (!response.ok) {
     const details = await response.text();
     if (details.includes("invalid_device_credential")) return reply({ error: "Device credential revoked or unknown." }, 401);
