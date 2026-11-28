@@ -178,19 +178,45 @@ fn get_accessibility_snapshot() -> Result<serde_json::Value, String> {
     let walker = automation.get_control_view_walker().map_err(|_| "Windows accessibility control view is unavailable.".to_string())?;
     let children = walker.get_children(&root).unwrap_or_default();
     let mut windows = Vec::new();
+    let mut remaining_controls = 160usize;
     for element in children.iter().take(40) {
         let name = element.get_name().unwrap_or_default();
         let class_name = element.get_classname().unwrap_or_default();
         let control_type = element.get_localized_control_type().unwrap_or_default();
         let process_id = element.get_process_id().unwrap_or_default();
+        let mut controls = Vec::new();
+        let mut queue = std::collections::VecDeque::new();
+        for child in walker.get_children(element).unwrap_or_default().into_iter().take(30) {
+            queue.push_back((child, 1usize));
+        }
+        while remaining_controls > 0 && controls.len() < 40 {
+            let Some((control, depth)) = queue.pop_front() else { break; };
+            remaining_controls -= 1;
+            let kind = control.get_localized_control_type().unwrap_or_default();
+            // Avoid reading editable field contents, including passwords.
+            let label = if kind.to_lowercase().contains("edit") { String::new() } else { control.get_name().unwrap_or_default() };
+            controls.push(serde_json::json!({
+                "name": label.chars().take(140).collect::<String>(),
+                "control_type": kind.chars().take(60).collect::<String>(),
+                "class_name": control.get_classname().unwrap_or_default().chars().take(100).collect::<String>(),
+                "depth": depth
+            }));
+            if depth < 3 {
+                for child in walker.get_children(&control).unwrap_or_default().into_iter().take(20) {
+                    if queue.len() >= 80 { break; }
+                    queue.push_back((child, depth + 1));
+                }
+            }
+        }
         windows.push(serde_json::json!({
             "name": name.chars().take(160).collect::<String>(),
             "class_name": class_name.chars().take(100).collect::<String>(),
             "control_type": control_type.chars().take(60).collect::<String>(),
-            "process_id": process_id
+            "process_id": process_id,
+            "controls": controls
         }));
     }
-    Ok(serde_json::json!({ "scope": "top_level_windows", "count": windows.len(), "windows": windows }))
+    Ok(serde_json::json!({ "scope": "bounded_window_controls", "count": windows.len(), "windows": windows }))
 }
 #[tauri::command]
 fn get_screen_capture_consent(consent: tauri::State<'_, ScreenCaptureConsent>) -> bool {
