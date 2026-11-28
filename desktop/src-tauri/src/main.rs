@@ -906,7 +906,9 @@ fn start_relay_polling(connected: Arc<AtomicBool>, screen_consent: Arc<AtomicBoo
     tauri::async_runtime::spawn(async move {
         loop {
             poll_relay_once(&connected, &screen_consent, &accessibility_consent, &browser_consent, &approved_folders, &pending_action, &policy, &app).await;
-            tokio::time::sleep(Duration::from_secs(10)).await;
+            // Faster polling only during an active automation session; retain idle cadence.
+            let active = connected.load(Ordering::Relaxed) && policy.lock().map(|p| p.mode != "manual" && policy_active(&p)).unwrap_or(false);
+            tokio::time::sleep(Duration::from_secs(if active { 2 } else { 10 })).await;
         }
     });
 }
