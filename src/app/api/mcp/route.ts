@@ -188,10 +188,11 @@ function makeServer(client: McpClient) {
       if (entitlement.status !== "allowed") return { content: [{ type: "text" as const, text: entitlement.status === "subscription_required" ? "An active McpOS subscription is required to request desktop commands. Manage your plan in the McpOS dashboard." : "Subscription verification is temporarily unavailable. No desktop command was queued." }], isError: true };
       const filter = deviceId ? `&id=eq.${deviceId}` : "";
       const recentCutoff = new Date(Date.now() - 90_000).toISOString();
-      const devicesResponse = await supabaseRest(`mcpos_devices?select=id,device_name,status,last_seen_at&user_id=eq.${client.user_id}&status=eq.online&last_seen_at=gte.${recentCutoff}${filter}&order=last_seen_at.desc&limit=1`);
+      const devicesResponse = await supabaseRest(`mcpos_devices?select=id,device_name,status,last_seen_at,relay_version&user_id=eq.${client.user_id}&status=eq.online&last_seen_at=gte.${recentCutoff}${filter}&order=last_seen_at.desc&limit=1`);
       if (!devicesResponse.ok) return { content: [{ type: "text", text: "Could not check device availability." }], isError: true };
       const [device] = await devicesResponse.json();
       if (!device) return { content: [{ type: "text", text: "No matching Windows device is currently online." }], isError: true };
+      if ((listDisplays || displayId !== undefined) && device.relay_version < 3) return { isError: true, content: [{ type: "text", text: "Monitor selection requires McpOS Desktop 0.2.3 or later." }] };
       const expiresAt = new Date(Date.now() + 45_000).toISOString();
       const commandResponse = await supabaseRest("mcpos_device_commands", {
         method: "POST", headers: { Prefer: "return=representation" },
@@ -275,7 +276,7 @@ function makeServer(client: McpClient) {
       description: "Queue a bounded pointer click, text-entry action or allowlisted keyboard shortcut. The Windows computer enforces its local Manual, Selected or Auto-approve-all policy; Auto mode never grants destructive file operations.",
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
       _meta: { securitySchemes: [{ type: "oauth2", scopes: ["input.pointer","input.keyboard"] }] },
-      inputSchema: z.object({ action: z.enum(["pointer_click", "pointer_move", "pointer_scroll", "keyboard_type", "keyboard_shortcut"]), x: z.number().int().min(0).max(32767).optional(), y: z.number().int().min(0).max(32767).optional(), button: z.enum(["left", "right"]).optional(), steps: z.number().int().min(-12).max(12).optional(), axis: z.enum(["vertical", "horizontal"]).optional(), text: z.string().max(200).optional(), keys: z.array(z.string().max(12)).min(2).max(4).optional() }),
+      inputSchema: z.object({ action: z.enum(["pointer_click", "pointer_move", "pointer_scroll", "keyboard_type", "keyboard_shortcut"]), x: z.number().int().min(-32768).max(32767).optional(), y: z.number().int().min(-32768).max(32767).optional(), button: z.enum(["left", "right"]).optional(), steps: z.number().int().min(-12).max(12).optional(), axis: z.enum(["vertical", "horizontal"]).optional(), text: z.string().max(200).optional(), keys: z.array(z.string().max(12)).min(2).max(4).optional() }),
     },
     async ({ action, x, y, button, steps, axis, text, keys }) => {
       const command = action === "pointer_click" ? "input.pointer.click" : action === "pointer_move" ? "input.pointer.move" : action === "pointer_scroll" ? "input.pointer.scroll" : action === "keyboard_type" ? "input.keyboard.type" : "input.keyboard.shortcut";
@@ -422,9 +423,10 @@ function makeServer(client: McpClient) {
     },
   );
 
-  const coordinate = z.number().int().min(0).max(32767);
+  const coordinate = z.number().int().min(-32768).max(32767);
   const selector = z.string().trim().min(1).max(256);
   const printable = z.string().min(1).max(200).regex(/^[^\u0000-\u001f\u007f]+$/);
+  const runtimeId = z.array(z.number().int()).min(1).max(32);
   const stepSchema = z.discriminatedUnion("command", [
     z.object({ command: z.literal("input.pointer.click"), x: coordinate, y: coordinate, button: z.enum(["left", "right"]).default("left") }),
     z.object({ command: z.literal("input.pointer.move"), x: coordinate, y: coordinate }),
@@ -437,8 +439,10 @@ function makeServer(client: McpClient) {
     z.object({ command: z.literal("screen.capture") }),
     z.object({ command: z.literal("desktop.accessibility") }),
     z.object({ command: z.literal("desktop.launch"), application: z.enum(["chrome","calculator","notepad"]) }),
-    z.object({ command: z.literal("desktop.focus"), windowId: z.array(z.number().int()).min(1).max(32) }),
-    z.object({ command: z.literal("native.shortcut"), windowId: z.array(z.number().int()).min(1).max(32), keys: z.array(z.string().min(1).max(12)).min(2).max(4) }),
+    z.object({ command: z.literal("desktop.focus"), windowId: runtimeId }),
+    z.object({ command: z.literal("native.invoke"), windowId: runtimeId, controlId: runtimeId }),
+    z.object({ command: z.literal("native.set_text"), windowId: runtimeId, controlId: runtimeId, text: z.string().max(2048) }),
+    z.object({ command: z.literal("native.shortcut"), windowId: runtimeId, keys: z.array(z.string().min(1).max(12)).min(2).max(4) }),
     z.object({ command: z.literal("clipboard.write"), text: z.string().max(4096) }),
   ]);
   server.registerTool("mcpos_execute_task", {
@@ -452,11 +456,12 @@ function makeServer(client: McpClient) {
     const rows = [];
     const entitlement = await checkCommandEntitlement(client.user_id);
     if (entitlement.status !== "allowed") return { isError: true, content: [{ type: "text", text: "Desktop command entitlement unavailable." }] };
-    const device = await supabaseRest(`mcpos_devices?select=id&id=eq.${deviceId}&user_id=eq.${client.user_id}&status=eq.online&last_seen_at=gte.${new Date(Date.now()-90000).toISOString()}`);
-    if (!device.ok || !(await device.json()).length) return { isError: true, content: [{ type: "text", text: "Device is offline or unavailable." }] };
-    const expires = new Date(Date.now() + 300000).toISOString();
+    const device = await supabaseRest(`mcpos_devices?select=id&id=eq.${deviceId}&user_id=eq.${client.user_id}&relay_version=gte.3&status=eq.online&last_seen_at=gte.${new Date(Date.now()-90000).toISOString()}`);
+    if (!device.ok || !(await device.json()).length) return { isError: true, content: [{ type: "text", text: "An online McpOS Desktop 0.2.3 or later is required." }] };
+    const expires = new Date(Math.min(Date.now() + 300000, entitlement.billing.billing_verified_until ? Date.parse(entitlement.billing.billing_verified_until) : Infinity)).toISOString();
     for (const [index, { command, ...payload }] of planned.entries()) {
-      const scope = ["desktop.launch","desktop.focus","native.shortcut","clipboard.write"].includes(command) ? "input.keyboard" : command.startsWith("browser.") ? "browser.control" : command === "desktop.accessibility" ? "screen.accessibility" : command.split(".").slice(0,2).join(".");
+      if (["native.invoke","native.set_text"].includes(command) && !client.scopes.includes("screen.accessibility")) return scopeError("screen.accessibility");
+      const scope = ["native.invoke","native.set_text","desktop.launch","desktop.focus","native.shortcut","clipboard.write"].includes(command) ? "input.keyboard" : command.startsWith("browser.") ? "browser.control" : command === "desktop.accessibility" ? "screen.accessibility" : command.split(".").slice(0,2).join(".");
       if (!client.scopes.includes(scope)) return scopeError(scope);
       rows.push({ user_id: client.user_id, device_id: deviceId, mcp_client_id: client.id, ...entitlement.billing, command, payload, expires_at: expires, task_id: taskId, task_step: index });
     }

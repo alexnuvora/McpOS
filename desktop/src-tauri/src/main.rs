@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use base64::Engine;
-use enigo::{Axis, Button, Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
+use enigo::{Axis, Button, Direction, Enigo, Key, Keyboard, Mouse, Settings};
 use keyring::Entry;
 use serde::{Deserialize, Serialize};
 use std::{path::{Path, PathBuf}, sync::{mpsc::sync_channel, Arc, Mutex, atomic::{AtomicBool, Ordering}}, time::{Duration, SystemTime, UNIX_EPOCH}};
@@ -69,6 +69,7 @@ async fn heartbeat() -> bool {
 
     relay_client()
         .post(format!("{SUPABASE_URL}/functions/v1/device-heartbeat"))
+        .header("x-mcpos-relay-version", "3")
         .header("apikey", api_key)
         .bearer_auth(token)
         .send()
@@ -180,19 +181,21 @@ fn set_accessibility_consent(enabled: bool, consent: tauri::State<'_, Accessibil
     enabled
 }
 
-fn describe_controls(walker: &uiautomation::UITreeWalker, parent: &uiautomation::UIElement, depth: usize, controls: &mut Vec<serde_json::Value>) {
+fn describe_controls(walker: &uiautomation::UITreeWalker, parent: &uiautomation::UIElement, depth: usize, controls: &mut Vec<serde_json::Value>, elements: &mut Vec<uiautomation::UIElement>) {
     if depth > 5 || controls.len() >= 100 { return; }
     let mut next = walker.get_first_child(parent).ok();
     while let Some(element) = next {
         if controls.len() >= 100 { break; }
         next = walker.get_next_sibling(&element).ok();
         let sensitive = element.is_password().unwrap_or(true);
+        elements.push(element.clone());
         controls.push(serde_json::json!({
+            "controlId": element.get_runtime_id().ok(),
             "depth": depth,
             "role": element.get_localized_control_type().unwrap_or_default(),
             "label": if sensitive { String::new() } else { element.get_name().unwrap_or_default().chars().take(120).collect() }
         }));
-        if !sensitive { describe_controls(walker, &element, depth + 1, controls); }
+        if !sensitive { describe_controls(walker, &element, depth + 1, controls, elements); }
     }
 }
 
@@ -209,7 +212,12 @@ fn get_accessibility_snapshot() -> Result<serde_json::Value, String> {
         let class_name = element.get_classname().unwrap_or_default();
         let control_type = element.get_localized_control_type().unwrap_or_default();
         let process_id = element.get_process_id().unwrap_or_default();
-        if Some(process_id) == focus_pid { describe_controls(&walker, element, 0, &mut controls); }
+        if Some(process_id) == focus_pid {
+            let start = controls.len();
+            describe_controls(&walker, element, 0, &mut controls, &mut Vec::new());
+            let window_id = serde_json::json!(element.get_runtime_id().ok());
+            for control in &mut controls[start..] { control["windowId"] = window_id.clone(); }
+        }
         windows.push(serde_json::json!({
             "windowId": element.get_runtime_id().ok(),
             "name": name.chars().take(160).collect::<String>(),
@@ -571,6 +579,22 @@ fn browser_eval_and_collect(app: &tauri::AppHandle, window_id: Option<&str>, exp
     Ok(value)
 }
 
+fn eval_target_action(app: &tauri::AppHandle, window_id: Option<&str>, expression: &str) -> Result<serde_json::Value, String> {
+    let window = active_browser_window(app, window_id)?;
+    let url = window.url().map_err(|_| "Browser location unavailable.")?;
+    let label = window.label();
+    for attempt in 0..3 {
+        if window.url().ok().as_ref() != Some(&url) { return Err("Page changed before the action.".into()); }
+        match browser_eval_and_collect(app, Some(label), expression) {
+            Err(message) if message == "Target has not appeared." && attempt < 2 => {
+                std::thread::sleep(Duration::from_millis(150));
+            }
+            outcome => return outcome,
+        }
+    }
+    Err("Target has not appeared.".into())
+}
+
 fn get_browser_snapshot(app: &tauri::AppHandle, window_id: Option<&str>) -> Result<serde_json::Value, String> {
     browser_eval_and_collect(app, window_id, r#"(() => {
         const snapshotId = crypto.randomUUID();
@@ -611,6 +635,7 @@ fn execute_browser_action(command: &RelayCommand, app: &tauri::AppHandle) -> Res
     let window_id = command.payload.get("windowId").and_then(|value| value.as_str());
     let operation = command.payload.get("windowAction").and_then(|value| value.as_str()).unwrap_or(command.command.as_str());
     let resolve_target = r#"const element = selector.startsWith('mcpos:') ? window.__mcposSnapshot?.targets.get(selector) : document.querySelector(selector);
+        if (!selector.startsWith('mcpos:') && !element) return {ok:false,error:'Target has not appeared.'};
         if (!element?.isConnected || !element.ownerDocument.defaultView || element.ownerDocument.defaultView.document !== element.ownerDocument)
             return {ok:false, error:'Target is stale or missing. Request a fresh snapshot before choosing a target.'};
         element.scrollIntoView({block:'nearest', inline:'nearest', behavior:'instant'});"#;
@@ -659,7 +684,7 @@ fn execute_browser_action(command: &RelayCommand, app: &tauri::AppHandle) -> Res
             let selector = command.payload.get("selector").and_then(|value| value.as_str()).ok_or("A CSS selector is required.")?;
             if selector.is_empty() || selector.len() > 256 { return Err("CSS selector must be 1–256 characters.".to_string()); }
             let selector_js = serde_json::to_string(selector).map_err(|_| "Invalid CSS selector.".to_string())?;
-            browser_eval_and_collect(app, window_id, &format!("(() => {{ const selector = {selector_js}; {resolve_target} element.click(); return {{ ok: true, action: 'click', selector, element: (element.innerText || element.getAttribute('aria-label') || element.tagName).slice(0, 160) }}; }})()"))
+            eval_target_action(app, window_id, &format!("(() => {{ const selector = {selector_js}; {resolve_target} if(element.matches(':disabled,[aria-disabled=true]') || !element.getClientRects().length) return {{ok:false,error:'Target is hidden or disabled'}}; element.click(); return {{ ok: true, action: 'click', selector, element: (element.innerText || element.getAttribute('aria-label') || element.tagName).slice(0, 160) }}; }})()"))
         },
         "browser.type" => {
             let selector = command.payload.get("selector").and_then(|value| value.as_str()).ok_or("A CSS selector is required.")?;
@@ -667,11 +692,26 @@ fn execute_browser_action(command: &RelayCommand, app: &tauri::AppHandle) -> Res
             if selector.is_empty() || selector.len() > 256 || text.is_empty() || text.chars().count() > 200 || text.chars().any(|character| character.is_control()) { return Err("Selector or text is outside the allowed limits.".to_string()); }
             let selector_js = serde_json::to_string(selector).map_err(|_| "Invalid CSS selector.".to_string())?;
             let text_js = serde_json::to_string(text).map_err(|_| "Invalid text.".to_string())?;
-            browser_eval_and_collect(app, window_id, &format!("(() => {{ const selector = {selector_js}; {resolve_target} if (!(element.localName === 'input' || element.localName === 'textarea' || element.isContentEditable)) return {{ ok: false, error: 'Target is not an editable field', selector }}; if (element.matches('input[type=password],input[autocomplete=current-password],input[autocomplete=new-password]')) return {{ ok: false, error: 'Password fields require direct local entry', selector }}; element.focus(); if ('value' in element) {{ const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element), 'value')?.set; if (setter) setter.call(element, {text_js}); else element.value = {text_js}; }} else element.textContent = {text_js}; element.dispatchEvent(new InputEvent('input', {{ bubbles: true, inputType: 'insertText', data: {text_js} }})); element.dispatchEvent(new Event('change', {{ bubbles: true }})); if (('value' in element ? element.value : element.textContent) !== {text_js}) return {{ok:false,error:'Field did not retain the requested text. Inspect a fresh snapshot.'}}; return {{ ok: true, action: 'type', selector, characters: {text_js}.length }}; }})()"))
+            eval_target_action(app, window_id, &format!("(() => {{ const selector = {selector_js}; {resolve_target} if (!(element.localName === 'input' || element.localName === 'textarea' || element.isContentEditable)) return {{ ok: false, error: 'Target is not an editable field', selector }}; if (element.matches('input[type=password],input[autocomplete=current-password],input[autocomplete=new-password]')) return {{ ok: false, error: 'Password fields require direct local entry', selector }}; element.focus(); if ('value' in element) {{ const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element), 'value')?.set; if (setter) setter.call(element, {text_js}); else element.value = {text_js}; }} else element.textContent = {text_js}; element.dispatchEvent(new InputEvent('input', {{ bubbles: true, inputType: 'insertText', data: {text_js} }})); element.dispatchEvent(new Event('change', {{ bubbles: true }})); if (('value' in element ? element.value : element.textContent) !== {text_js}) return {{ok:false,error:'Field did not retain the requested text. Inspect a fresh snapshot.'}}; return {{ ok: true, action: 'type', selector, characters: {text_js}.length }}; }})()"))
         },
         _ => Err("Unsupported browser action.".to_string()),
     }
 }
+fn position_pointer(x: i64, y: i64) -> Result<(), String> {
+    let monitors = Monitor::all().map_err(|_| "Could not enumerate monitors.")?;
+    let on_screen = monitors.iter().any(|m| {
+        let (Ok(left), Ok(top), Ok(width), Ok(height)) = (m.x(), m.y(), m.width(), m.height()) else { return false };
+        (i64::from(left)..i64::from(left) + i64::from(width)).contains(&x)
+            && (i64::from(top)..i64::from(top) + i64::from(height)).contains(&y)
+    });
+    if !on_screen { return Err("Coordinates outside the connected monitors.".into()); }
+    // SetCursorPos accepts signed virtual-desktop coordinates, including monitors left of the primary.
+    if unsafe { windows_sys::Win32::UI::WindowsAndMessaging::SetCursorPos(x as i32, y as i32) } == 0 {
+        return Err("Windows rejected pointer positioning.".into());
+    }
+    Ok(())
+}
+
 fn execute_input_action(command: &RelayCommand) -> Result<serde_json::Value, String> {
     match command.command.as_str() {
         "desktop.launch" => {
@@ -687,13 +727,33 @@ fn execute_input_action(command: &RelayCommand) -> Result<serde_json::Value, Str
             std::process::Command::new(path).spawn().map_err(|_| "Application launch failed.")?;
             return Ok(serde_json::json!({"launched": app}));
         }
-        "desktop.focus" | "native.shortcut" => {
+        "desktop.focus" | "native.shortcut" | "native.invoke" | "native.set_text" => {
             let target = command.payload.get("windowId").ok_or("A windowId is required.")?;
             let automation = UIAutomation::new().map_err(|_| "UI Automation unavailable.")?;
             let root = automation.get_root_element().map_err(|_| "Desktop unavailable.")?;
             let walker = automation.get_control_view_walker().map_err(|_| "Window enumeration unavailable.")?;
             for window in walker.get_children(&root).unwrap_or_default() {
                 if window.get_runtime_id().ok().is_some_and(|id| serde_json::json!(id) == *target) {
+                    if matches!(command.command.as_str(), "native.invoke" | "native.set_text") {
+                        let target_control = command.payload.get("controlId").ok_or("Select a control from a current snapshot.")?;
+                        let mut elements = Vec::new();
+                        describe_controls(&walker, &window, 0, &mut Vec::new(), &mut elements);
+                        let element = elements.iter().find(|e| e.get_runtime_id().ok().is_some_and(|id| serde_json::json!(id) == *target_control))
+                            .ok_or("Control changed. Request a fresh snapshot.")?;
+                        if element.is_password().unwrap_or(true) || !element.is_enabled().unwrap_or(false) {
+                            return Err("The selected control is sensitive or disabled.".into());
+                        }
+                        if command.command == "native.invoke" {
+                            let pattern = element.get_pattern::<uiautomation::patterns::UIInvokePattern>().map_err(|_| "Control does not support Invoke.")?;
+                            pattern.invoke().map_err(|_| "Windows could not invoke this control.")?;
+                        } else {
+                            let text = command.payload.get("text").and_then(|v| v.as_str()).filter(|v| v.len() <= 8192).ok_or("Invalid control text.")?;
+                            let pattern = element.get_pattern::<uiautomation::patterns::UIValuePattern>().map_err(|_| "Control does not support editing.")?;
+                            pattern.set_value(text).map_err(|_| "Windows rejected the text.")?;
+                            if pattern.get_value().as_deref().ok() != Some(text) { return Err("Control did not retain the text.".into()); }
+                        }
+                        return Ok(serde_json::json!({"action":command.command,"controlId":target_control}));
+                    }
                     if command.command == "native.shortcut" && window.get_classname().unwrap_or_default() != "Chrome_WidgetWin_1" {
                         return Err("The selected window is not a Chromium browser window.".into());
                     }
@@ -726,9 +786,7 @@ fn execute_input_action(command: &RelayCommand) -> Result<serde_json::Value, Str
         "input.pointer.move" => {
             let x = command.payload.get("x").and_then(|v| v.as_i64()).ok_or("An x coordinate is required.")?;
             let y = command.payload.get("y").and_then(|v| v.as_i64()).ok_or("A y coordinate is required.")?;
-            let (width, height) = enigo.main_display().map_err(|_| "Could not read display dimensions.")?;
-            if x < 0 || y < 0 || x >= width as i64 || y >= height as i64 { return Err("Coordinates outside primary display.".into()); }
-            enigo.move_mouse(x as i32, y as i32, Coordinate::Abs).map_err(|_| "Pointer movement failed.")?;
+            position_pointer(x, y)?;
             Ok(serde_json::json!({"action":"move","x":x,"y":y}))
         },
         "input.pointer.scroll" => {
@@ -744,10 +802,8 @@ fn execute_input_action(command: &RelayCommand) -> Result<serde_json::Value, Str
             let x = command.payload.get("x").and_then(|value| value.as_i64()).ok_or("A valid x coordinate is required.")?;
             let y = command.payload.get("y").and_then(|value| value.as_i64()).ok_or("A valid y coordinate is required.")?;
             let button = command.payload.get("button").and_then(|value| value.as_str()).unwrap_or("left");
-            let (width, height) = enigo.main_display().map_err(|_| "Could not read the primary display dimensions.".to_string())?;
-            if x < 0 || y < 0 || x >= width as i64 || y >= height as i64 { return Err("Click coordinates are outside the primary display.".to_string()); }
             let mouse_button = match button { "left" => Button::Left, "right" => Button::Right, _ => return Err("Only left and right clicks are supported.".to_string()) };
-            enigo.move_mouse(x as i32, y as i32, Coordinate::Abs).map_err(|_| "Could not move the pointer.".to_string())?;
+            position_pointer(x, y)?;
             enigo.button(mouse_button, Direction::Click).map_err(|_| "The click action failed.".to_string())?;
             Ok(serde_json::json!({ "action": "click", "x": x, "y": y, "button": button, "approved_locally": true }))
         },
@@ -845,7 +901,9 @@ async fn approve_pending_action(command_id: String, approve_task: bool, pending:
             }
         }
     }
-    let action_result = if command.command.starts_with("browser.") && !browser_consent.0.load(Ordering::Relaxed) {
+    let action_result = if matches!(command.command.as_str(),"native.invoke" | "native.set_text") && !app.state::<AccessibilityConsent>().0.load(Ordering::Relaxed) {
+        Err("Application understanding is disabled.".into())
+    } else if command.command.starts_with("browser.") && !browser_consent.0.load(Ordering::Relaxed) {
         Err("Isolated browser consent was switched off before approval.".to_string())
     } else if command.command.starts_with("browser.") {
         execute_browser_action(&command, &app)
@@ -867,13 +925,45 @@ async fn deny_pending_action(pending: tauri::State<'_, PendingAction>) -> Result
     submission?;
     Ok("Action denied. Nothing was executed.".to_string())
 }
-async fn poll_relay_once(connected: &Arc<AtomicBool>, screen_consent: &Arc<AtomicBool>, accessibility_consent: &Arc<AtomicBool>, browser_consent: &Arc<AtomicBool>, approved_folders: &Arc<Mutex<Vec<PathBuf>>>, pending_action: &Arc<Mutex<Option<RelayCommand>>>, policy: &Arc<Mutex<AutomationPolicy>>, app: &tauri::AppHandle) {
+type RelaySocket = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+async fn socket_claim(session: &mut Option<(String, RelaySocket)>, token: &str, api_key: &str) -> Result<RelayPollResponse, ()> {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message};
+    if !session.as_ref().is_some_and(|(owner, _)| owner == token) {
+        *session = None;
+        let mut request = format!("{}/functions/v1/device-poll", SUPABASE_URL.replacen("https://", "wss://", 1)).into_client_request().map_err(|_| ())?;
+        request.headers_mut().insert("authorization", format!("Bearer {token}").parse().map_err(|_| ())?);
+        request.headers_mut().insert("apikey", api_key.parse().map_err(|_| ())?);
+        let (socket, _) = tokio_tungstenite::connect_async(request).await.map_err(|_| ())?;
+        *session = Some((token.to_owned(), socket));
+    }
+    let (_, socket) = session.as_mut().ok_or(())?;
+    socket.send(Message::Text("claim".into())).await.map_err(|_| ())?;
+    while let Some(frame) = socket.next().await {
+        match frame.map_err(|_| ())? {
+            Message::Text(body) => return serde_json::from_str(&body).map_err(|_| ()),
+            Message::Ping(_) | Message::Pong(_) => continue,
+            _ => return Err(()),
+        }
+    }
+    Err(())
+}
+
+async fn poll_relay_once(session: &mut Option<(String, RelaySocket)>, retry_socket_at: &mut u64, connected: &Arc<AtomicBool>, screen_consent: &Arc<AtomicBool>, accessibility_consent: &Arc<AtomicBool>, browser_consent: &Arc<AtomicBool>, approved_folders: &Arc<Mutex<Vec<PathBuf>>>, pending_action: &Arc<Mutex<Option<RelayCommand>>>, policy: &Arc<Mutex<AutomationPolicy>>, app: &tauri::AppHandle) {
     let Some(token) = stored_token() else { return };
     let Some(api_key) = SUPABASE_ANON_KEY else { return };
     if api_key.is_empty() { return; }
 
     if pending_action.lock().map(|p| p.is_some()).unwrap_or(true) { return; }
     let client = relay_client();
+    let streamed = if now_epoch() >= *retry_socket_at {
+        match tokio::time::timeout(Duration::from_secs(6), socket_claim(session, &token, api_key)).await {
+            Ok(Ok(value)) => Some(value),
+            _ => { *session = None; *retry_socket_at = now_epoch() + 60; return; }
+        }
+    } else { None };
+    let envelope = if let Some(value) = streamed { value } else {
     let response = match client
         .post(format!("{SUPABASE_URL}/functions/v1/device-poll"))
         .header("apikey", api_key)
@@ -886,10 +976,12 @@ async fn poll_relay_once(connected: &Arc<AtomicBool>, screen_consent: &Arc<Atomi
         _ => return,
     };
 
-    let Ok(envelope) = response.json::<RelayPollResponse>().await else { return };
+    let Ok(value) = response.json::<RelayPollResponse>().await else { return };
+    value
+    };
     let Some(command) = envelope.command else { return };
 
-    if matches!(command.command.as_str(), "desktop.launch" | "desktop.focus" | "native.shortcut" | "clipboard.write" | "input.pointer.click" | "input.pointer.move" | "input.pointer.scroll") || command.command == "input.keyboard.type" || command.command == "input.keyboard.shortcut" || command.command == "browser.open" || command.command == "browser.click" || command.command == "browser.type" {
+    if matches!(command.command.as_str(), "desktop.launch" | "desktop.focus" | "native.shortcut" | "native.invoke" | "native.set_text" | "clipboard.write" | "input.pointer.click" | "input.pointer.move" | "input.pointer.scroll") || command.command == "input.keyboard.type" || command.command == "input.keyboard.shortcut" || command.command == "browser.open" || command.command == "browser.click" || command.command == "browser.type" {
         if command.command.starts_with("browser.") && !browser_consent.load(Ordering::Relaxed) {
             let _ = submit_relay_result(&command.id, serde_json::json!({}), Some("Isolated browser consent is switched off on this Windows computer.".to_string())).await;
             return;
@@ -900,6 +992,8 @@ async fn poll_relay_once(connected: &Arc<AtomicBool>, screen_consent: &Arc<Atomi
             let still_allowed = policy.lock().map(|p| allows_relay_action(&p, &command)).unwrap_or(false);
             let action = if !authorised {
                 Err("Device or AI session is no longer authorised. Action blocked.".to_string())
+            } else if matches!(command.command.as_str(),"native.invoke" | "native.set_text") && !accessibility_consent.load(Ordering::Relaxed) {
+                Err("Application understanding is disabled.".into())
             } else if !still_allowed {
                 Err("Automation was paused or the session expired before execution. Action blocked.".to_string())
             } else if command.command.starts_with("browser.") {
@@ -1014,8 +1108,10 @@ async fn poll_relay_once(connected: &Arc<AtomicBool>, screen_consent: &Arc<Atomi
 
 fn start_relay_polling(connected: Arc<AtomicBool>, screen_consent: Arc<AtomicBool>, accessibility_consent: Arc<AtomicBool>, browser_consent: Arc<AtomicBool>, approved_folders: Arc<Mutex<Vec<PathBuf>>>, pending_action: Arc<Mutex<Option<RelayCommand>>>, policy: Arc<Mutex<AutomationPolicy>>, app: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
+        let mut session = None;
+        let mut retry_socket_at = 0;
         loop {
-            poll_relay_once(&connected, &screen_consent, &accessibility_consent, &browser_consent, &approved_folders, &pending_action, &policy, &app).await;
+            poll_relay_once(&mut session, &mut retry_socket_at, &connected, &screen_consent, &accessibility_consent, &browser_consent, &approved_folders, &pending_action, &policy, &app).await;
             tokio::time::sleep(Duration::from_secs(2)).await;
         }
     });

@@ -5,13 +5,14 @@ alter table public.mcpos_device_commands
 alter table public.mcpos_device_commands
   add constraint mcpos_device_commands_command_check
   check (command in (
-    'desktop.launch','desktop.focus','native.shortcut','clipboard.write','desktop.status', 'screen.capture', 'desktop.accessibility',
+    'desktop.launch','desktop.focus','native.invoke','native.set_text','native.shortcut','clipboard.write','desktop.status', 'screen.capture', 'desktop.accessibility',
     'files.list', 'files.read',
     'input.pointer.click', 'input.pointer.move', 'input.pointer.scroll',
     'input.keyboard.type', 'input.keyboard.shortcut',
     'browser.open', 'browser.snapshot', 'browser.click', 'browser.type'
   ));
 
+alter table public.mcpos_devices add column relay_version integer not null default 1;
 alter table public.mcpos_device_commands add column task_id uuid, add column task_step integer,
   add constraint mcpos_task_step_valid check ((task_id is null and task_step is null) or
     (task_id is not null and task_step is not null and task_step between 0 and 15));
@@ -41,6 +42,7 @@ begin
     and exists (
       select 1 from public.mcpos_mcp_clients m
       where m.id = q.mcp_client_id and m.user_id = q.user_id
+        and (q.command not in ('native.invoke','native.set_text') or 'screen.accessibility' = any(m.scopes))
         and m.revoked_at is null
         and (m.token_expires_at is null or m.token_expires_at > pg_catalog.now())
         and (case
@@ -49,7 +51,7 @@ begin
           when q.command = 'desktop.accessibility' then 'screen.accessibility'
           when q.command in ('files.list','files.read') then 'files.read'
           when q.command in ('input.pointer.click','input.pointer.move','input.pointer.scroll') then 'input.pointer'
-          when q.command in ('desktop.launch','desktop.focus','native.shortcut','clipboard.write','input.keyboard.type','input.keyboard.shortcut') then 'input.keyboard'
+          when q.command in ('desktop.launch','desktop.focus','native.invoke','native.set_text','native.shortcut','clipboard.write','input.keyboard.type','input.keyboard.shortcut') then 'input.keyboard'
           when q.command in ('browser.open','browser.snapshot','browser.click','browser.type') then 'browser.control'
           else null
         end) = any(m.scopes)
@@ -78,6 +80,7 @@ begin
       and exists (
       select 1 from public.mcpos_mcp_clients m
       where m.id = q.mcp_client_id and m.user_id = q.user_id
+        and (q.command not in ('native.invoke','native.set_text') or 'screen.accessibility' = any(m.scopes))
         and m.revoked_at is null
         and (m.token_expires_at is null or m.token_expires_at > pg_catalog.now())
         and (case
@@ -86,7 +89,7 @@ begin
           when q.command = 'desktop.accessibility' then 'screen.accessibility'
           when q.command in ('files.list','files.read') then 'files.read'
           when q.command in ('input.pointer.click','input.pointer.move','input.pointer.scroll') then 'input.pointer'
-          when q.command in ('desktop.launch','desktop.focus','native.shortcut','clipboard.write','input.keyboard.type','input.keyboard.shortcut') then 'input.keyboard'
+          when q.command in ('desktop.launch','desktop.focus','native.invoke','native.set_text','native.shortcut','clipboard.write','input.keyboard.type','input.keyboard.shortcut') then 'input.keyboard'
           when q.command in ('browser.open','browser.snapshot','browser.click','browser.type') then 'browser.control'
           else null
         end) = any(m.scopes)
