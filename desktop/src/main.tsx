@@ -4,7 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import "./style.css";
 
 type DeviceStatus = { paired: boolean; connected: boolean; device_id: string | null };
-type PendingAction = { id: string; taskId?: string; command: string; payload: Record<string, unknown> };
+type PendingAction = { deadline: number; id: string; taskId?: string; command: string; payload: Record<string, unknown> };
 type AutomationPolicy = { mode: "manual" | "selected" | "all"; paused: boolean; expires_at: number | null; auto_pointer: boolean; auto_keyboard: boolean; auto_browser: boolean; auto_screen: boolean };
 
 function App() {
@@ -22,6 +22,7 @@ function App() {
   const [automation, setAutomation] = useState<AutomationPolicy>({ mode: "manual", paused: false, expires_at: null, auto_pointer: false, auto_keyboard: false, auto_browser: false, auto_screen: false });
   const [expiryMinutes, setExpiryMinutes] = useState(60);
   const [now, setNow] = useState(0);
+  const [approvalTimeout,setApprovalTimeout] = useState(120);
 
   async function refreshStatus() {
     setNow(Date.now());
@@ -32,6 +33,7 @@ function App() {
       setBrowserConsent(await invoke<boolean>("get_browser_consent"));
       setApprovedFolders(await invoke<string[]>("get_approved_folders"));
       setAutomation(await invoke<AutomationPolicy>("get_automation_policy"));
+      setApprovalTimeout(await invoke<number>("get_approval_timeout"));
     }
     catch { setError("Could not read the local device credential."); }
   }
@@ -39,7 +41,7 @@ function App() {
   useEffect(() => {
     const initial = window.setTimeout(() => void refreshStatus(), 0);
     const timer = window.setInterval(() => void refreshStatus(), 15000);
-    const approvalTimer = window.setInterval(() => { void invoke<PendingAction | null>("get_pending_action").then(setPendingAction).catch(() => undefined); }, 1200);
+    const approvalTimer = window.setInterval(() => { setNow(Date.now()); void invoke<PendingAction | null>("get_pending_action").then(setPendingAction).catch(() => undefined); }, 1200);
     return () => { window.clearTimeout(initial); window.clearInterval(timer); window.clearInterval(approvalTimer); };
   }, []);
 
@@ -204,10 +206,12 @@ function App() {
         <div className="automation-controls"><button className="pause-button" onClick={() => void pauseAutomation()}>Pause automation now</button><span>{automation.expires_at && !automation.paused ? "Expires " + new Date(automation.expires_at * 1000).toLocaleString() : "No active automation session"}</span></div>
       </section>
       <div className="capability"><span className="symbol">⌘</span><div><strong>Mouse & keyboard</strong><small>Pointer clicks and text entry follow the local approval policy. Destructive file operations remain unavailable.</small></div><span className={automation.mode === "all" && !automation.paused && automation.expires_at !== null && automation.expires_at * 1000 > now ? "enabled" : "disabled"}>{automation.paused ? "Paused" : automation.mode === "all" ? "AUTO" : "Policy controlled"}</span></div>
+      <label>Approval timeout <select value={approvalTimeout} onChange={e => { void invoke<number>("set_approval_timeout",{seconds:Number(e.target.value)}).then(setApprovalTimeout).catch(reason=>setError(String(reason))); }}>{[60,120,180,240].map(seconds=><option key={seconds} value={seconds}>{seconds} seconds</option>)}</select></label>
       {pendingAction && <section className="approval-card">
+        <p role="timer">Approval expires in {Math.max(0,Math.ceil((pendingAction.deadline*1000-now)/1000))} seconds.</p>
         <div className="approval-eyebrow">LOCAL APPROVAL REQUIRED</div>
-        <strong>{["desktop.launch", "desktop.focus", "native.invoke", "native.set_text", "native.shortcut", "clipboard.write"].includes(pendingAction.command) ? pendingAction.command : pendingAction.command === "input.pointer.click" ? "AI wants to click your screen" : pendingAction.command === "input.keyboard.type" ? "AI wants to type on your computer" : pendingAction.command === "input.keyboard.shortcut" ? "AI wants to press a keyboard shortcut" : pendingAction.command === "browser.open" ? "AI wants to open a website in the isolated browser" : pendingAction.command === "browser.click" ? "AI wants to click a page element" : "AI wants to type into a page field"}</strong>
-        {["desktop.launch", "desktop.focus", "native.invoke", "native.set_text", "native.shortcut", "clipboard.write"].includes(pendingAction.command) ? <p className="approval-text">{JSON.stringify(pendingAction.payload)}</p> : pendingAction.command === "input.pointer.click" ? <p>Button: {String(pendingAction.payload.button ?? "left")} · Position: {String(pendingAction.payload.x)}, {String(pendingAction.payload.y)}</p> : pendingAction.command === "input.keyboard.shortcut" ? <p className="approval-text">Keys: {Array.isArray(pendingAction.payload.keys) ? pendingAction.payload.keys.join(" + ") : ""}</p> : pendingAction.command === "browser.open" ? <p className="approval-text">{String(pendingAction.payload.url ?? "")}</p> : pendingAction.command === "browser.click" ? <p className="approval-text">CSS selector: {String(pendingAction.payload.selector ?? "")}</p> : pendingAction.command === "browser.type" ? <p className="approval-text">Selector: {String(pendingAction.payload.selector ?? "")} · Text: “{String(pendingAction.payload.text ?? "")}”</p> : <p className="approval-text">Text to enter: “{String(pendingAction.payload.text ?? "")}”</p>}
+        <strong>{["desktop.launch", "desktop.focus", "native.invoke", "native.set_text", "native.shortcut", "clipboard.write"].includes(pendingAction.command) ? pendingAction.command : pendingAction.command === "input.pointer.path" ? "AI wants to move or drag the pointer along a path" : pendingAction.command === "input.pointer.double_click" ? "AI wants to double-click your screen" : pendingAction.command === "input.pointer.click" ? "AI wants to click your screen" : pendingAction.command === "input.keyboard.type" ? "AI wants to type on your computer" : pendingAction.command === "input.keyboard.shortcut" ? "AI wants to press a keyboard shortcut" : pendingAction.command === "browser.open" ? "AI wants to open a website in the isolated browser" : pendingAction.command === "browser.click" ? "AI wants to click a page element" : "AI wants to type into a page field"}</strong>
+        {["desktop.launch", "desktop.focus", "native.invoke", "native.set_text", "native.shortcut", "clipboard.write"].includes(pendingAction.command) ? <p className="approval-text">{JSON.stringify(pendingAction.payload)}</p> : pendingAction.command === "input.pointer.path" ? <p>Button: {String(pendingAction.payload.button)} · Points: {Array.isArray(pendingAction.payload.points) ? pendingAction.payload.points.length : 0} · Duration: {String(pendingAction.payload.durationMs)} ms</p> : pendingAction.command === "input.pointer.double_click" || pendingAction.command === "input.pointer.click" ? <p>Button: {String(pendingAction.payload.button ?? "left")} · Position: {String(pendingAction.payload.x)}, {String(pendingAction.payload.y)}</p> : pendingAction.command === "input.keyboard.shortcut" ? <p className="approval-text">Keys: {Array.isArray(pendingAction.payload.keys) ? pendingAction.payload.keys.join(" + ") : ""}</p> : pendingAction.command === "browser.open" ? <p className="approval-text">{String(pendingAction.payload.url ?? "")}</p> : pendingAction.command === "browser.click" ? <p className="approval-text">CSS selector: {String(pendingAction.payload.selector ?? "")}</p> : pendingAction.command === "browser.type" ? <p className="approval-text">Selector: {String(pendingAction.payload.selector ?? "")} · Text: “{String(pendingAction.payload.text ?? "")}”</p> : <p className="approval-text">Text to enter: “{String(pendingAction.payload.text ?? "")}”</p>}
         <div className="approval-actions"><button className="deny" disabled={approvalBusy} onClick={() => void denyPendingAction()}>{approvalBusy ? "Working…" : "Deny"}</button><button className="approve" disabled={approvalBusy} onClick={() => void approvePendingAction()}>{approvalBusy ? "Working…" : "Approve once"}</button></div>
         {pendingAction.taskId && <button disabled={approvalBusy} onClick={() => void approvePendingAction(true)}>Allow {pendingAction.command} for this task (5 minutes)</button>}
         <small>Nothing happens unless you approve this exact action here. This exact action requires approval unless a locally configured auto-approval rule applies.</small>
