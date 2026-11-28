@@ -620,7 +620,7 @@ fn execute_browser_action(command: &RelayCommand, app: &tauri::AppHandle, bridge
         },
         "browser.snapshot" => get_browser_snapshot(app, bridge, window_id),
         "browser.open" => {
-            let raw_url = command.payload.get("url").and_then(|value| value.as_str()).ok_or("A URL is required.")?;
+            let raw_url = command.payload.get("targetUrl").or_else(|| command.payload.get("url")).and_then(|value| value.as_str()).ok_or("A URL is required.")?;
             let new_window = command.payload.get("newWindow").and_then(|value| value.as_bool()).unwrap_or(false);
             let message = open_isolated_browser(app, raw_url, new_window, window_id)?;
             Ok(serde_json::json!({ "action": "open", "message": message, "windows": browser_window_list(app)["windows"], "browser_window_count": isolated_browser_windows(app).len() }))
