@@ -56,7 +56,7 @@ async fn authorize_pending_command(command_id: &str) -> bool {
     if api_key.is_empty() { return false; }
     let response = relay_client()
         .post(format!("{SUPABASE_URL}/functions/v1/device-poll"))
-        .header("x-mcpos-relay-version","4")
+        .header("x-mcpos-relay-version","5")
         .header("apikey", api_key).bearer_auth(token)
         .json(&serde_json::json!({ "authorize_command_id": command_id }))
         .send().await;
@@ -72,7 +72,7 @@ async fn heartbeat() -> bool {
 
     relay_client()
         .post(format!("{SUPABASE_URL}/functions/v1/device-heartbeat"))
-        .header("x-mcpos-relay-version", "4")
+        .header("x-mcpos-relay-version", "5")
         .header("apikey", api_key)
         .bearer_auth(token)
         .send()
@@ -85,6 +85,17 @@ struct ScreenCaptureConsent(Arc<AtomicBool>);
 struct AccessibilityConsent(Arc<AtomicBool>);
 struct ApprovedFolders(Arc<Mutex<Vec<PathBuf>>>);
 struct PendingAction(Arc<Mutex<Option<RelayCommand>>>);
+static APPROVAL_TIMEOUT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(120);
+#[tauri::command]
+fn get_approval_timeout() -> u64 { APPROVAL_TIMEOUT.load(Ordering::Relaxed) }
+#[tauri::command]
+fn set_approval_timeout(seconds: u64) -> Result<u64,String> {
+    if !matches!(seconds,60|120|180|240) { return Err("Choose a supported approval timeout.".into()); }
+    APPROVAL_TIMEOUT.store(seconds,Ordering::Relaxed); Ok(seconds)
+}
+fn approval_deadline(command: &RelayCommand) -> u64 {
+    command.local_deadline.unwrap_or(0)
+}
 struct BrowserConsent(Arc<AtomicBool>);
 #[derive(Clone, Serialize)]
 struct AutomationPolicy {
@@ -107,10 +118,10 @@ fn policy_active(policy: &AutomationPolicy) -> bool {
 fn policy_auto_approves(policy: &AutomationPolicy, command: &str) -> bool {
     if !policy_active(policy) { return false; }
     if policy.mode == "all" {
-        return matches!(command, "input.pointer.click" | "input.pointer.move" | "input.pointer.scroll" | "input.keyboard.type" | "input.keyboard.shortcut" | "browser.open" | "browser.click" | "browser.type" | "screen.capture" | "desktop.launch" | "desktop.focus" | "native.shortcut" | "native.invoke" | "native.set_text" | "clipboard.write");
+        return matches!(command, "input.pointer.click" | "input.pointer.move" | "input.pointer.path" | "input.pointer.double_click" | "input.pointer.scroll" | "input.keyboard.type" | "input.keyboard.shortcut" | "browser.open" | "browser.click" | "browser.type" | "screen.capture" | "desktop.launch" | "desktop.focus" | "native.shortcut" | "native.invoke" | "native.set_text" | "clipboard.write");
     }
     match command {
-        "input.pointer.click" | "input.pointer.move" | "input.pointer.scroll" => policy.auto_pointer,
+        "input.pointer.click" | "input.pointer.move" | "input.pointer.path" | "input.pointer.double_click" | "input.pointer.scroll" => policy.auto_pointer,
         "input.keyboard.type" | "input.keyboard.shortcut" => policy.auto_keyboard,
         "browser.open" | "browser.click" | "browser.type" => policy.auto_browser,
         "screen.capture" => policy.auto_screen,
@@ -355,6 +366,10 @@ async fn pair_device(code: String, connected: tauri::State<'_, Arc<AtomicBool>>)
 
 #[derive(Clone, Deserialize)]
 struct RelayCommand {
+    #[serde(default)]
+    expires_at: Option<String>,
+    #[serde(skip)]
+    local_deadline: Option<u64>,
     task_id: Option<String>,
     id: String,
     command: String,
@@ -651,7 +666,10 @@ fn execute_browser_action(command: &RelayCommand, app: &tauri::AppHandle) -> Res
         }
         const dialogSelector = '[aria-modal="true"],dialog[open],[role="dialog"],[role="alertdialog"]';
         for (let node = element; node; node = node.ownerDocument.defaultView?.frameElement) {
-            const modal = Array.from(node.ownerDocument.querySelectorAll(dialogSelector)).filter(d => d.getClientRects().length && !d.closest('[hidden],[inert],[aria-hidden="true"]')).at(-1);
+            const visible = el => el.getClientRects().length && !el.closest('[hidden],[inert],[aria-hidden="true"]') && !['hidden','collapse'].includes(el.ownerDocument.defaultView.getComputedStyle(el).visibility);
+            const dialogs = Array.from(node.ownerDocument.querySelectorAll(dialogSelector)).filter(visible);
+            const editors = 'textarea,input:not([type="hidden"]),[contenteditable]:not([contenteditable="false"]),[role="textbox"]';
+            const modal = dialogs.slice().reverse().find(d => Array.from(d.querySelectorAll(editors)).some(visible)) || dialogs.at(-1);
             if (modal && !modal.contains(node)) return {ok:false,error:'An active dialogue blocks the target. Inspect a fresh snapshot before proceeding.'};
         }
         if (!element?.isConnected || !element.ownerDocument.defaultView || element.ownerDocument.defaultView.document !== element.ownerDocument)
@@ -790,7 +808,7 @@ fn execute_browser_action(command: &RelayCommand, app: &tauri::AppHandle) -> Res
         _ => Err("Unsupported browser action.".to_string()),
     }
 }
-fn position_pointer(x: i64, y: i64) -> Result<(), String> {
+fn validate_pointer(x: i64, y: i64) -> Result<(), String> {
     let monitors = Monitor::all().map_err(|_| "Could not enumerate monitors.")?;
     let on_screen = monitors.iter().any(|m| {
         let (Ok(left), Ok(top), Ok(width), Ok(height)) = (m.x(), m.y(), m.width(), m.height()) else { return false };
@@ -798,6 +816,11 @@ fn position_pointer(x: i64, y: i64) -> Result<(), String> {
             && (i64::from(top)..i64::from(top) + i64::from(height)).contains(&y)
     });
     if !on_screen { return Err("Coordinates outside the connected monitors.".into()); }
+    Ok(())
+}
+
+fn position_pointer(x: i64, y: i64) -> Result<(), String> {
+    validate_pointer(x,y)?;
     // SetCursorPos accepts signed virtual-desktop coordinates, including monitors left of the primary.
     if unsafe { windows_sys::Win32::UI::WindowsAndMessaging::SetCursorPos(x as i32, y as i32) } == 0 {
         return Err("Windows rejected pointer positioning.".into());
@@ -813,13 +836,13 @@ fn execute_input_action(command: &RelayCommand) -> Result<serde_json::Value, Str
                 "chrome" => ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"].iter()
                     .filter_map(|key| std::env::var_os(*key)).map(|base| PathBuf::from(base).join(r"Google\Chrome\Application\chrome.exe"))
                     .find(|p| p.is_file()).ok_or("Chrome is not installed in a standard location.")?,
-                "notepad" | "calculator" => PathBuf::from(std::env::var_os("SystemRoot").ok_or("Windows directory unavailable.")?)
-                    .join("System32").join(if app == "calculator" { "calc.exe" } else { "notepad.exe" }),
+                "notepad" | "calculator" | "paint" => PathBuf::from(std::env::var_os("SystemRoot").ok_or("Windows directory unavailable.")?)
+                    .join("System32").join(match app { "calculator" => "calc.exe", "paint" => "mspaint.exe", _ => "notepad.exe" }),
                 _ => return Err("Unsupported application.".into())
             };
             let before = windows_controls::app_windows(app);
             std::process::Command::new(path).spawn().map_err(|_| "Application launch failed.")?;
-            for _ in 0..12 {
+            for _ in 0..30 {
                 let found: Vec<_> = windows_controls::app_windows(app).into_iter().filter(|id|!before.contains(id)).collect();
                 if found.len()==1 { return Ok(serde_json::json!({"launched":app,"verification":"new_window_observed","windowId":found[0]})); }
                 if found.len()>1 {break;}
@@ -886,6 +909,54 @@ fn execute_input_action(command: &RelayCommand) -> Result<serde_json::Value, Str
     }
     let mut enigo = Enigo::new(&Settings::default()).map_err(|_| "Windows input simulation could not start.".to_string())?;
     match command.command.as_str() {
+        "input.pointer.path" => {
+            let points = command.payload["points"].as_array().ok_or("Pointer path required.")?;
+            if points.len() < 2 || points.len() > 256 { return Err("Path requires 2–256 points.".into()); }
+            let duration = command.payload["durationMs"].as_u64().unwrap_or(500);
+            if duration > 5000 { return Err("Path duration exceeds five seconds.".into()); }
+            let button = match command.payload["button"].as_str().unwrap_or("none") {
+                "none" => None, "left" => Some(Button::Left), "right" => Some(Button::Right),
+                _ => return Err("Invalid path button.".into())
+            };
+            let mut coords = Vec::with_capacity(points.len());
+            for point in points {
+                let x = point["x"].as_i64().ok_or("Invalid path x.")?;
+                let y = point["y"].as_i64().ok_or("Invalid path y.")?;
+                validate_pointer(x,y)?;
+                coords.push((x,y));
+            }
+            position_pointer(coords[0].0,coords[0].1)?;
+            if let Some(b) = button { enigo.button(b,Direction::Press).map_err(|_| "Mouse press failed.")?; }
+            // One bounded operation owns the pressed button. Release even if movement fails.
+            let result = (|| -> Result<(),String> {
+                let start = std::time::Instant::now();
+                for (i,pair) in coords.windows(2).enumerate() {
+                    let (x0,y0)=pair[0]; let (x1,y1)=pair[1];
+                    let segment_ms = duration as f64 / (coords.len()-1) as f64;
+                    let subdivisions = ((segment_ms/12.0).ceil() as usize).clamp(1,128);
+                    for n in 1..=subdivisions {
+                        let fraction = n as f64/subdivisions as f64;
+                        let deadline = Duration::from_secs_f64((i as f64+fraction)*segment_ms/1000.0);
+                        if let Some(wait)=deadline.checked_sub(start.elapsed()) { std::thread::sleep(wait); }
+                        position_pointer((x0 as f64+(x1-x0) as f64*fraction).round() as i64,(y0 as f64+(y1-y0) as f64*fraction).round() as i64)?;
+                    }
+                }
+                Ok(())
+            })();
+            let release = if let Some(b)=button { enigo.button(b,Direction::Release).map_err(|_| "Mouse release failed.".to_string()) } else { Ok(()) };
+            release?;
+            result?;
+            Ok(serde_json::json!({"action":"path","points":coords.len(),"durationMs":duration,"buttonReleased":button.is_some()}))
+        },
+        "input.pointer.double_click" => {
+            let x=command.payload["x"].as_i64().ok_or("Invalid x.")?;
+            let y=command.payload["y"].as_i64().ok_or("Invalid y.")?;
+            position_pointer(x,y)?;
+            enigo.button(Button::Left,Direction::Click).map_err(|_|"First click failed.")?;
+            std::thread::sleep(Duration::from_millis(70));
+            enigo.button(Button::Left,Direction::Click).map_err(|_|"Second click failed.")?;
+            Ok(serde_json::json!({"action":"double_click","x":x,"y":y}))
+        },
         "input.pointer.move" => {
             let x = command.payload.get("x").and_then(|v| v.as_i64()).ok_or("An x coordinate is required.")?;
             let y = command.payload.get("y").and_then(|v| v.as_i64()).ok_or("A y coordinate is required.")?;
@@ -972,7 +1043,7 @@ fn allows_relay_action(policy: &AutomationPolicy, command: &RelayCommand) -> boo
 
 #[tauri::command]
 fn get_pending_action(pending: tauri::State<'_, PendingAction>) -> Option<serde_json::Value> {
-    pending.0.lock().ok()?.as_ref().map(|command| serde_json::json!({ "id": command.id, "taskId":command.task_id, "command": command.command, "payload": command.payload.clone() }))
+    pending.0.lock().ok()?.as_ref().map(|command| serde_json::json!({ "id": command.id, "taskId":command.task_id, "command": command.command, "payload": command.payload.clone(), "deadline": approval_deadline(command) }))
 }
 
 #[tauri::command]
@@ -982,6 +1053,7 @@ async fn approve_pending_action(command_id: String, approve_task: bool, pending:
     }
     let command = pending.0.lock().map_err(|_| "Approval state is unavailable.".to_string())?.clone().ok_or("There is no pending action to approve.")?;
     if command.id != command_id { return Err("Pending command changed. Review it again.".into()); }
+    if approval_deadline(&command) <= now_epoch() { return Err("Approval expired.".into()); }
     if !heartbeat().await || !authorize_pending_command(&command.id).await {
         { let mut current = pending.0.lock().map_err(|_| "Approval state is unavailable.".to_string())?; if current.as_ref().map(|c| &c.id) == Some(&command.id) { current.take(); } }
         return Err("McpOS could not verify that this device and AI session are still authorised. The action was not executed.".to_string());
@@ -992,7 +1064,7 @@ async fn approve_pending_action(command_id: String, approve_task: bool, pending:
     }
     {
         let mut current = pending.0.lock().map_err(|_| "Approval state unavailable.")?;
-        if current.as_ref().map(|c| &c.id) != Some(&command_id) || command.id != command_id {
+        if current.as_ref().map(|c| &c.id) != Some(&command_id) || command.id != command_id || approval_deadline(&command) <= now_epoch() {
             return Err("Pending command changed. Review it again.".into());
         }
         current.take();
@@ -1037,7 +1109,8 @@ fn notify_approval(app: &tauri::AppHandle, command: &RelayCommand) {
     let operation = command.payload.get("windowAction").and_then(|v| v.as_str()).unwrap_or(&command.command);
     let toast = tauri_winrt_notification::Toast::new(&app.config().identifier)
         .title("McpOS approval required")
-        .text1(&format!("Requested action: {operation}. Open the tray for full details."))
+        .duration(tauri_winrt_notification::Duration::Long)
+        .text1(&format!("Requested action: {operation}. Review within {} seconds using the McpOS tray.", approval_deadline(command).saturating_sub(now_epoch())))
         .add_button("Approve once", "approve")
         .add_button("Deny", "deny")
         .on_activated(move |action| {
@@ -1075,7 +1148,7 @@ async fn socket_claim(session: &mut Option<(String, RelaySocket)>, token: &str, 
         *session = None;
         let mut request = format!("{}/functions/v1/device-poll", SUPABASE_URL.replacen("https://", "wss://", 1)).into_client_request().map_err(|_| ())?;
         request.headers_mut().insert("authorization", format!("Bearer {token}").parse().map_err(|_| ())?);
-        request.headers_mut().insert("x-mcpos-relay-version","4".parse().map_err(|_| ())?);
+        request.headers_mut().insert("x-mcpos-relay-version","5".parse().map_err(|_| ())?);
         request.headers_mut().insert("apikey", api_key.parse().map_err(|_| ())?);
         let (socket, _) = tokio_tungstenite::connect_async(request).await.map_err(|_| ())?;
         *session = Some((token.to_owned(), socket));
@@ -1097,6 +1170,13 @@ async fn poll_relay_once(session: &mut Option<(String, RelaySocket)>, retry_sock
     let Some(api_key) = SUPABASE_ANON_KEY else { return };
     if api_key.is_empty() { return; }
 
+    let expired = {
+        let mut pending = pending_action.lock().unwrap_or_else(|p|p.into_inner());
+        if pending.as_ref().is_some_and(|c| approval_deadline(c) <= now_epoch()) { pending.take() } else { None }
+    };
+    if let Some(command)=expired {
+        let _=submit_relay_result(&command.id,serde_json::json!({}),Some("Local approval expired.".into())).await;
+    }
     if pending_action.lock().map(|p| p.is_some()).unwrap_or(true) { return; }
     let client = relay_client();
     let streamed = if now_epoch() >= *retry_socket_at {
@@ -1108,7 +1188,7 @@ async fn poll_relay_once(session: &mut Option<(String, RelaySocket)>, retry_sock
     let envelope = if let Some(value) = streamed { value } else {
     let response = match client
         .post(format!("{SUPABASE_URL}/functions/v1/device-poll"))
-        .header("x-mcpos-relay-version","4")
+        .header("x-mcpos-relay-version","5")
         .header("apikey", api_key)
         .bearer_auth(&token)
         .json(&serde_json::json!({}))
@@ -1122,13 +1202,13 @@ async fn poll_relay_once(session: &mut Option<(String, RelaySocket)>, retry_sock
     let Ok(value) = response.json::<RelayPollResponse>().await else { return };
     value
     };
-    let Some(command) = envelope.command else { return };
+    let Some(mut command) = envelope.command else { return };
     if command.payload.get("bindings").is_some() {
         let _ = submit_relay_result(&command.id, serde_json::json!({}), Some("Previous step did not resolve the requested target.".into())).await;
         return;
     }
 
-    if matches!(command.command.as_str(), "desktop.launch" | "desktop.focus" | "native.shortcut" | "native.invoke" | "native.set_text" | "clipboard.write" | "input.pointer.click" | "input.pointer.move" | "input.pointer.scroll") || command.command == "input.keyboard.type" || command.command == "input.keyboard.shortcut" || command.command == "browser.open" || command.command == "browser.click" || command.command == "browser.type" {
+    if matches!(command.command.as_str(), "desktop.launch" | "desktop.focus" | "native.shortcut" | "native.invoke" | "native.set_text" | "clipboard.write" | "input.pointer.click" | "input.pointer.move" | "input.pointer.path" | "input.pointer.double_click" | "input.pointer.scroll") || command.command == "input.keyboard.type" || command.command == "input.keyboard.shortcut" || command.command == "browser.open" || command.command == "browser.click" || command.command == "browser.type" {
         if command.command.starts_with("browser.") && !browser_consent.load(Ordering::Relaxed) {
             let _ = submit_relay_result(&command.id, serde_json::json!({}), Some("Isolated browser consent is switched off on this Windows computer.".to_string())).await;
             return;
@@ -1153,6 +1233,8 @@ async fn poll_relay_once(session: &mut Option<(String, RelaySocket)>, retry_sock
             let _ = submit_relay_result(&command.id, result, error).await;
             return;
         }
+        let remaining = command.expires_at.as_deref().and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok()).map(|d| d.timestamp().max(0) as u64).unwrap_or(now_epoch()+60);
+        command.local_deadline = Some(remaining.min(now_epoch()+get_approval_timeout()));
         let command_id = command.id.clone();
         let already_pending = {
             let mut pending = pending_action.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1175,7 +1257,7 @@ async fn poll_relay_once(session: &mut Option<(String, RelaySocket)>, retry_sock
                 "connected": connected.load(Ordering::Relaxed),
                 "device_id": device_id,
                 "agent_version": env!("CARGO_PKG_VERSION"),
-                "supported_commands": ["desktop.status", "screen.capture", "desktop.accessibility", "files.list", "files.read", "input.pointer.click", "input.pointer.move", "input.pointer.scroll", "input.keyboard.type", "input.keyboard.shortcut", "browser.open", "browser.snapshot", "browser.click", "browser.type"],
+                "supported_commands": ["desktop.status", "screen.capture", "desktop.accessibility", "files.list", "files.read", "input.pointer.click", "input.pointer.move", "input.pointer.path", "input.pointer.double_click", "input.pointer.scroll", "input.keyboard.type", "input.keyboard.shortcut", "browser.open", "browser.snapshot", "browser.click", "browser.type"],
                 "execution_enabled": policy.lock().map(|p| policy_active(&p)).unwrap_or(false),
                 "automation_policy": policy.lock().map(|p| policy_json(&p)).unwrap_or_else(|_| serde_json::json!({"mode":"manual","paused":true})),
                 "developer_tools": discover_developer_tools(),
@@ -1295,7 +1377,7 @@ fn start_heartbeat(app: tauri::AppHandle, connected: Arc<AtomicBool>) {
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
-        .invoke_handler(tauri::generate_handler![pair_device, get_device_status, get_screen_capture_consent, set_screen_capture_consent, get_accessibility_consent, set_accessibility_consent, get_approved_folders, pick_approved_folder, remove_approved_folder, get_pending_action, approve_pending_action, deny_pending_action, get_browser_consent, set_browser_consent, get_automation_policy, set_automation_policy, pause_automation])
+        .invoke_handler(tauri::generate_handler![pair_device, get_device_status, get_screen_capture_consent, set_screen_capture_consent, get_accessibility_consent, set_accessibility_consent, get_approved_folders, pick_approved_folder, remove_approved_folder, get_pending_action, approve_pending_action, deny_pending_action, get_browser_consent, set_browser_consent, get_automation_policy, set_automation_policy, pause_automation, get_approval_timeout, set_approval_timeout])
         .setup(|app| {
             let open = MenuItem::with_id(app, "open", "Open McpOS", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit McpOS", true, None::<&str>)?;

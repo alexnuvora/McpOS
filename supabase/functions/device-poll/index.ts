@@ -31,7 +31,7 @@ Deno.serve(async request => {
   });
   async function compatibleCommand(response: Response) {
     const command = await response.json();
-    if (command?.payload?.minRelay === 4 && request.headers.get("x-mcpos-relay-version") !== "4") {
+    if ([4,5].includes(command?.payload?.minRelay) && Number(request.headers.get("x-mcpos-relay-version") || 1) < command.payload.minRelay) {
       const failed = await fetch(url + "/rest/v1/rpc/complete_mcpos_device_command", {
         method:"POST", headers, body:JSON.stringify({p_token_hash:tokenHash,p_command_id:command.id,p_result:{},p_error_message:"Desktop update required."}),
       });

@@ -277,7 +277,7 @@ function makeServer(client: McpClient) {
       if (!device) return { content: [{ type: "text", text: "No online Windows device is available." }], isError: true };
       const command = operation === "read" ? "files.read" : "files.list";
       const payload = operation === "list_folders" ? {} : { path };
-      const expiresAt = new Date(Date.now() + 60_000).toISOString();
+      const expiresAt = new Date(Date.now() + 240_000).toISOString();
       const queued = await supabaseRest("mcpos_device_commands", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ user_id: client.user_id, mcp_client_id: client.id, ...entitlement.billing, device_id: device.id, command, payload, expires_at: expiresAt }) });
       if (!queued.ok) return queueError(queued);
       const [row] = await queued.json();
@@ -310,7 +310,7 @@ function makeServer(client: McpClient) {
       const [device] = await devicesResponse.json();
       if (!device) return { content: [{ type: "text", text: "No online Windows device is available." }], isError: true };
       const payload = action === "pointer_click" ? { x, y, button: button ?? "left" } : action === "pointer_move" ? { x, y } : action === "pointer_scroll" ? { steps, axis: axis ?? "vertical" } : action === "keyboard_type" ? { text } : { keys };
-      const expiresAt = new Date(Date.now() + 60_000).toISOString();
+      const expiresAt = new Date(Date.now() + 240_000).toISOString();
       const queued = await supabaseRest("mcpos_device_commands", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ user_id: client.user_id, mcp_client_id: client.id, ...entitlement.billing, device_id: device.id, command, payload, expires_at: expiresAt }) });
       if (!queued.ok) return queueError(queued);
       const [row] = await queued.json();
@@ -351,7 +351,7 @@ function makeServer(client: McpClient) {
       const targeted = Boolean(expectedText) || Boolean(windowId) || ["list","switch","close","upload"].includes(action);
       const command = targeted ? "browser.open" : "browser." + action;
       const payload = targeted ? { windowAction: expectedText ? "browser.verified_click" : "browser." + action, expectedText, windowId, ...(action === "open" ? { targetUrl: url } : {}), ...(["click","type","upload"].includes(action) ? { selector } : {}), ...(action === "type" ? { text } : {}) } : action === "open" ? { url, ...(newWindow === true ? { newWindow: true } : {}) } : action === "click" ? { selector } : action === "type" ? { selector, text } : {};
-      const expiresAt = new Date(Date.now() + 60_000).toISOString();
+      const expiresAt = new Date(Date.now() + 240_000).toISOString();
       const queued = await supabaseRest("mcpos_device_commands", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ user_id: client.user_id, mcp_client_id: client.id, ...entitlement.billing, device_id: device.id, command, payload, expires_at: expiresAt }) });
       if (!queued.ok) return queueError(queued);
       const [row] = await queued.json();
@@ -447,6 +447,8 @@ function makeServer(client: McpClient) {
   const stepSchema = z.discriminatedUnion("command", [
     z.object({ command: z.literal("input.pointer.click"), x: coordinate, y: coordinate, button: z.enum(["left", "right"]).default("left") }),
     z.object({ command: z.literal("input.pointer.move"), x: coordinate, y: coordinate }),
+    z.object({ command: z.literal("input.pointer.path"), points: z.array(z.object({x:coordinate,y:coordinate})).min(2).max(256), button:z.enum(["none","left","right"]).default("none"), durationMs:z.number().int().min(0).max(5000).default(500) }),
+    z.object({ command: z.literal("input.pointer.double_click"), x:coordinate,y:coordinate }),
     z.object({ command: z.literal("input.pointer.scroll"), steps: z.number().int().min(-12).max(12), axis: z.enum(["vertical", "horizontal"]).default("vertical") }),
     z.object({ command: z.literal("input.keyboard.type"), text: printable }),
     z.object({ command: z.literal("input.keyboard.shortcut"), keys: z.array(z.string().min(1).max(12)).min(2).max(4) }),
@@ -460,7 +462,7 @@ function makeServer(client: McpClient) {
     z.object({command:z.literal("chrome.tabs"), windowId:nativeWindow, operation:z.enum(["list","open","switch","close"]), tabId:runtimeId.optional()}),
     z.object({ command: z.literal("screen.capture"), windowId:nativeWindow.optional(), crop:crop.optional(), jpegQuality:z.number().int().min(25).max(90).optional(), displayId: z.number().int().nonnegative().optional() }),
     z.object({ command: z.literal("desktop.accessibility"), windowId: nativeWindow.optional(), binding:windowBinding.optional() }),
-    z.object({ command: z.literal("desktop.launch"), application: z.enum(["chrome","calculator","notepad"]) }),
+    z.object({ command: z.literal("desktop.launch"), application: z.enum(["chrome","calculator","notepad","paint"]) }),
     z.object({ command: z.literal("desktop.focus"), windowId: nativeWindow.optional(), binding:windowBinding.optional() }),
     z.object({ command: z.literal("native.invoke"), windowId: nativeWindow.optional(), controlId: runtimeId.optional(), binding:nativeBinding.optional() }),
     z.object({ command: z.literal("native.set_text"), windowId: nativeWindow.optional(), controlId: runtimeId.optional(), binding:nativeBinding.optional(), text: z.string().max(2048) }),
@@ -505,7 +507,7 @@ function makeServer(client: McpClient) {
   }
   server.registerTool("mcpos_execute_task", {
     title: "Run an ordered Windows task",
-    description: "Queue up to eight steps on one device. Each step retains its own permissions and local approvals. Enable screenshotAfterAction to capture after each successful input action. Set waitMs (up to 20000) and finalScreenshot to return completed step results and the last JPEG in this call. Use the same task ID when recovering after a timeout. Desktop 0.2.6 supports waits, scroll, rich-editor bounds, native document text, Chrome tabs, targeted cropped JPEGs, and fromStep target bindings. Alternatively use binding with an earlier snapshot step, exact label and optional role.",
+    description: "Queue up to eight steps on one device. Each step retains its own permissions and local approvals. Enable screenshotAfterAction to capture after each successful input action. Set waitMs (up to 20000) and finalScreenshot to return completed step results and the last JPEG in this call. Use the same task ID when recovering after a timeout. Desktop 0.2.6 supports waits, scroll, rich-editor bounds, native document text, Chrome tabs, targeted cropped JPEGs, and fromStep target bindings. Alternatively use binding with an earlier snapshot step, exact label and optional role. Desktop 0.2.7 adds bounded pointer paths (button none for movement, left/right for drag and drawing), double-click and Paint launch.",
     inputSchema: z.object({ taskId: z.string().uuid(), deviceId: z.string().uuid(), steps: z.array(stepSchema).min(1).max(8), screenshotAfterAction: z.boolean().default(false), finalScreenshot: z.boolean().default(false), waitMs: waitOption }),
   }, async ({ taskId, deviceId, steps, screenshotAfterAction, finalScreenshot, waitMs }) => {
     if (waitMs && !client.scopes.includes("workspace.read")) return scopeError("workspace.read");
@@ -563,6 +565,9 @@ function makeServer(client: McpClient) {
       if (captureOptions && data.windowId && data.displayId !== undefined) return {isError:true,content:[{type:"text",text:"Choose a window or a display."}]};
       if (extended) data.minRelay=4;
       if (extended && !(online.relay_version>=4)) return {isError:true,content:[{type:"text",text:"This task requires Desktop 0.2.6 or later."}]};
+      const needsV5 = command === "input.pointer.path" || command === "input.pointer.double_click" || (command === "desktop.launch" && "application" in data && data.application === "paint");
+      if (needsV5 && !(online.relay_version >= 5)) return {isError:true,content:[{type:"text",text:"This action requires Desktop 0.2.7 or later."}]};
+      if (needsV5) data.minRelay=5;
       let wireCommand: string = command;
       if (verify || browserOperation) {
         wireCommand="browser.open";

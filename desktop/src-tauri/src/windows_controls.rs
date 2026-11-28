@@ -46,7 +46,7 @@ pub fn app_windows(app: &str) -> Vec<Value> {
     let Ok((_, children)) = windows() else { return vec![] };
     children.iter().filter(|e| {
         let name = e.get_process_id().ok().and_then(executable);
-        matches!((app, name.as_deref()), ("chrome",Some("chrome.exe")) | ("notepad",Some("notepad.exe")) | ("calculator",Some("calculatorapp.exe" | "calculator.exe" | "calc.exe")))
+        matches!((app, name.as_deref()), ("chrome",Some("chrome.exe")) | ("notepad",Some("notepad.exe")) | ("paint",Some("mspaint.exe" | "paint.exe")) | ("calculator",Some("calculatorapp.exe" | "calculator.exe" | "calc.exe"))) || (app == "calculator" && name.as_deref() == Some("applicationframehost.exe") && e.get_name().is_ok_and(|title| title == "Calculator"))
     }).filter_map(|e| e.get_runtime_id().ok().map(|r|json!(r))).collect()
 }
 
