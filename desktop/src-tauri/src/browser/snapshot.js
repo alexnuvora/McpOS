@@ -15,7 +15,9 @@
         if (++visited > 24) return;
         const all = Array.from(doc.querySelectorAll(selector));
         const dialogs = Array.from(doc.querySelectorAll('[role="dialog"],[role="alertdialog"],dialog[open],[aria-modal="true"]')).filter(el => el.querySelectorAll && visible(el));
-        const active = dialogs.at(-1);
+        // Prefer the innermost visible dialog containing a real editor, not a nested close-button dialog.
+        const editorSelector = 'textarea,input:not([type="hidden"]),[contenteditable]:not([contenteditable="false"]),[role="textbox"]';
+        const active = dialogs.slice().reverse().find(dialog => Array.from(dialog.querySelectorAll(editorSelector)).some(visible)) || dialogs.at(-1);
         const candidates = active ? Array.from(active.querySelectorAll(selector)) : all;
         const ordered = candidates.map((el, index) => ({el,index,priority: el.matches('input:not([type="hidden"]),textarea,[contenteditable]:not([contenteditable="false"]),[role="textbox"]') ? 0 : (el.getAttribute('aria-label') || el.innerText || el.getAttribute('placeholder') || '').trim() ? 1 : 2}));
         ordered.sort((a,b) => a.priority-b.priority || a.index-b.index);
@@ -34,10 +36,10 @@
                 elementId, selector: elementId,
                 tag: element.tagName.toLowerCase(),
                 role: element.getAttribute('role') || undefined,
-                label: (element.getAttribute('aria-label') || element.getAttribute('placeholder') || element.innerText || element.getAttribute('name') || '').trim().slice(0, 140),
+                label: (element.getAttribute('aria-label') || element.getAttribute('aria-placeholder') || element.getAttribute('placeholder') || element.getAttribute('data-placeholder') || element.innerText || element.getAttribute('name') || '').trim().slice(0, 140),
                 type: element.getAttribute('type') || undefined,
                 disabled: Boolean(element.disabled || element.getAttribute('aria-disabled') === 'true'),
-                editable: element.matches('input:not([type="hidden"]),textarea,[contenteditable]:not([contenteditable="false"])'),
+                editable: Boolean(element.isContentEditable || element.matches('input:not([type="hidden"]),textarea,[contenteditable]:not([contenteditable="false"])')),
                 sensitive: element.matches('input[type=password],input[autocomplete=current-password],input[autocomplete=new-password]')
             });
         }
