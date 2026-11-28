@@ -1,4 +1,5 @@
 "use client";
+import DailyUsage from "@/components/daily-usage";
 
 import { useCallback, useEffect, useState } from "react";
 import {
@@ -158,6 +159,7 @@ export default function Home() {
           {[[ "Paired devices", String(activeDevices), "Registered Windows companions", Monitor ],[ "Online devices", String(onlineDevices), "Heartbeat seen in the last 90 seconds", Activity ],[ "AI clients", String(clientCount), "Active remote MCP credentials", Braces ],[ "Desktop permissions", "Local", "Check current permission switches in the Windows companion", ShieldCheck ]].map(([name,value,note,Icon])=>{const I=Icon as typeof Mail;return <div className="panel p-4" key={String(name)}><div className="flex items-center justify-between text-xs text-slate-400"><span>{String(name)}</span><I size={16}/></div><div className="mt-3 text-2xl font-semibold">{String(value)}</div><div className="mt-1 text-[11px] text-slate-500">{String(note)}</div></div>})}
         </div>
 
+        {auth.authenticated && <div className="mb-8"><DailyUsage/></div>}
         {auth.authenticated && <section id="downloads" className="panel mb-8 p-4 sm:p-5">
           <div className="flex flex-wrap items-center justify-between gap-2"><h2 className="text-sm font-semibold">Windows companion downloads</h2><span className="pill">Closed beta · unsigned</span></div>
           <p className="mt-2 text-xs leading-5 text-slate-400">For authorised testers only. Windows may block these unsigned installers. Do not disable Windows security protections. Verify the downloaded installer against SHA256SUMS.txt. This checks integrity, not publisher trust.</p>

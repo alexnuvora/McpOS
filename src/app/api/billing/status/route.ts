@@ -21,13 +21,13 @@ export async function GET(request: NextRequest) {
     const enforcing = enforcementMode === "pilot" || enforcementMode === "global";
     const day = new Date().toISOString().slice(0,10);
     let usage = null;
-    if (enforcing && plan && !exempt) {
+    if (plan) {
       const result = await supabaseRest("mcpos_daily_command_usage?select=command_count&user_id=eq." + encodeURIComponent(auth.account.userId) + "&usage_date=eq." + day + "&limit=1");
       if (!result.ok) throw new Error("Usage unavailable");
       const rows = await result.json();
       const used = rows[0]?.command_count ?? 0;
       if (!Number.isSafeInteger(used) || used < 0) throw new Error("Invalid usage");
-      usage = { used, limit: limits[plan], date: day };
+      usage = { used, limit: limits[plan], date: day, enforcing };
     }
     return NextResponse.json({ enabled: true, subscriptions, usage, enforcing, exempt, enforcementMode }, { headers });
   } catch { return NextResponse.json({ error: "Subscription status unavailable." }, { status: 503, headers }); }

@@ -1,4 +1,5 @@
 "use client";
+import DailyUsage from "@/components/daily-usage";
 import { useEffect, useState } from "react";
 import Link from "next/link";
 
@@ -14,7 +15,7 @@ export default function BillingPage() {
   const [ready, setReady] = useState(false);
   const [signInRequired, setSignInRequired] = useState(false);
   const [subscriptions, setSubscriptions] = useState<Array<{ id: string; plan: string | null; status: string; currentPeriodEnd: number | null; cancelAtPeriodEnd: boolean; active: boolean }>>([]);
-  const [usage, setUsage] = useState<{used: number; limit: number; date: string} | null>(null);
+  const [usage, setUsage] = useState<{used: number; limit: number; date: string; enforcing: boolean} | null>(null);
   const [statusMessage, setStatusMessage] = useState("Checking subscriptions…");
   useEffect(() => {
     let stopped = false;
@@ -84,11 +85,12 @@ export default function BillingPage() {
           <button type="button" disabled={!ready || busy !== null || subscriptions.some(s => !["canceled", "incomplete_expired"].includes(s.status))} onClick={() => void checkout(plan.id)} className="mt-6 w-full rounded-lg bg-indigo-500 px-4 py-3 text-sm font-semibold disabled:opacity-50">{busy === plan.id ? "Opening checkout…" : "Test checkout"}</button>
         </section>)}
       </div>
+      {!signInRequired && <div className="mt-10"><DailyUsage/></div>}
       {usage && <section className="mt-10 rounded-xl border border-slate-700 p-6">
-        <h2 className="text-xl font-semibold">Daily command usage</h2>
+        <h2 className="text-xl font-semibold">Verified subscription quota</h2>
         <p className="mt-3 text-sm text-slate-300">{usage.used.toLocaleString("en-GB")} of {usage.limit.toLocaleString("en-GB")} used</p>
         <progress className="mt-3 w-full" aria-label="Daily command usage" max={usage.limit} value={Math.min(usage.used, usage.limit)} />
-        <p className="mt-2 text-xs text-slate-400">Resets at midnight UTC · {usage.date}</p>
+        <p className="mt-2 text-xs text-slate-400">{usage.enforcing ? "Enforcement active" : "Enforcement inactive — historical metered commands only"} · Resets at midnight UTC · {usage.date}</p>
       </section>}
       <section className="mt-10 rounded-xl border border-slate-700 p-6">
         <h2 className="text-xl font-semibold">Your subscriptions</h2>

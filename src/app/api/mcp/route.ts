@@ -305,15 +305,17 @@ function makeServer(client: McpClient) {
     "mcpos_browser_automation",
     {
       title: "Automate the isolated browser",
-      description: "Open an HTTPS website (newWindow optionally opens another window on supported companions), read a bounded page snapshot, click a CSS selector, or enter text into a selected field in the separate McpOS browser profile. Focus the intended isolated window when several are open. Requires browser.control scope and the local browser consent switch. The Windows computer enforces its local Manual, Selected or Auto-approve-all policy. Browser automation always retains its separate local consent switch.",
+      description: "Open an HTTPS website (newWindow optionally opens another window on supported companions), read a bounded page snapshot, click a CSS selector, or enter text into a selected field in the separate McpOS browser profile. List windows, switch or close by windowId, and target snapshots, clicks and typing with the exact windowId. Requires Desktop 0.2.2 for window IDs and management. Requires browser.control scope and the local browser consent switch. The Windows computer enforces its local Manual, Selected or Auto-approve-all policy. Browser automation always retains its separate local consent switch.",
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
       _meta: { securitySchemes: [{ type: "oauth2", scopes: ["browser.control"] }] },
-      inputSchema: z.object({ action: z.enum(["open", "snapshot", "click", "type"]), url: z.string().max(2048).optional(), selector: z.string().max(256).optional(), text: z.string().max(200).optional(), newWindow: z.boolean().optional() }),
+      inputSchema: z.object({ action: z.enum(["open", "snapshot", "click", "type", "list", "switch", "close"]), url: z.string().max(2048).optional(), selector: z.string().max(256).optional(), text: z.string().max(200).optional(), newWindow: z.boolean().optional(), windowId: z.string().regex(/^mcpos-isolated-browser-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i).optional() }),
     },
-    async ({ action, url, selector, text, newWindow }) => {
+    async ({ action, url, selector, text, newWindow, windowId }) => {
       if (!client.scopes.includes("browser.control")) return scopeError("browser.control");
       const entitlement = await checkCommandEntitlement(client.user_id);
       if (entitlement.status !== "allowed") return { content: [{ type: "text" as const, text: entitlement.status === "subscription_required" ? "An active McpOS subscription is required to request desktop commands. Manage your plan in the McpOS dashboard." : "Subscription verification is temporarily unavailable. No desktop command was queued." }], isError: true };
+      if ((action === "switch" || action === "close") && !windowId) return { content: [{ type: "text", text: "A windowId returned by list is required." }], isError: true };
+      if (newWindow && windowId) return { content: [{ type: "text", text: "Choose either newWindow or a specific windowId." }], isError: true };
       if (action === "open") {
         if (!url) return { content: [{ type: "text", text: "A URL is required." }], isError: true };
         try {
@@ -334,14 +336,17 @@ function makeServer(client: McpClient) {
       if (!devicesResponse.ok) return { content: [{ type: "text", text: "Could not check device availability." }], isError: true };
       const [device] = await devicesResponse.json();
       if (!device) return { content: [{ type: "text", text: "No online Windows device is available." }], isError: true };
-      const command = "browser." + action;
-      const payload = action === "open" ? { url, ...(newWindow === true ? { newWindow: true } : {}) } : action === "click" ? { selector } : action === "type" ? { selector, text } : {};
+      // Use the existing approved browser.open relay envelope for v2 window operations.
+      // Older agents reject the missing URL instead of accidentally acting on the wrong window.
+      const targeted = Boolean(windowId) || ["list","switch","close"].includes(action);
+      const command = targeted ? "browser.open" : "browser." + action;
+      const payload = targeted ? { windowAction: "browser." + action, windowId, ...(action === "open" ? { targetUrl: url } : {}), ...(action === "click" || action === "type" ? { selector } : {}), ...(action === "type" ? { text } : {}) } : action === "open" ? { url, ...(newWindow === true ? { newWindow: true } : {}) } : action === "click" ? { selector } : action === "type" ? { selector, text } : {};
       const expiresAt = new Date(Date.now() + 60_000).toISOString();
       const queued = await supabaseRest("mcpos_device_commands", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ user_id: client.user_id, mcp_client_id: client.id, ...entitlement.billing, device_id: device.id, command, payload, expires_at: expiresAt }) });
       if (!queued.ok) return queueError(queued);
       const [row] = await queued.json();
-      await supabaseRest("mcpos_device_audit", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ user_id: client.user_id, device_id: device.id, event_type: command + ".requested", outcome: "success", metadata: { command_id: row.id, client_name: client.client_name } }) });
-      return { content: [{ type: "text", text: JSON.stringify({ commandId: row.id, action, status: action === "snapshot" ? "queued" : "awaiting_local_approval", device: device.device_name, localConsent: "The isolated browser switch must be ON on the Windows computer.", approval: action === "snapshot" ? "Read-only snapshot; no click or input is performed." : "The Windows companion enforces its local Manual, Selected or AUTO policy; browser consent remains separately required.", nextStep: "Call mcpos_get_command_status with this commandId." }, null, 2) }] };
+      await supabaseRest("mcpos_device_audit", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ user_id: client.user_id, device_id: device.id, event_type: command + ".requested", outcome: "success", metadata: { command_id: row.id, client_name: client.client_name, browser_action: action } }) });
+      return { content: [{ type: "text", text: JSON.stringify({ commandId: row.id, action, status: action === "snapshot" && !targeted ? "queued" : "awaiting_local_approval", device: device.device_name, localConsent: "The isolated browser switch must be ON on the Windows computer.", approval: action === "snapshot" && !targeted ? "Read-only snapshot; no click or input is performed." : "The Windows companion enforces its local Manual, Selected or AUTO policy; browser consent remains separately required.", nextStep: "Call mcpos_get_command_status with this commandId." }, null, 2) }] };
     },
   );
   server.registerTool(
