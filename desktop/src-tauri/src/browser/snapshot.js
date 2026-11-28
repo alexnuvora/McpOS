@@ -29,7 +29,9 @@
         const all = Array.from(doc.querySelectorAll(selector));
         if (doc.designMode === "on" && doc.body) all.unshift(doc.body);
         const dialogs = Array.from(doc.querySelectorAll('[role="dialog"],[role="alertdialog"],dialog[open],[aria-modal="true"]')).filter(el => el.querySelectorAll && visible(el));
-        const active = dialogs.at(-1);
+        // Prefer the innermost visible dialog containing a real editor, not a nested close-button dialog.
+        const editorSelector = 'textarea,input:not([type="hidden"]),[contenteditable]:not([contenteditable="false"]),[role="textbox"]';
+        const active = dialogs.slice().reverse().find(dialog => Array.from(dialog.querySelectorAll(editorSelector)).some(visible)) || dialogs.at(-1);
         const candidates = active ? Array.from(active.querySelectorAll(selector)) : all;
         const ordered = candidates.map((el, index) => ({el,index,priority: el.matches('input:not([type="hidden"]),textarea,[contenteditable]:not([contenteditable="false"]),[role="textbox"]') ? 0 : (el.getAttribute('aria-label') || el.innerText || el.getAttribute('placeholder') || '').trim() ? 1 : 2}));
         ordered.sort((a,b) => a.priority-b.priority || a.index-b.index);
