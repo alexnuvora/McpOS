@@ -622,6 +622,35 @@ fn execute_browser_action(command: &RelayCommand, app: &tauri::AppHandle) -> Res
             let message = open_isolated_browser(app, raw_url, new_window, window_id)?;
             Ok(serde_json::json!({ "action": "open", "message": message, "windows": browser_window_list(app)["windows"], "browser_window_count": isolated_browser_windows(app).len() }))
         },
+        "browser.back" | "browser.forward" | "browser.refresh" => {
+            let expression = match operation {
+                "browser.back" => "history.back()",
+                "browser.forward" => "history.forward()",
+                _ => "location.reload()",
+            };
+            browser_eval_and_collect(app, window_id, &format!("(() => {{ {expression}; return {{ok:true, verification:'navigation_requested'}}; }})()"))
+        },
+        "browser.scroll" => {
+            let delta = command.payload.get("delta").and_then(|v| v.as_i64()).ok_or("Scroll delta required.")?;
+            if !(-2000..=2000).contains(&delta) { return Err("Scroll delta outside allowed bounds.".into()); }
+            browser_eval_and_collect(app, window_id, &format!("(() => {{ const before = scrollY; window.scrollBy(0, {delta}); return {{ok:true, before, after:scrollY}}; }})()"))
+        },
+        "browser.find" => {
+            let query = command.payload.get("query").and_then(|v| v.as_str()).ok_or("Search query required.")?;
+            if query.is_empty() || query.chars().count() > 140 { return Err("Invalid search query.".into()); }
+            let mut snapshot = get_browser_snapshot(app, window_id)?;
+            if let Some(items) = snapshot.get_mut("interactive").and_then(|v| v.as_array_mut()) {
+                let needle = query.to_lowercase();
+                items.retain(|v| v.get("label").and_then(|v| v.as_str()).unwrap_or("").to_lowercase().contains(&needle));
+            }
+            Ok(snapshot)
+        },
+        "browser.verify" => {
+            let query = command.payload.get("query").and_then(|v| v.as_str()).ok_or("Expected text required.")?;
+            if query.is_empty() || query.chars().count() > 140 { return Err("Invalid expected text.".into()); }
+            let expected = serde_json::to_string(query).map_err(|_| "Invalid expected text.")?;
+            browser_eval_and_collect(app, window_id, &format!("(() => {{ const expected = {expected}; const matched = (document.body?.innerText || '').includes(expected); return {{ok:true, matched, verification:matched?'text_present':'text_absent'}}; }})()"))
+        },
         "browser.click" => {
             let selector = command.payload.get("selector").and_then(|value| value.as_str()).ok_or("A CSS selector is required.")?;
             if selector.is_empty() || selector.len() > 256 { return Err("CSS selector must be 1–256 characters.".to_string()); }
@@ -631,10 +660,10 @@ fn execute_browser_action(command: &RelayCommand, app: &tauri::AppHandle) -> Res
         "browser.type" => {
             let selector = command.payload.get("selector").and_then(|value| value.as_str()).ok_or("A CSS selector is required.")?;
             let text = command.payload.get("text").and_then(|value| value.as_str()).ok_or("Text is required.")?;
-            if selector.is_empty() || selector.len() > 256 || text.is_empty() || text.chars().count() > 200 || text.chars().any(|character| character.is_control()) { return Err("Selector or text is outside the allowed limits.".to_string()); }
+            if selector.is_empty() || selector.len() > 256 || text.is_empty() || text.chars().count() > 4000 || text.chars().any(|character| character.is_control() && character != '\n' && character != '\t') { return Err("Selector or text is outside the allowed limits.".to_string()); }
             let selector_js = serde_json::to_string(selector).map_err(|_| "Invalid CSS selector.".to_string())?;
             let text_js = serde_json::to_string(text).map_err(|_| "Invalid text.".to_string())?;
-            browser_eval_and_collect(app, window_id, &format!("(() => {{ const selector = {selector_js}; const matches = document.querySelectorAll(selector); if (matches.length !== 1) return {{ ok: false, error: matches.length ? 'AMBIGUOUS_SELECTOR: request a new snapshot and use a unique selector' : 'ELEMENT_NOT_FOUND: request a new snapshot', selector }}; const element = matches[0]; if (!element.getClientRects().length || element.closest('[hidden],[inert],[aria-hidden=true],[aria-disabled=true]') || element.disabled || getComputedStyle(element).visibility !== 'visible') return {{ ok: false, error: 'ELEMENT_NOT_INTERACTABLE: request a new snapshot', selector }}; if (!(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element.isContentEditable)) return {{ ok: false, error: 'Target is not an editable field', selector }}; if (element.matches('input[type=password],input[autocomplete=current-password],input[autocomplete=new-password]')) return {{ ok: false, error: 'Password fields require direct local entry', selector }}; element.focus(); if ('value' in element) {{ const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element), 'value')?.set; if (setter) setter.call(element, {text_js}); else element.value = {text_js}; }} else element.textContent = {text_js}; element.dispatchEvent(new InputEvent('input', {{ bubbles: true, inputType: 'insertText', data: {text_js} }})); element.dispatchEvent(new Event('change', {{ bubbles: true }})); return {{ ok: true, action: 'type', selector, characters: {text_js}.length }}; }})()"))
+            browser_eval_and_collect(app, window_id, &format!("(() => {{ const selector = {selector_js}; const matches = document.querySelectorAll(selector); if (matches.length !== 1) return {{ ok: false, error: matches.length ? 'AMBIGUOUS_SELECTOR: request a new snapshot and use a unique selector' : 'ELEMENT_NOT_FOUND: request a new snapshot', selector }}; const element = matches[0]; if (!element.getClientRects().length || element.closest('[hidden],[inert],[aria-hidden=true],[aria-disabled=true]') || element.disabled || getComputedStyle(element).visibility !== 'visible') return {{ ok: false, error: 'ELEMENT_NOT_INTERACTABLE: request a new snapshot', selector }}; if (!(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element.isContentEditable)) return {{ ok: false, error: 'Target is not an editable field', selector }}; if (element.matches('input[type=password],input[autocomplete=current-password],input[autocomplete=new-password]')) return {{ ok: false, error: 'Password fields require direct local entry', selector }}; element.focus(); if ('value' in element) {{ const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element), 'value')?.set; if (setter) setter.call(element, {text_js}); else element.value = {text_js}; }} else {{ const selection = window.getSelection(); const range = document.createRange(); range.selectNodeContents(element); selection.removeAllRanges(); selection.addRange(range); if (!document.execCommand('insertText', false, {text_js})) return {{ok:false,error:'EDITOR_INSERT_FAILED'}}; }} element.dispatchEvent(new InputEvent('input', {{ bubbles: true, inputType: 'insertText', data: {text_js} }})); element.dispatchEvent(new Event('change', {{ bubbles: true }})); const actual = ('value' in element ? element.value : element.innerText || element.textContent || '').replace(/\\r\\n/g, '\\n'); return {{ ok: true, action: 'type', selector, characters: {text_js}.length, verification: actual === {text_js} ? 'field_value_matched' : 'field_value_unconfirmed' }}; }})()"))
         },
         _ => Err("Unsupported browser action.".to_string()),
     }
