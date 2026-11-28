@@ -1,7 +1,7 @@
 import { sandboxBillingEnabled } from "@/lib/sandbox-billing";
 import * as z from "zod/v4";
 import { supabaseRest } from "@/lib/device-auth";
-import { resolveSubscription } from "@/lib/subscription-policy.mjs";
+import { commandEnforcementMode, resolveSubscription } from "@/lib/subscription-policy.mjs";
 
 const schema = z.object({
   id: z.string(), livemode: z.literal(false), customer: z.string(),
@@ -43,10 +43,13 @@ type CommandEntitlement =
   | { status: "allowed"; billing: { billing_plan?: PaidPlan; billing_verified_until?: string } }
   | { status: "subscription_required" | "unavailable" };
 
+export function getCommandEnforcementMode(userId: string) {
+  return commandEnforcementMode(process.env, userId, sandboxBillingEnabled());
+}
+
 export async function checkCommandEntitlement(userId: string): Promise<CommandEntitlement> {
-  if (process.env.MCPOS_ENFORCE_SUBSCRIPTIONS !== "true") return { status: "allowed", billing: {} };
-  const owners = (process.env.MCPOS_BILLING_EXEMPT_USER_IDS || "").split(",").map(id => id.trim()).filter(Boolean);
-  if (owners.includes(userId)) return { status: "allowed", billing: {} };
+  const mode = getCommandEnforcementMode(userId);
+  if (mode === "off" || mode === "exempt") return { status: "allowed", billing: {} };
   return evaluateSandboxEntitlement(userId);
 }
 
