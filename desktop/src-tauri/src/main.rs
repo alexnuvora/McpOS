@@ -622,6 +622,20 @@ fn execute_browser_action(command: &RelayCommand, app: &tauri::AppHandle) -> Res
             let message = open_isolated_browser(app, raw_url, new_window, window_id)?;
             Ok(serde_json::json!({ "action": "open", "message": message, "windows": browser_window_list(app)["windows"], "browser_window_count": isolated_browser_windows(app).len() }))
         },
+        "browser.wait" => {
+            let query = command.payload.get("query").and_then(|v| v.as_str()).ok_or("Expected text required.")?;
+            if query.is_empty() || query.chars().count() > 140 { return Err("Invalid expected text.".into()); }
+            let expected = serde_json::to_string(query).map_err(|_| "Invalid expected text.")?;
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            loop {
+                if !app.state::<BrowserConsent>().0.load(Ordering::Relaxed) { return Err("Browser consent revoked.".into()); }
+                if app.state::<AutomationPolicyState>().0.lock().map(|p| p.paused || p.expires_at.map(|e| e <= now_epoch()).unwrap_or(false)).unwrap_or(true) { return Err("Automation paused or expired.".into()); }
+                let result = browser_eval_and_collect(app, window_id, &format!("(() => {{ const matched = (document.body?.innerText || '').includes({expected}); return {{ok:true,matched}}; }})()"))?;
+                if result["matched"] == true { return Ok(result); }
+                if std::time::Instant::now() >= deadline { return Err("WAIT_TIMEOUT: expected text did not appear.".into()); }
+                std::thread::sleep(Duration::from_millis(350));
+            }
+        },
         "browser.back" | "browser.forward" | "browser.refresh" => {
             let expression = match operation {
                 "browser.back" => "history.back()",
