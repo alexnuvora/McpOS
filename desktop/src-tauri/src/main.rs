@@ -680,11 +680,35 @@ fn execute_browser_action(command: &RelayCommand, app: &tauri::AppHandle) -> Res
             let id = serde_json::json!(selector);
             browser_eval_and_collect(app, Some(&label), &format!("(() => {{ if(location.href !== {expected}) return {{ok:false,error:'Page changed'}}; const selector={id}; {resolve_target} if(!element.matches('input[type=file]') || element.disabled) return {{ok:false,error:'Select an enabled file input'}}; const transfer=new DataTransfer(); transfer.items.add(new File([Uint8Array.from(atob('{data}'), c=>c.charCodeAt(0))],{name})); element.files=transfer.files; element.dispatchEvent(new Event('input',{{bubbles:true}})); element.dispatchEvent(new Event('change',{{bubbles:true}})); return {{ok:true,selectedFile:{name}}}; }})()"))
         },
-        "browser.click" => {
+        "browser.click" | "browser.verified_click" => {
             let selector = command.payload.get("selector").and_then(|value| value.as_str()).ok_or("A CSS selector is required.")?;
             if selector.is_empty() || selector.len() > 256 { return Err("CSS selector must be 1–256 characters.".to_string()); }
             let selector_js = serde_json::to_string(selector).map_err(|_| "Invalid CSS selector.".to_string())?;
-            eval_target_action(app, window_id, &format!("(() => {{ const selector = {selector_js}; {resolve_target} if(element.matches(':disabled,[aria-disabled=true]') || !element.getClientRects().length) return {{ok:false,error:'Target is hidden or disabled'}}; const before = {{url:location.href, expanded:element.getAttribute('aria-expanded'), pressed:element.getAttribute('aria-pressed'), checked:element.checked, dialogs:document.querySelectorAll('[role=dialog],dialog[open]').length}}; element.click(); const changed = before.url !== location.href || before.expanded !== element.getAttribute('aria-expanded') || before.pressed !== element.getAttribute('aria-pressed') || before.checked !== element.checked || before.dialogs !== document.querySelectorAll('[role=dialog],dialog[open]').length; return {{ ok: true, action: 'click', selector, verification: changed ? 'observable_change' : 'dispatched_only', requiresSnapshot: true, element: (element.innerText || element.getAttribute('aria-label') || element.tagName).slice(0, 160) }}; }})()"))
+            let window = active_browser_window(app, window_id)?;
+            let target = Some(window.label());
+            let expected = command.payload.get("expectedText").and_then(|v| v.as_str());
+            let probe = if operation == "browser.verified_click" {
+                let text = expected.filter(|v| !v.trim().is_empty() && v.chars().count() <= 200).ok_or("Expected confirmation text is required.")?;
+                let literal = serde_json::json!(text);
+                Some(format!("(() => ({{ok:true, matched:(document.body?.innerText || '').includes({literal})}}))()"))
+            } else { None };
+            if let Some(check) = &probe {
+                if browser_eval_and_collect(app, target, check)?["matched"] == true {
+                    return Err("Expected text was already present. Choose a distinct confirmation before clicking.".into());
+                }
+            }
+            let mut result = eval_target_action(app, target, &format!("(() => {{ const selector = {selector_js}; {resolve_target} if(element.matches(':disabled,[aria-disabled=true]') || !element.getClientRects().length) return {{ok:false,error:'Target is hidden or disabled'}}; const before = {{url:location.href, expanded:element.getAttribute('aria-expanded'), pressed:element.getAttribute('aria-pressed'), checked:element.checked, dialogs:document.querySelectorAll('[role=dialog],dialog[open]').length}}; element.click(); const changed = before.url !== location.href || before.expanded !== element.getAttribute('aria-expanded') || before.pressed !== element.getAttribute('aria-pressed') || before.checked !== element.checked || before.dialogs !== document.querySelectorAll('[role=dialog],dialog[open]').length; return {{ ok: true, action: 'click', selector, verification: changed ? 'observable_change' : 'dispatched_only', requiresSnapshot: true, element: (element.innerText || element.getAttribute('aria-label') || element.tagName).slice(0, 160) }}; }})()"))?;
+            if let Some(check) = probe {
+                for _ in 0..20 {
+                    if browser_eval_and_collect(app, target, &check)?["matched"] == true {
+                        result["verification"] = serde_json::json!("expected_text_appeared");
+                        return Ok(result);
+                    }
+                    std::thread::sleep(Duration::from_millis(250));
+                }
+                return Err("Click dispatched once. Expected confirmation did not appear; inspect the current state before retrying.".into());
+            }
+            Ok(result)
         },
         "browser.type" => {
             let selector = command.payload.get("selector").and_then(|value| value.as_str()).ok_or("A CSS selector is required.")?;
@@ -928,6 +952,41 @@ async fn deny_pending_action(command_id: String, pending: tauri::State<'_, Pendi
     submit_relay_result(&command.id, serde_json::json!({}), Some("The user denied this action on the Windows computer.".into())).await?;
     Ok("Action denied. Nothing was executed.".into())
 }
+fn notify_approval(app: &tauri::AppHandle, command: &RelayCommand) {
+    let id = command.id.clone();
+    let handle = app.clone();
+    let operation = command.payload.get("windowAction").and_then(|v| v.as_str()).unwrap_or(&command.command);
+    let toast = tauri_winrt_notification::Toast::new(&app.config().identifier)
+        .title("McpOS approval required")
+        .text1(&format!("Requested action: {operation}. Open the tray for full details."))
+        .add_button("Approve once", "approve")
+        .add_button("Deny", "deny")
+        .on_activated(move |action| {
+            let app = handle.clone();
+            let id = id.clone();
+            let approve = match action.as_deref() {
+                Some("approve") => true,
+                Some("deny") => false,
+                _ => { show_main_window(&app); return Ok(()); }
+            };
+            tauri::async_runtime::spawn(async move {
+                let result = if approve {
+                    approve_pending_action(id, false, app.state(), app.clone(), app.state(), app.state()).await
+                } else {
+                    deny_pending_action(id, app.state()).await
+                };
+                if let Err(message) = result {
+                    let _ = app.notification().builder().title("McpOS approval update").body(message).show();
+                }
+            });
+            Ok(())
+        });
+    if toast.show().is_err() {
+        let _ = app.notification().builder().title("McpOS approval required")
+            .body("Review the pending request from the McpOS system tray.").show();
+    }
+}
+
 type RelaySocket = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 async fn socket_claim(session: &mut Option<(String, RelaySocket)>, token: &str, api_key: &str) -> Result<RelayPollResponse, ()> {
@@ -1012,13 +1071,13 @@ async fn poll_relay_once(session: &mut Option<(String, RelaySocket)>, retry_sock
         let command_id = command.id.clone();
         let already_pending = {
             let mut pending = pending_action.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            if pending.is_none() { *pending = Some(command); false } else { true }
+            if pending.is_none() { *pending = Some(command.clone()); false } else { true }
         };
         if already_pending {
             let _ = submit_relay_result(&command_id, serde_json::json!({}), Some("Another local approval is already pending.".to_string())).await;
         } else {
             // Keep the target application focused until the user chooses to review the request.
-            let _ = app.notification().builder().title("McpOS approval required").body("An AI action is awaiting your review. Open McpOS from the system tray to approve or deny it.").show();
+            notify_approval(app, &command);
         }
         return;
     }
