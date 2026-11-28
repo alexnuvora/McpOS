@@ -37,7 +37,7 @@ Deno.serve(async request => {
   const [deviceUpdate, credentialUpdate] = await Promise.all([
     fetch(url + "/rest/v1/mcpos_devices?id=eq." + credential.device_id + "&status=neq.revoked", {
       method: "PATCH", headers: { ...headers, Prefer: "return=minimal" },
-      body: JSON.stringify({ status: "online", last_seen_at: now, relay_version: request.headers.get("x-mcpos-relay-version") === "3" ? 3 : 1 }),
+      body: JSON.stringify({ status: "online", last_seen_at: now, relay_version: request.headers.get("x-mcpos-relay-version") === "4" ? 4 : request.headers.get("x-mcpos-relay-version") === "3" ? 3 : 1 }),
     }),
     fetch(url + "/rest/v1/mcpos_device_credentials?id=eq." + credential.id + "&revoked_at=is.null", {
       method: "PATCH", headers: { ...headers, Prefer: "return=minimal" },

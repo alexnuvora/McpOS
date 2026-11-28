@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod windows_controls;
 use base64::Engine;
 use enigo::{Axis, Button, Direction, Enigo, Key, Keyboard, Mouse, Settings};
 use keyring::Entry;
@@ -55,6 +56,7 @@ async fn authorize_pending_command(command_id: &str) -> bool {
     if api_key.is_empty() { return false; }
     let response = relay_client()
         .post(format!("{SUPABASE_URL}/functions/v1/device-poll"))
+        .header("x-mcpos-relay-version","4")
         .header("apikey", api_key).bearer_auth(token)
         .json(&serde_json::json!({ "authorize_command_id": command_id }))
         .send().await;
@@ -70,7 +72,7 @@ async fn heartbeat() -> bool {
 
     relay_client()
         .post(format!("{SUPABASE_URL}/functions/v1/device-heartbeat"))
-        .header("x-mcpos-relay-version", "3")
+        .header("x-mcpos-relay-version", "4")
         .header("apikey", api_key)
         .bearer_auth(token)
         .send()
@@ -193,6 +195,7 @@ fn describe_controls(walker: &uiautomation::UITreeWalker, parent: &uiautomation:
         controls.push(serde_json::json!({
             "controlId": element.get_runtime_id().ok(),
             "depth": depth,
+            "bounds": element.get_bounding_rectangle().ok().map(|r|serde_json::json!({"x":r.get_left(),"y":r.get_top(),"width":r.get_width(),"height":r.get_height(),"coordinateSpace":"desktop"})),
             "role": element.get_localized_control_type().unwrap_or_default(),
             "label": if sensitive { String::new() } else { element.get_name().unwrap_or_default().chars().take(120).collect() }
         }));
@@ -274,16 +277,28 @@ fn discover_developer_tools() -> serde_json::Value {
     serde_json::json!({"tools": found, "read_only": true})
 }
 
-fn capture_screen_jpeg(display_id: Option<u64>) -> Result<(String, u32, u32), String> {
+fn capture_screen_jpeg(payload: &serde_json::Value) -> Result<(String, u32, u32), String> {
+    let image = if let Some(id) = payload.get("windowId") {
+        windows_controls::capture(id)?
+    } else {
+    let display_id = payload.get("displayId").and_then(|v|v.as_u64());
     let monitors = Monitor::all().map_err(|_| "Windows could not enumerate the displays.".to_string())?;
     let monitor = if let Some(id) = display_id {
         monitors.iter().find(|monitor| monitor.id().ok().map(u64::from) == Some(id))
     } else { monitors.iter().find(|monitor| monitor.is_primary().unwrap_or(false)).or_else(|| monitors.first()) }.ok_or("Requested display is unavailable.".to_string())?;
-    let image = monitor.capture_image().map_err(|_| "Windows screen capture failed.".to_string())?;
+    monitor.capture_image().map_err(|_| "Windows screen capture failed.".to_string())?
+    };
+    let image = if let Some(crop) = payload.get("crop") {
+        let pixel = |name:&str| crop[name].as_u64().and_then(|n|u32::try_from(n).ok()).ok_or("Invalid crop.");
+        let (x,y,w,h)=(pixel("x")?,pixel("y")?,pixel("width")?,pixel("height")?);
+        if w==0 || h==0 || u64::from(x)+u64::from(w)>u64::from(image.width()) || u64::from(y)+u64::from(h)>u64::from(image.height()) {return Err("Crop exceeds captured image.".into());}
+        xcap::image::imageops::crop_imm(&image,x,y,w,h).to_image()
+    } else {image};
+    let quality = payload["jpegQuality"].as_u64().unwrap_or(68).clamp(25,90) as u8;
     let width = image.width();
     let height = image.height();
     let mut bytes = Vec::new();
-    JpegEncoder::new_with_quality(&mut bytes, 68)
+    JpegEncoder::new_with_quality(&mut bytes, quality)
         .encode_image(&DynamicImage::ImageRgba8(image))
         .map_err(|_| "Could not encode the screen image.".to_string())?;
     if bytes.len() > 4 * 1024 * 1024 {
@@ -612,18 +627,8 @@ fn browser_eval_and_collect(app: &tauri::AppHandle, window_id: Option<&str>, exp
 
 fn eval_target_action(app: &tauri::AppHandle, window_id: Option<&str>, expression: &str) -> Result<serde_json::Value, String> {
     let window = active_browser_window(app, window_id)?;
-    let url = window.url().map_err(|_| "Browser location unavailable.")?;
-    let label = window.label();
-    for attempt in 0..3 {
-        if window.url().ok().as_ref() != Some(&url) { return Err("Page changed before the action.".into()); }
-        match browser_eval_and_collect(app, Some(label), expression) {
-            Err(message) if message == "Target has not appeared." && attempt < 2 => {
-                std::thread::sleep(Duration::from_millis(150));
-            }
-            outcome => return outcome,
-        }
-    }
-    Err("Target has not appeared.".into())
+    // Dispatch a mutation exactly once. Use browser.wait for retryable observations.
+    browser_eval_and_collect(app, Some(window.label()), expression)
 }
 
 fn get_browser_snapshot(app: &tauri::AppHandle, window_id: Option<&str>) -> Result<serde_json::Value, String> {
@@ -634,12 +639,55 @@ fn execute_browser_action(command: &RelayCommand, app: &tauri::AppHandle) -> Res
     if !app.state::<BrowserConsent>().0.load(Ordering::Relaxed) { return Err("Isolated browser consent is disabled.".into()); }
     let window_id = command.payload.get("windowId").and_then(|value| value.as_str());
     let operation = command.payload.get("windowAction").and_then(|value| value.as_str()).unwrap_or(command.command.as_str());
-    let resolve_target = r#"const element = selector.startsWith('mcpos:') ? window.__mcposSnapshot?.targets.get(selector) : document.querySelector(selector);
+    let resolve_target = r#"let element = selector.startsWith('mcpos:') ? window.__mcposSnapshot?.targets.get(selector) : document.querySelector(selector);
         if (!selector.startsWith('mcpos:') && !element) return {ok:false,error:'Target has not appeared.'};
+        if (element && !element.isConnected && element.id && element.ownerDocument === document) {
+            const matches = document.querySelectorAll('#' + CSS.escape(element.id));
+            const replacement = matches.length === 1 && matches[0];
+            if (replacement && replacement.tagName === element.tagName &&
+                replacement.getAttribute('role') === element.getAttribute('role') &&
+                element.getAttribute('aria-label') && replacement.getAttribute('aria-label') === element.getAttribute('aria-label') &&
+                !document.querySelector('[aria-modal="true"],dialog[open],[role="dialog"]')) element = replacement;
+        }
+        const dialogSelector = '[aria-modal="true"],dialog[open],[role="dialog"],[role="alertdialog"]';
+        for (let node = element; node; node = node.ownerDocument.defaultView?.frameElement) {
+            const modal = Array.from(node.ownerDocument.querySelectorAll(dialogSelector)).filter(d => d.getClientRects().length && !d.closest('[hidden],[inert],[aria-hidden="true"]')).at(-1);
+            if (modal && !modal.contains(node)) return {ok:false,error:'An active dialogue blocks the target. Inspect a fresh snapshot before proceeding.'};
+        }
         if (!element?.isConnected || !element.ownerDocument.defaultView || element.ownerDocument.defaultView.document !== element.ownerDocument)
             return {ok:false, error:'Target is stale or missing. Request a fresh snapshot before choosing a target.'};
         element.scrollIntoView({block:'nearest', inline:'nearest', behavior:'instant'});"#;
     match operation {
+        "browser.wait" => {
+            let selector = command.payload.get("selector").and_then(|v| v.as_str()).ok_or("CSS selector required.")?;
+            let selector_js = serde_json::json!(selector);
+            let expected = serde_json::json!(command.payload.get("expectedText").and_then(|v| v.as_str()));
+            let window = active_browser_window(app, window_id)?;
+            let check = format!("(() => {{ const all=Array.from(document.querySelectorAll({selector_js})).filter(e=>e.getClientRects().length && getComputedStyle(e).visibility==='visible' && !e.closest('[inert],[hidden],[aria-hidden=true]') && (!{expected} || (e.innerText||'').includes({expected}))); if(all.length!==1)return {{ok:true,ready:false}}; const id='mcpos:'+crypto.randomUUID()+':wait'; window.__mcposSnapshot ??= {{targets:new Map()}}; window.__mcposSnapshot.targets.set(id,all[0]); return {{ok:true,ready:true,selector:id}}; }})()");
+            let limit = std::time::Instant::now() + Duration::from_millis(command.payload.get("timeoutMs").and_then(|v|v.as_u64()).unwrap_or(5000).min(15000));
+            loop {
+                let result = match browser_eval_and_collect(app, Some(window.label()), &check) {
+                    Ok(value) => value,
+                    Err(message) if message.starts_with("Page changed;") && std::time::Instant::now() < limit => {
+                        std::thread::sleep(Duration::from_millis(250)); continue;
+                    }
+                    Err(message) => return Err(message),
+                };
+                if result["ready"] == true { return Ok(result); }
+                if std::time::Instant::now() >= limit { return Err("Timed out waiting for a unique visible element matching the condition.".into()); }
+                std::thread::sleep(Duration::from_millis(250));
+            }
+        }
+        "browser.scroll" => {
+            let window = active_browser_window(app, window_id)?;
+            let x = command.payload.get("x").and_then(|v|v.as_i64()).unwrap_or(0).clamp(-4000,4000);
+            let y = command.payload.get("y").and_then(|v|v.as_i64()).unwrap_or(0).clamp(-4000,4000);
+            let selector = command.payload.get("selector").and_then(|v|v.as_str());
+            let setup = if let Some(value) = selector {
+                format!("const selector={}; {resolve_target} const target=element;",serde_json::json!(value))
+            } else { "const target=document.scrollingElement;".into() };
+            browser_eval_and_collect(app,Some(window.label()),&format!("(() => {{ {setup} target.scrollBy({{left:{x},top:{y},behavior:'instant'}}); return {{ok:true,x:target.scrollLeft,y:target.scrollTop,width:target.clientWidth,height:target.clientHeight}}; }})()"))
+        }
         "browser.list" => Ok(browser_window_list(app)),
         "browser.switch" => {
             let id = window_id.ok_or("Window ID required.")?;
@@ -716,7 +764,28 @@ fn execute_browser_action(command: &RelayCommand, app: &tauri::AppHandle) -> Res
             if selector.is_empty() || selector.len() > 256 || text.is_empty() || text.chars().count() > 200 || text.chars().any(|character| character.is_control()) { return Err("Selector or text is outside the allowed limits.".to_string()); }
             let selector_js = serde_json::to_string(selector).map_err(|_| "Invalid CSS selector.".to_string())?;
             let text_js = serde_json::to_string(text).map_err(|_| "Invalid text.".to_string())?;
-            eval_target_action(app, window_id, &format!("(() => {{ const selector = {selector_js}; {resolve_target} if (!(element.localName === 'input' || element.localName === 'textarea' || element.isContentEditable)) return {{ ok: false, error: 'Target is not an editable field', selector }}; if (element.matches('input[type=password],input[autocomplete=current-password],input[autocomplete=new-password]')) return {{ ok: false, error: 'Password fields require direct local entry', selector }}; element.focus(); if ('value' in element) {{ const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element), 'value')?.set; if (setter) setter.call(element, {text_js}); else element.value = {text_js}; }} else element.textContent = {text_js}; element.dispatchEvent(new InputEvent('input', {{ bubbles: true, inputType: 'insertText', data: {text_js} }})); element.dispatchEvent(new Event('change', {{ bubbles: true }})); if (('value' in element ? element.value : element.textContent) !== {text_js}) return {{ok:false,error:'Field did not retain the requested text. Inspect a fresh snapshot.'}}; return {{ ok: true, action: 'type', selector, verification: 'field_value_matched', characters: {text_js}.length }}; }})()"))
+            let window = active_browser_window(app, window_id)?;
+            let label = window.label().to_string();
+            let original_url = window.url().map_err(|_| "Browser location unavailable.")?;
+            let mut result = eval_target_action(app, Some(&label), &format!("(() => {{ const selector = {selector_js}; if (!selector.startsWith('mcpos:') && document.querySelectorAll(selector).length > 1) return {{ok:false,error:'Target is ambiguous; use a fresh element ID'}}; {resolve_target} if (!(element.localName === 'input' || element.localName === 'textarea' || element.isContentEditable)) return {{ ok: false, error: 'Target is not an editable field', selector }}; if (element.matches('input[type=password],input[autocomplete=current-password],input[autocomplete=new-password]') || element.disabled || element.readOnly || element.closest('[hidden],[inert],[aria-hidden=true],[aria-disabled=true]') || !element.getClientRects().length) return {{ ok: false, error: 'Target is sensitive, hidden, disabled or read-only', selector }}; element.focus(); const read = () => 'value' in element ? element.value : element.innerText; if (read() !== {text_js}) {{ if ('value' in element) {{ const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element), 'value')?.set; if (setter) setter.call(element, {text_js}); else element.value = {text_js}; element.dispatchEvent(new InputEvent('input', {{ bubbles: true, inputType: 'insertText', data: {text_js} }})); element.dispatchEvent(new Event('change', {{ bubbles: true }})); }} else {{ const doc = element.ownerDocument; const range = doc.createRange(); range.selectNodeContents(element); const selection = doc.getSelection(); selection.removeAllRanges(); selection.addRange(range); if (!doc.execCommand('insertText', false, {text_js})) return {{ok:true, action:'type', selector, verification:'dispatched_only', requiresSnapshot:true}}; }} }} const current = read(); return {{ok:true, action:'type', selector, verification: current === {text_js} ? 'field_value_matched' : 'dispatched_only', characters: {text_js}.length, requiresSnapshot:true}}; }})()"))?;
+            // Re-read only the same target after framework reconciliation; never dispatch text twice.
+            let probe = format!("(() => {{ const selector = {selector_js}; const matches = selector.startsWith('mcpos:') ? [window.__mcposSnapshot?.targets.get(selector)] : Array.from(document.querySelectorAll(selector)); const element = matches.length === 1 ? matches[0] : null; if (!element?.isConnected || !element.getClientRects().length || element.matches('input[type=password],input[autocomplete=current-password],input[autocomplete=new-password]')) return {{ok:true,matched:false}}; return {{ok:true,matched:('value' in element ? element.value : element.innerText) === {text_js}}}; }})()");
+            result["verification"] = serde_json::json!("dispatched_only");
+            for _ in 0..6 {
+                std::thread::sleep(Duration::from_millis(150));
+                if window.url().ok().as_ref() != Some(&original_url) { break; }
+                match browser_eval_and_collect(app, Some(&label), &probe) {
+                    Ok(observed) if observed["matched"] == true => {
+                        result["verification"] = serde_json::json!("field_value_matched");
+                        return Ok(result);
+                    }
+                    _ => {}
+                }
+            }
+            // Uncertain is not verified. Preserve the result and let the caller inspect without replaying.
+            result["verification"] = serde_json::json!("outcome_uncertain");
+            result["requiresSnapshot"] = serde_json::json!(true);
+            Ok(result)
         },
         _ => Err("Unsupported browser action.".to_string()),
     }
@@ -748,10 +817,20 @@ fn execute_input_action(command: &RelayCommand) -> Result<serde_json::Value, Str
                     .join("System32").join(if app == "calculator" { "calc.exe" } else { "notepad.exe" }),
                 _ => return Err("Unsupported application.".into())
             };
+            let before = windows_controls::app_windows(app);
             std::process::Command::new(path).spawn().map_err(|_| "Application launch failed.")?;
-            return Ok(serde_json::json!({"launched": app}));
+            for _ in 0..12 {
+                let found: Vec<_> = windows_controls::app_windows(app).into_iter().filter(|id|!before.contains(id)).collect();
+                if found.len()==1 { return Ok(serde_json::json!({"launched":app,"verification":"new_window_observed","windowId":found[0]})); }
+                if found.len()>1 {break;}
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            return Ok(serde_json::json!({"launched":app,"verification":"dispatched_only","windowId":null}));
         }
         "desktop.focus" | "native.shortcut" | "native.invoke" | "native.set_text" => {
+            if command.command == "native.invoke" && command.payload.get("chromeTabs") == Some(&serde_json::Value::Bool(true)) {
+                return windows_controls::chrome(&command.payload);
+            }
             let target = command.payload.get("windowId").ok_or("A windowId is required.")?;
             let automation = UIAutomation::new().map_err(|_| "UI Automation unavailable.")?;
             let root = automation.get_root_element().map_err(|_| "Desktop unavailable.")?;
@@ -996,6 +1075,7 @@ async fn socket_claim(session: &mut Option<(String, RelaySocket)>, token: &str, 
         *session = None;
         let mut request = format!("{}/functions/v1/device-poll", SUPABASE_URL.replacen("https://", "wss://", 1)).into_client_request().map_err(|_| ())?;
         request.headers_mut().insert("authorization", format!("Bearer {token}").parse().map_err(|_| ())?);
+        request.headers_mut().insert("x-mcpos-relay-version","4".parse().map_err(|_| ())?);
         request.headers_mut().insert("apikey", api_key.parse().map_err(|_| ())?);
         let (socket, _) = tokio_tungstenite::connect_async(request).await.map_err(|_| ())?;
         *session = Some((token.to_owned(), socket));
@@ -1028,6 +1108,7 @@ async fn poll_relay_once(session: &mut Option<(String, RelaySocket)>, retry_sock
     let envelope = if let Some(value) = streamed { value } else {
     let response = match client
         .post(format!("{SUPABASE_URL}/functions/v1/device-poll"))
+        .header("x-mcpos-relay-version","4")
         .header("apikey", api_key)
         .bearer_auth(&token)
         .json(&serde_json::json!({}))
@@ -1042,6 +1123,10 @@ async fn poll_relay_once(session: &mut Option<(String, RelaySocket)>, retry_sock
     value
     };
     let Some(command) = envelope.command else { return };
+    if command.payload.get("bindings").is_some() {
+        let _ = submit_relay_result(&command.id, serde_json::json!({}), Some("Previous step did not resolve the requested target.".into())).await;
+        return;
+    }
 
     if matches!(command.command.as_str(), "desktop.launch" | "desktop.focus" | "native.shortcut" | "native.invoke" | "native.set_text" | "clipboard.write" | "input.pointer.click" | "input.pointer.move" | "input.pointer.scroll") || command.command == "input.keyboard.type" || command.command == "input.keyboard.shortcut" || command.command == "browser.open" || command.command == "browser.click" || command.command == "browser.type" {
         if command.command.starts_with("browser.") && !browser_consent.load(Ordering::Relaxed) {
@@ -1124,7 +1209,7 @@ async fn poll_relay_once(session: &mut Option<(String, RelaySocket)>, retry_sock
                         })).collect::<Vec<_>>() }), None),
                         Err(_) => (serde_json::json!({}), Some("Could not list displays.".into()))
                     }
-                } else { match capture_screen_jpeg(command.payload.get("displayId").and_then(|id| id.as_u64())) {
+                } else { match capture_screen_jpeg(&command.payload) {
                     Ok((image_base64, width, height)) => (
                         serde_json::json!({ "image_base64": image_base64, "mime_type": "image/jpeg", "width": width, "height": height, "approval_mode": if allowed_by_policy { "auto" } else { "local_consent" } }),
                         None,
@@ -1137,7 +1222,10 @@ async fn poll_relay_once(session: &mut Option<(String, RelaySocket)>, retry_sock
             if !accessibility_consent.load(Ordering::Relaxed) {
                 (serde_json::json!({}), Some("Windows accessibility consent is switched off on this computer.".to_string()))
             } else {
-                match get_accessibility_snapshot(command.payload.get("windowId")) {
+                let snapshot = if command.payload["readText"] == true { windows_controls::document_text(&command.payload) }
+                    else if command.payload["chromeTabs"] == true && command.payload["operation"] == "list" { windows_controls::chrome(&command.payload) }
+                    else { get_accessibility_snapshot(command.payload.get("windowId")) };
+                match snapshot {
                     Ok(snapshot) => (snapshot, None),
                     Err(message) => (serde_json::json!({}), Some(message)),
                 }
