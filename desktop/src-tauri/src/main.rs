@@ -85,6 +85,17 @@ struct ScreenCaptureConsent(Arc<AtomicBool>);
 struct AccessibilityConsent(Arc<AtomicBool>);
 struct ApprovedFolders(Arc<Mutex<Vec<PathBuf>>>);
 struct PendingAction(Arc<Mutex<Option<RelayCommand>>>);
+static APPROVAL_TIMEOUT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(120);
+#[tauri::command]
+fn get_approval_timeout() -> u64 { APPROVAL_TIMEOUT.load(Ordering::Relaxed) }
+#[tauri::command]
+fn set_approval_timeout(seconds: u64) -> Result<u64,String> {
+    if !matches!(seconds,60|120|180|240) { return Err("Choose a supported approval timeout.".into()); }
+    APPROVAL_TIMEOUT.store(seconds,Ordering::Relaxed); Ok(seconds)
+}
+fn approval_deadline(command: &RelayCommand) -> u64 {
+    command.local_deadline.unwrap_or(0)
+}
 struct BrowserConsent(Arc<AtomicBool>);
 #[derive(Clone, Serialize)]
 struct AutomationPolicy {
@@ -355,6 +366,10 @@ async fn pair_device(code: String, connected: tauri::State<'_, Arc<AtomicBool>>)
 
 #[derive(Clone, Deserialize)]
 struct RelayCommand {
+    #[serde(default)]
+    expires_at: Option<String>,
+    #[serde(skip)]
+    local_deadline: Option<u64>,
     task_id: Option<String>,
     id: String,
     command: String,
@@ -1028,7 +1043,7 @@ fn allows_relay_action(policy: &AutomationPolicy, command: &RelayCommand) -> boo
 
 #[tauri::command]
 fn get_pending_action(pending: tauri::State<'_, PendingAction>) -> Option<serde_json::Value> {
-    pending.0.lock().ok()?.as_ref().map(|command| serde_json::json!({ "id": command.id, "taskId":command.task_id, "command": command.command, "payload": command.payload.clone() }))
+    pending.0.lock().ok()?.as_ref().map(|command| serde_json::json!({ "id": command.id, "taskId":command.task_id, "command": command.command, "payload": command.payload.clone(), "deadline": approval_deadline(command) }))
 }
 
 #[tauri::command]
@@ -1038,6 +1053,7 @@ async fn approve_pending_action(command_id: String, approve_task: bool, pending:
     }
     let command = pending.0.lock().map_err(|_| "Approval state is unavailable.".to_string())?.clone().ok_or("There is no pending action to approve.")?;
     if command.id != command_id { return Err("Pending command changed. Review it again.".into()); }
+    if approval_deadline(&command) <= now_epoch() { return Err("Approval expired.".into()); }
     if !heartbeat().await || !authorize_pending_command(&command.id).await {
         { let mut current = pending.0.lock().map_err(|_| "Approval state is unavailable.".to_string())?; if current.as_ref().map(|c| &c.id) == Some(&command.id) { current.take(); } }
         return Err("McpOS could not verify that this device and AI session are still authorised. The action was not executed.".to_string());
@@ -1048,7 +1064,7 @@ async fn approve_pending_action(command_id: String, approve_task: bool, pending:
     }
     {
         let mut current = pending.0.lock().map_err(|_| "Approval state unavailable.")?;
-        if current.as_ref().map(|c| &c.id) != Some(&command_id) || command.id != command_id {
+        if current.as_ref().map(|c| &c.id) != Some(&command_id) || command.id != command_id || approval_deadline(&command) <= now_epoch() {
             return Err("Pending command changed. Review it again.".into());
         }
         current.take();
@@ -1093,7 +1109,8 @@ fn notify_approval(app: &tauri::AppHandle, command: &RelayCommand) {
     let operation = command.payload.get("windowAction").and_then(|v| v.as_str()).unwrap_or(&command.command);
     let toast = tauri_winrt_notification::Toast::new(&app.config().identifier)
         .title("McpOS approval required")
-        .text1(&format!("Requested action: {operation}. Open the tray for full details."))
+        .duration(tauri_winrt_notification::Duration::Long)
+        .text1(&format!("Requested action: {operation}. Review within {} seconds using the McpOS tray.", approval_deadline(command).saturating_sub(now_epoch())))
         .add_button("Approve once", "approve")
         .add_button("Deny", "deny")
         .on_activated(move |action| {
@@ -1153,6 +1170,13 @@ async fn poll_relay_once(session: &mut Option<(String, RelaySocket)>, retry_sock
     let Some(api_key) = SUPABASE_ANON_KEY else { return };
     if api_key.is_empty() { return; }
 
+    let expired = {
+        let mut pending = pending_action.lock().unwrap_or_else(|p|p.into_inner());
+        if pending.as_ref().is_some_and(|c| approval_deadline(c) <= now_epoch()) { pending.take() } else { None }
+    };
+    if let Some(command)=expired {
+        let _=submit_relay_result(&command.id,serde_json::json!({}),Some("Local approval expired.".into())).await;
+    }
     if pending_action.lock().map(|p| p.is_some()).unwrap_or(true) { return; }
     let client = relay_client();
     let streamed = if now_epoch() >= *retry_socket_at {
@@ -1178,7 +1202,7 @@ async fn poll_relay_once(session: &mut Option<(String, RelaySocket)>, retry_sock
     let Ok(value) = response.json::<RelayPollResponse>().await else { return };
     value
     };
-    let Some(command) = envelope.command else { return };
+    let Some(mut command) = envelope.command else { return };
     if command.payload.get("bindings").is_some() {
         let _ = submit_relay_result(&command.id, serde_json::json!({}), Some("Previous step did not resolve the requested target.".into())).await;
         return;
@@ -1209,6 +1233,8 @@ async fn poll_relay_once(session: &mut Option<(String, RelaySocket)>, retry_sock
             let _ = submit_relay_result(&command.id, result, error).await;
             return;
         }
+        let remaining = command.expires_at.as_deref().and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok()).map(|d| d.timestamp().max(0) as u64).unwrap_or(now_epoch()+60);
+        command.local_deadline = Some(remaining.min(now_epoch()+get_approval_timeout()));
         let command_id = command.id.clone();
         let already_pending = {
             let mut pending = pending_action.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1351,7 +1377,7 @@ fn start_heartbeat(app: tauri::AppHandle, connected: Arc<AtomicBool>) {
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
-        .invoke_handler(tauri::generate_handler![pair_device, get_device_status, get_screen_capture_consent, set_screen_capture_consent, get_accessibility_consent, set_accessibility_consent, get_approved_folders, pick_approved_folder, remove_approved_folder, get_pending_action, approve_pending_action, deny_pending_action, get_browser_consent, set_browser_consent, get_automation_policy, set_automation_policy, pause_automation])
+        .invoke_handler(tauri::generate_handler![pair_device, get_device_status, get_screen_capture_consent, set_screen_capture_consent, get_accessibility_consent, set_accessibility_consent, get_approved_folders, pick_approved_folder, remove_approved_folder, get_pending_action, approve_pending_action, deny_pending_action, get_browser_consent, set_browser_consent, get_automation_policy, set_automation_policy, pause_automation, get_approval_timeout, set_approval_timeout])
         .setup(|app| {
             let open = MenuItem::with_id(app, "open", "Open McpOS", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit McpOS", true, None::<&str>)?;
